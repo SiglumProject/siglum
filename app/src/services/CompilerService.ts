@@ -164,7 +164,9 @@ class CompilerService {
         : options.engine;
 
       const result = await this.compiler.compile(source, { engine });
-      const timeMs = performance.now() - startTime;
+      // Use the actual TeX compile time from the worker, not the round-trip time
+      const stats = result.stats as { compileTimeMs?: number } | undefined;
+      const timeMs = stats?.compileTimeMs ?? (performance.now() - startTime);
 
       if (result.success) {
         this.setStatus('success');
