@@ -13,7 +13,7 @@
 import type { SiglumDocument, DocumentMetadata } from '../types/Document'
 import { toSiglumDocument } from '../types/Document'
 import MetadataStore from './MetadataStore'
-import { fileSystem, opfsBackend, indexedDBBackend } from '@siglum/filesystem'
+import { fileSystem, getBestBackend, indexedDBBackend } from '@siglum/filesystem'
 import { extractTitle, extractSearchableText, countWords } from '../utils/latexParsing'
 
 const DOCUMENTS_PATH = '/documents'
@@ -36,8 +36,9 @@ class DocumentService {
   }
 
   private async _initialize(): Promise<void> {
-    // Mount OPFS as the primary filesystem for documents
-    fileSystem.mount(DOCUMENTS_PATH, opfsBackend)
+    // Mount best available filesystem (OPFS on Chrome/Firefox, IndexedDB on Safari)
+    const backend = await getBestBackend()
+    fileSystem.mount(DOCUMENTS_PATH, backend)
 
     // Run migrations if needed
     await this.migrateIfNeeded()
