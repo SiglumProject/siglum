@@ -444,6 +444,27 @@ const LaTeXEditor: React.FC<LaTeXEditorProps> = ({
     }
   }, [value])
 
+  // Listen for goToLine events from search results
+  useEffect(() => {
+    const handleGoToLine = (e: CustomEvent<{ line: number }>) => {
+      const view = editorViewRef.current
+      if (view && e.detail.line) {
+        const lineCount = view.state.doc.lines
+        const targetLine = Math.min(e.detail.line, lineCount)
+        const lineInfo = view.state.doc.line(targetLine)
+        view.dispatch({
+          selection: { anchor: lineInfo.from },
+          scrollIntoView: true,
+          effects: EditorView.scrollIntoView(lineInfo.from, { y: 'center' }),
+        })
+        view.focus()
+      }
+    }
+
+    window.addEventListener('goToLine', handleGoToLine as EventListener)
+    return () => window.removeEventListener('goToLine', handleGoToLine as EventListener)
+  }, [])
+
   // Helper to wrap selection
   const wrapSelectionInView = useCallback((view: EditorView, prefix: string, suffix: string) => {
     const selection = view.state.selection.main

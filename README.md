@@ -2,6 +2,8 @@
 
 Browser-based LaTeX editor that compiles entirely in your browser.
 
+**[Try it now at siglum.org](https://siglum.org)**
+
 ## Structure
 
 ```
@@ -66,7 +68,7 @@ cd worker && ./upload-to-r2.sh /path/to/siglum-engine
 ## Dependencies
 
 Uses these separate packages:
-- [busytex-lazy](https://github.com/ArtifexSoftware/user-busytex-lazy) - LaTeX compiler (pdfTeX/XeTeX in WASM)
+- [@siglum/busytex-lazy](https://github.com/ArtifexSoftware/user-busytex-lazy) - LaTeX compiler (pdfTeX/XeTeX in WASM)
 - [@siglum/git](https://github.com/SiglumProject/siglum-git) - Browser-based Git operations
 - [@siglum/filesystem](https://github.com/SiglumProject/siglum-filesystem) - Filesystem abstraction
 

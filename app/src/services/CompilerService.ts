@@ -100,7 +100,7 @@ class CompilerService {
         xzwasmUrl: import.meta.env.DEV ? '/src/xzwasm.js' : `${API_BASE}/xzwasm.js`,
         enableCtan: true,
         enableLazyFS: true,
-        enableDocCache: true,
+        enableDocCache: false, // Disabled - causes detached ArrayBuffer errors on doc switch
         onLog: (msg: string) => this.log(msg),
         onProgress: (stage: string, detail?: string) => {
           // Only set 'initializing' status during actual initialization

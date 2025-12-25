@@ -11,7 +11,7 @@ interface CommandPaletteProps {
   isClosing?: boolean
   onClose: () => void
   onSelectDocument: (documentId: string) => void
-  onSelectFile?: (filePath: string) => void
+  onSelectFile?: (filePath: string, lineNumber?: number) => void
   onCreateNew: () => void
   onOpenHelp?: () => void
 }
@@ -267,8 +267,9 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({
     } else if (index < commands.length + fileResults.length) {
       // Project file item clicked
       const fileIndex = index - commands.length
-      if (fileResults[fileIndex] && onSelectFile) {
-        onSelectFile(fileResults[fileIndex].file.path)
+      const result = fileResults[fileIndex]
+      if (result && onSelectFile) {
+        onSelectFile(result.file.path, result.lineNumber)
         handleClose()
       }
     } else {

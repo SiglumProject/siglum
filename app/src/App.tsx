@@ -207,7 +207,9 @@ const App: React.FC = () => {
       })
       console.log('[Compile] Result:', result.success, result.error, result.pdf?.length)
       if (result.success && result.pdf) {
-        setPdfData(result.pdf.buffer as ArrayBuffer)
+        // Copy the buffer to avoid "detached ArrayBuffer" issues from worker transfers
+        const pdfCopy = result.pdf.slice().buffer
+        setPdfData(pdfCopy as ArrayBuffer)
         setCompileTimeMs(result.timeMs ?? null)
 
         // Generate format (cache preamble) after successful compile if enabled
@@ -367,11 +369,18 @@ const App: React.FC = () => {
     await loadDocument(documentId)
   }, [loadDocument])
 
-  const handleSelectFile = useCallback(async (filePath: string) => {
+  const handleSelectFile = useCallback(async (filePath: string, lineNumber?: number) => {
     // Find the file in projectFiles by path
     const file = projectFiles.find(f => f.path === filePath)
     if (file) {
       await handleFileSelect(file)
+      // After file loads, jump to line if specified
+      if (lineNumber) {
+        // Delay to let the editor update with new content
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent('goToLine', { detail: { line: lineNumber } }))
+        }, 100)
+      }
     }
   }, [projectFiles, handleFileSelect])
 
