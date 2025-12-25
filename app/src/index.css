@@ -1,0 +1,82 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+:root {
+  /*
+   * Color System
+   *
+   * Foundation: Warm charcoal backgrounds
+   * Text: Neutral warm grays (no competing hues)
+   * Accent: Terracotta - only used for interactive/emphasis
+   */
+
+  /* Backgrounds - warm charcoal */
+  --color-bg: #1a1614;
+  --color-bg-elevated: #221f1c;
+  --color-surface: rgba(34, 31, 28, 0.8);
+
+  /* Text - neutral warm scale (no tan/brown hues) */
+  --color-text: #E8E4DC;
+  --color-text-secondary: #9A9590;
+  --color-text-muted: #6B6660;
+
+  /* Borders */
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-subtle: rgba(255, 255, 255, 0.04);
+
+  /* Accent - muted copper (used sparingly) */
+  --color-accent: #B5856A;
+  --color-accent-hover: #C9997E;
+  --color-accent-subtle: rgba(181, 133, 106, 0.15);
+  --color-accent-bg: rgba(181, 133, 106, 0.10);
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.4);
+  --shadow-xl: 0 20px 60px rgba(0, 0, 0, 0.5);
+  --glow-accent: 0 0 20px rgba(181, 133, 106, 0.15);
+
+  /* Typography */
+  --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+  --font-body: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+
+  /* Legacy aliases - for existing components */
+  --color-base: var(--color-bg);
+  --color-base-darker: var(--color-bg);
+  --color-base-lighter: var(--color-bg-elevated);
+  --color-bg-primary: var(--color-bg);
+  --color-bg-secondary: var(--color-bg-elevated);
+  --color-text-primary: var(--color-text);
+  --color-text-tertiary: var(--color-text-muted);
+  --color-accent-primary: var(--color-accent);
+  --color-accent-light: var(--color-accent-hover);
+  --color-accent-muted: var(--color-accent-hover);
+  --color-accent-dim: #8A6550;
+  --color-accent-bg-hover: rgba(181, 133, 106, 0.18);
+  --color-border-accent: var(--color-accent-subtle);
+}
+
+html {
+  background-color: #1a1614;
+}
+
+body {
+  font-family: var(--font-body);
+  background: var(--color-bg);
+  color: var(--color-text);
+  height: 100vh;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+#root {
+  width: 100%;
+  height: 100vh;
+}

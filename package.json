@@ -1,0 +1,20 @@
+{
+  "name": "siglum",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "app",
+    "worker"
+  ],
+  "scripts": {
+    "dev": "cd app && bun run dev",
+    "dev:worker": "cd worker && bun run dev",
+    "build": "cd app && bun run build",
+    "deploy:pages": "cd app && bun run build && wrangler pages deploy dist",
+    "deploy:worker": "cd worker && wrangler deploy",
+    "upload:r2": "cd worker && ./upload-to-r2.sh"
+  },
+  "devDependencies": {
+    "typescript": "~5.6.0"
+  }
+}

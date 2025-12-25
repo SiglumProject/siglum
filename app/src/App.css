@@ -1,0 +1,252 @@
+.app {
+  position: relative;
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-base);
+  color: var(--color-text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', system-ui, sans-serif;
+}
+
+/* Override react-resizable-panels default styling */
+[data-panel] {
+  background: var(--color-base);
+}
+
+[data-panel-group] {
+  background: var(--color-base);
+}
+
+.main-content {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Desktop/Mobile Views */
+.desktop-view {
+  display: none;
+  height: 100%;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.desktop-view.loaded {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.mobile-view {
+  display: block;
+  height: 100%;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.mobile-view.loaded {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* PDF Preview Panel - delayed fade-in */
+.pdf-preview-panel {
+  height: 100%;
+  background: var(--color-base);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.pdf-preview-panel.loaded {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+
+@media (min-width: 768px) {
+  .desktop-view {
+    display: block;
+  }
+
+  .mobile-view {
+    display: none;
+  }
+}
+
+/* Mobile sidebar overlay */
+@media (max-width: 767px) {
+  .mobile-sidebar-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 999;
+  }
+}
+
+/* Editor with sidebar wrapper */
+.editor-with-sidebar {
+  display: flex;
+  height: 100%;
+  width: 100%;
+}
+
+.editor-with-sidebar .latex-editor-container {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Resize Handle - warm terracotta divider */
+.resize-handle {
+  width: 2px !important;
+  background: var(--color-border);
+  transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+  position: relative;
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(180deg,
+    var(--color-accent) 0%,
+    var(--color-accent-light) 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.resize-handle:hover {
+  background: var(--color-border);
+  width: 3px !important;
+  box-shadow: 0 0 8px rgba(181, 133, 106, 0.2);
+}
+
+.resize-handle:hover::before {
+  opacity: 0.5;
+}
+
+.resize-handle:active {
+  background: var(--color-accent);
+  width: 4px !important;
+  box-shadow:
+    0 0 12px rgba(181, 133, 106, 0.3),
+    0 0 24px rgba(181, 133, 106, 0.15);
+}
+
+.resize-handle:active::before {
+  opacity: 1;
+}
+
+/* Mobile Preview - clean reading environment */
+.mobile-preview {
+  padding: 40px 20px;
+  max-width: 900px;
+  margin: 0 auto;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  line-height: 1.6;
+  overflow-y: auto;
+  height: 100%;
+  background: var(--color-base-lighter);
+}
+
+/* Git Conflict Modal */
+.conflict-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1200;
+  animation: fadeIn 0.2s ease;
+}
+
+.conflict-modal {
+  background: var(--color-base-lighter);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 420px;
+  width: 90%;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
+}
+
+.conflict-modal-title {
+  margin: 0 0 4px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+}
+
+.conflict-modal-repo {
+  display: inline-block;
+  margin: 0 0 16px 0;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  font-family: 'SF Mono', Monaco, monospace;
+  background: rgba(232, 227, 211, 0.06);
+  border-radius: 4px;
+  text-decoration: none;
+  transition: all 0.15s ease;
+}
+
+.conflict-modal-repo:hover {
+  background: rgba(232, 227, 211, 0.1);
+  color: var(--color-text-primary);
+}
+
+.conflict-modal-description {
+  margin: 0 0 20px 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+}
+
+.conflict-modal-actions {
+  display: flex;
+  justify-content: space-between;
+}
+
+.conflict-modal-btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.conflict-modal-btn.primary {
+  background: var(--color-accent);
+  color: var(--color-base);
+}
+
+.conflict-modal-btn.primary:hover {
+  filter: brightness(1.1);
+}
+
+.conflict-modal-btn.secondary {
+  background: rgba(232, 227, 211, 0.08);
+  color: var(--color-text-secondary);
+}
+
+.conflict-modal-btn.secondary:hover {
+  background: rgba(232, 227, 211, 0.12);
+  color: var(--color-text-primary);
+}

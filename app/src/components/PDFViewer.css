@@ -1,0 +1,590 @@
+.pdf-viewer {
+  width: 100%;
+  height: 100%;
+  background: var(--color-base);
+  position: relative;
+  overflow: hidden;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.pdf-document {
+  width: 100%;
+  height: calc(100% - 32px);
+  margin-top: 32px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 24px;
+  overflow: auto;
+  box-sizing: border-box;
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  container-type: inline-size;
+}
+
+@media (min-width: 1200px) {
+  .pdf-document {
+    padding: 32px 24px 64px 24px;
+  }
+}
+
+.pdf-page-wrapper {
+  position: relative;
+  margin: 0 auto;
+  display: inline-block;
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.4),
+    0 6px 16px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+  line-height: 0;
+  background: #2a2520;
+  max-width: 100%;
+}
+
+.pdf-viewer.pdf-dark-mode .pdf-page-wrapper {
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.2),
+    0 6px 16px rgba(0, 0, 0, 0.12);
+}
+
+.pdf-page-filter {
+  line-height: 0;
+}
+
+.pdf-page-filter.dark {
+  animation: toDark 0.5s ease forwards;
+}
+
+.pdf-page-filter.light {
+  animation: toLight 0.5s ease forwards;
+}
+
+@keyframes toDark {
+  from {
+    filter: sepia(0.12) brightness(0.93);
+  }
+  to {
+    filter: invert(0.85) sepia(0.2) brightness(0.95) hue-rotate(-10deg);
+  }
+}
+
+@keyframes toLight {
+  from {
+    filter: invert(0.85) sepia(0.2) brightness(0.95) hue-rotate(-10deg);
+  }
+  to {
+    filter: sepia(0.12) brightness(0.93);
+  }
+}
+
+.pdf-page-canvas {
+  display: block !important;
+  background: #f5f3ed;
+}
+
+.pdf-page-canvas.fit-width {
+  width: calc(100cqi - 24px);
+  height: auto;
+}
+
+/* Text layer overlay for selection */
+.pdf-text-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  overflow: visible;
+}
+
+.pdf-text-layer span {
+  color: transparent;
+  user-select: text;
+}
+
+.pdf-text-layer span::selection {
+  background: rgba(184, 149, 110, 0.4);
+}
+
+.pdf-text-layer span::-moz-selection {
+  background: rgba(184, 149, 110, 0.4);
+}
+
+/* Dark mode text selection */
+.pdf-viewer.pdf-dark-mode .pdf-text-layer ::selection {
+  background: rgba(184, 149, 110, 0.4);
+}
+
+.pdf-viewer.pdf-dark-mode .pdf-text-layer ::-moz-selection {
+  background: rgba(184, 149, 110, 0.4);
+}
+
+.pdf-loading,
+.pdf-error,
+.pdf-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  height: 100%;
+  color: var(--color-text-tertiary);
+  font-size: 15px;
+  font-weight: 500;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  letter-spacing: -0.01em;
+}
+
+.pdf-compile-button {
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-base);
+  background: var(--color-accent);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+}
+
+.pdf-compile-button:hover:not(:disabled) {
+  background: var(--color-accent-light);
+  transform: translateY(-1px);
+}
+
+.pdf-compile-button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.pdf-compile-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.pdf-error {
+  color: var(--color-accent-light);
+}
+
+.page-info {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  user-select: none;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+.zoom-level {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  user-select: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: transparent;
+  border: none;
+  transition: all 0.15s ease;
+}
+
+.zoom-level:hover {
+  background: rgba(232, 227, 211, 0.08);
+  color: var(--color-text-secondary);
+}
+
+/* Zoom Presets Dropdown */
+.zoom-presets {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--color-base-lighter);
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  min-width: 120px;
+  animation: dropdownFadeIn 0.2s cubic-bezier(0.23, 1, 0.32, 1);
+  z-index: 100;
+}
+
+@keyframes dropdownFadeIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.zoom-preset {
+  display: block;
+  width: 100%;
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.zoom-preset:hover {
+  background: rgba(232, 227, 211, 0.06);
+  color: var(--color-text-primary);
+}
+
+.zoom-preset.active {
+  background: rgba(232, 227, 211, 0.1);
+  color: var(--color-text-primary);
+}
+
+.zoom-presets-separator {
+  height: 1px;
+  background: var(--color-border);
+  margin: 4px 8px;
+}
+
+/* Combined Controls Toolbar */
+.pdf-combined-controls {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--color-base-darker);
+  border-bottom: 1px solid var(--color-border);
+  padding: 0 12px;
+  z-index: 10;
+}
+
+.controls-left,
+.controls-center,
+.controls-right {
+  display: flex;
+  align-items: center;
+}
+
+.controls-left {
+  flex: 1;
+  justify-content: flex-start;
+}
+
+.controls-center {
+  flex: 0 0 auto;
+}
+
+.controls-right {
+  flex: 1;
+  justify-content: flex-end;
+}
+
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.control-separator {
+  width: 1px;
+  height: 16px;
+  background: var(--color-border);
+  margin: 0 4px;
+}
+
+.control-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  padding: 0;
+}
+
+.control-button:hover:not(:disabled) {
+  background: rgba(232, 227, 211, 0.1);
+  color: var(--color-text-primary);
+}
+
+.control-button:disabled {
+  color: var(--color-text-tertiary);
+  cursor: not-allowed;
+}
+
+.control-button:active {
+  transform: scale(0.95);
+}
+
+.control-button.active {
+  background: rgba(232, 227, 211, 0.12);
+  color: var(--color-text-primary);
+}
+
+.control-button.active:hover {
+  background: rgba(232, 227, 211, 0.16);
+}
+
+/* Search Input */
+.search-input {
+  background: rgba(232, 227, 211, 0.06);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  color: var(--color-text-primary);
+  width: 160px;
+  height: 24px;
+  box-sizing: border-box;
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+.search-input:focus {
+  border-color: var(--color-accent);
+  background: rgba(232, 227, 211, 0.08);
+}
+
+.search-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+/* Search Group */
+.search-group {
+  gap: 2px;
+}
+
+.search-count {
+  font-size: 10px;
+  color: var(--color-text-tertiary);
+  font-family: 'SF Mono', Monaco, monospace;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+.control-button.search-nav {
+  width: 20px;
+  height: 20px;
+}
+
+/* Search Highlight Layer */
+.pdf-search-highlight-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.search-highlight {
+  background: rgba(255, 200, 0, 0.35);
+  border-radius: 2px;
+  transition: background 0.15s ease;
+}
+
+.search-highlight.active {
+  background: rgba(255, 140, 0, 0.6);
+  box-shadow: 0 0 0 2px rgba(255, 140, 0, 0.4);
+}
+
+/* Outline/TOC Panel */
+.pdf-outline-panel {
+  position: absolute;
+  top: 44px;
+  left: 12px;
+  width: 240px;
+  max-height: calc(100% - 60px);
+  background: rgba(34, 31, 26, 0.95);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: outlineSlideIn 0.2s ease;
+}
+
+@keyframes outlineSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.pdf-outline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.pdf-outline-header span {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  letter-spacing: -0.01em;
+}
+
+.pdf-outline-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: rgba(232, 227, 211, 0.06);
+  border: none;
+  border-radius: 6px;
+  color: var(--color-text-tertiary);
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.pdf-outline-close:hover {
+  background: rgba(232, 227, 211, 0.1);
+  color: var(--color-text-primary);
+}
+
+.pdf-outline-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.pdf-outline-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.pdf-outline-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.pdf-outline-content::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+.pdf-outline-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(232, 227, 211, 0.2);
+}
+
+.pdf-outline-item {
+  user-select: none;
+}
+
+.pdf-outline-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  min-height: 32px;
+}
+
+.pdf-outline-row:hover {
+  background: rgba(232, 227, 211, 0.06);
+}
+
+.pdf-outline-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.pdf-outline-toggle:hover {
+  background: rgba(232, 227, 211, 0.1);
+  color: var(--color-text-secondary);
+}
+
+.pdf-outline-title {
+  flex: 1;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.pdf-outline-page {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+  padding: 2px 6px;
+  background: rgba(232, 227, 211, 0.06);
+  border-radius: 4px;
+}
+
+.pdf-outline-children {
+  /* Children are indented via inline padding */
+}
+
+/* Mobile responsiveness */
+@media (max-width: 768px) {
+  .pdf-combined-controls {
+    bottom: 16px;
+    padding: 6px 12px;
+    gap: 12px;
+  }
+
+  .control-button {
+    width: 28px;
+    height: 28px;
+  }
+
+  .zoom-level {
+    min-width: 50px;
+    font-size: 12px;
+  }
+
+  .page-info {
+    font-size: 12px;
+  }
+
+  .pdf-outline-panel {
+    width: calc(100% - 32px);
+    max-height: 50%;
+  }
+}

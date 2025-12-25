@@ -1,0 +1,11 @@
+# Cloudflare Pages configuration
+name = "siglum"
+pages_build_output_dir = "dist"
+
+# Custom domain - siglum.org root
+# Note: You must also add this domain in Cloudflare Dashboard:
+# Pages > siglum > Custom domains > Add custom domain
+#
+# DNS setup (in Cloudflare DNS for siglum.org):
+#   @ CNAME siglum.pages.dev (proxied)
+#   www CNAME siglum.pages.dev (proxied)

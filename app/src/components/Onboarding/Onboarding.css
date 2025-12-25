@@ -1,0 +1,685 @@
+.onboarding-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.onboarding-overlay.ready {
+  opacity: 1;
+  transition: opacity 0.3s ease;
+}
+
+.onboarding-overlay.exiting {
+  animation: overlayFadeOut 0.3s ease forwards;
+}
+
+@keyframes overlayFadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* Click blocker - prevents interaction with darkened background areas */
+.onboarding-blocker {
+  position: absolute;
+  pointer-events: auto;
+  cursor: default;
+}
+
+/* Position blocker to match darkened areas for each step */
+.onboarding-overlay.highlight-editor .onboarding-blocker {
+  left: 55%;
+  right: 0;
+  top: 0;
+  bottom: 0;
+}
+
+.onboarding-overlay.highlight-settings .onboarding-blocker {
+  /* Block clicks on darkened areas - the darken elements handle this */
+  display: none;
+}
+
+.onboarding-overlay.highlight-preview .onboarding-blocker {
+  left: 0;
+  right: 45%;
+  top: 0;
+  bottom: 0;
+}
+
+.onboarding-overlay.highlight-sidebar .onboarding-blocker {
+  left: 240px;
+  right: 0;
+  top: 0;
+  bottom: 0;
+}
+
+/* Darkened areas - cover everything except the highlighted region */
+.onboarding-darken {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+  opacity: 1;
+}
+
+/* Fade out during step transitions */
+.onboarding-overlay.transitioning .onboarding-darken,
+.onboarding-overlay.transitioning .onboarding-card {
+  opacity: 0;
+}
+
+/* Editor highlight - darken the right side (preview) */
+.onboarding-overlay.highlight-editor .onboarding-darken {
+  left: 55%;
+  width: 45%;
+}
+
+/* Settings highlight - darken the right side (preview) like editor step */
+.onboarding-overlay.highlight-settings .onboarding-darken {
+  left: 55%;
+  width: 45%;
+}
+
+/* Additional darken elements for settings step */
+.onboarding-overlay.highlight-settings .onboarding-darken-sidebar {
+  position: absolute;
+  left: 0;
+  top: 32px;
+  width: 48px;
+  height: calc(100% - 32px);
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.onboarding-overlay.highlight-settings .onboarding-darken-below-toolbar {
+  position: absolute;
+  left: 48px;
+  right: 45%;
+  top: 32px;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Preview highlight - darken the left side (editor) */
+/* Width is set dynamically via inline style in JS */
+.onboarding-overlay.highlight-preview .onboarding-darken {
+  left: 0;
+  width: 55%; /* Fallback if JS hasn't calculated yet */
+}
+
+/* Sidebar highlight - darken everything except sidebar */
+.onboarding-overlay.highlight-sidebar .onboarding-darken {
+  left: 240px;
+  width: calc(100% - 240px);
+}
+
+/* Card positioning based on highlight */
+.onboarding-card {
+  position: absolute;
+  width: 340px;
+  background: var(--color-base-lighter);
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+  transition: opacity 0.3s ease;
+  opacity: 1;
+}
+
+.onboarding-overlay.exiting .onboarding-card {
+  opacity: 0;
+}
+
+/* Card positions - positioned in the darkened area */
+/* Use left/top with calc to enable smooth transitions */
+.onboarding-card.editor {
+  /* Card in the darkened preview area (right 45%) */
+  top: 50%;
+  left: calc(100% - 22.5%);
+  transform: translate(-50%, -50%);
+}
+
+.onboarding-card.preview {
+  /* Card in the darkened editor area (left 56%) */
+  top: 50%;
+  left: 28%;
+  transform: translate(-50%, -50%);
+}
+
+.onboarding-card.sidebar {
+  /* Card in the darkened area (right of sidebar) */
+  top: 50%;
+  left: calc(240px + (100% - 240px) / 2);
+  transform: translate(-50%, -50%);
+  width: 480px;
+}
+
+.onboarding-card.settings {
+  /* Card in the darkened preview area (right 45%) - same as editor */
+  top: 50%;
+  left: calc(100% - 22.5%);
+  transform: translate(-50%, -50%);
+  width: 340px;
+}
+
+.onboarding-card.settings .onboarding-pointer {
+  display: none;
+}
+
+/* Pointer chevron */
+.onboarding-pointer {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-text-tertiary);
+  opacity: 0.6;
+  animation: pointerBounce 1.5s ease-in-out infinite;
+}
+
+/* Editor step - point left toward editor */
+.onboarding-card.editor .onboarding-pointer {
+  left: -56px;
+}
+
+/* Preview step - point right toward preview */
+.onboarding-card.preview .onboarding-pointer {
+  right: -56px;
+}
+
+/* Sidebar step - point left toward sidebar */
+.onboarding-card.sidebar .onboarding-pointer {
+  left: -56px;
+}
+
+/* Settings step - pointer at top pointing up */
+.onboarding-card.settings .onboarding-pointer {
+  top: -40px;
+  left: 24px;
+  transform: none;
+  animation: pointerBounceUp 1.5s ease-in-out infinite;
+}
+
+.onboarding-pointer-icon {
+  opacity: 0.8;
+}
+
+@keyframes pointerBounceUp {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes pointerBounce {
+  0%, 100% {
+    transform: translateY(-50%) translateX(0);
+  }
+  50% {
+    transform: translateY(-50%) translateX(-6px);
+  }
+}
+
+.onboarding-card.preview .onboarding-pointer {
+  animation: pointerBounceRight 1.5s ease-in-out infinite;
+}
+
+@keyframes pointerBounceRight {
+  0%, 100% {
+    transform: translateY(-50%) translateX(0);
+  }
+  50% {
+    transform: translateY(-50%) translateX(6px);
+  }
+}
+
+/* Progress dots */
+.onboarding-progress {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.progress-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-border);
+  transition: all 0.3s ease;
+}
+
+.progress-dot.active {
+  background: var(--color-accent);
+  transform: scale(1.2);
+}
+
+.progress-dot.complete {
+  background: var(--color-accent);
+  opacity: 0.5;
+}
+
+/* Typography */
+.onboarding-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 0 0 12px 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+  letter-spacing: -0.02em;
+}
+
+.onboarding-description {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  margin: 0 0 24px 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+}
+
+.onboarding-inline-icon {
+  display: inline-block;
+  vertical-align: middle;
+  margin: 0 2px;
+  opacity: 0.8;
+}
+
+/* Footer with open source link */
+.onboarding-footer {
+  margin-bottom: 20px;
+}
+
+.onboarding-divider {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 0 0 12px 0;
+}
+
+.onboarding-opensource-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--color-text-tertiary);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.onboarding-opensource-link:hover {
+  color: var(--color-text-secondary);
+}
+
+.onboarding-tip {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+  margin: 0;
+}
+
+/* Settings list for settings step */
+.onboarding-settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.onboarding-setting-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 14px;
+  background: rgba(232, 227, 211, 0.04);
+  border-radius: 8px;
+  border: 1px solid rgba(232, 227, 211, 0.06);
+}
+
+.onboarding-setting-item .setting-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+}
+
+.onboarding-setting-item .setting-desc {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  line-height: 1.4;
+}
+
+/* Actions */
+.onboarding-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.onboarding-actions-right {
+  display: flex;
+  gap: 10px;
+}
+
+.onboarding-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 18px;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.onboarding-btn.primary {
+  background: var(--color-accent);
+  color: var(--color-base);
+}
+
+.onboarding-btn.primary:hover {
+  filter: brightness(1.1);
+  transform: translateX(2px);
+}
+
+.onboarding-btn.primary.pulse {
+  animation: buttonPulse 0.8s ease-out;
+}
+
+@keyframes buttonPulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--color-accent);
+  }
+  40% {
+    box-shadow: 0 0 0 8px rgba(232, 227, 211, 0.15);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.onboarding-btn.secondary {
+  background: rgba(232, 227, 211, 0.08);
+  color: var(--color-text-secondary);
+}
+
+.onboarding-btn.secondary:hover {
+  background: rgba(232, 227, 211, 0.12);
+  color: var(--color-text-primary);
+}
+
+.onboarding-btn.skip,
+.onboarding-btn.back {
+  background: transparent;
+  color: var(--color-text-tertiary);
+  padding: 10px 12px;
+}
+
+.onboarding-btn.skip:hover,
+.onboarding-btn.back:hover {
+  color: var(--color-text-secondary);
+}
+
+/* Responsive - Tablet */
+@media (max-width: 900px) {
+  .onboarding-card {
+    width: 320px;
+    padding: 20px;
+  }
+
+  .onboarding-card.editor,
+  .onboarding-card.preview,
+  .onboarding-card.sidebar,
+  .onboarding-card.settings {
+    top: auto;
+    bottom: 24px;
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+  }
+}
+
+/* Responsive - Mobile */
+@media (max-width: 767px) {
+  /* Full screen dark overlay on mobile */
+  .onboarding-darken,
+  .onboarding-darken-sidebar,
+  .onboarding-darken-below-toolbar {
+    left: 0 !important;
+    right: 0 !important;
+    top: 0 !important;
+    bottom: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+  }
+
+  /* Hide mock elements on mobile */
+  .onboarding-mock-settings-btn,
+  .onboarding-mock-dropdown {
+    display: none;
+  }
+
+  /* Hide pointers on mobile */
+  .onboarding-pointer {
+    display: none;
+  }
+
+  /* Center card on mobile */
+  .onboarding-card {
+    width: calc(100% - 32px);
+    max-width: 360px;
+    padding: 24px;
+    top: 50% !important;
+    bottom: auto !important;
+    left: 50% !important;
+    right: auto !important;
+    transform: translate(-50%, -50%) !important;
+  }
+
+  .onboarding-card.sidebar {
+    width: calc(100% - 32px);
+    max-width: 360px;
+  }
+
+  /* Smaller title on mobile */
+  .onboarding-title {
+    font-size: 18px;
+  }
+
+  .onboarding-description {
+    font-size: 13px;
+    margin-bottom: 20px;
+  }
+
+  /* Compact settings list on mobile */
+  .onboarding-settings-list {
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+
+  .onboarding-setting-item {
+    padding: 8px 12px;
+  }
+
+  .onboarding-setting-item .setting-name {
+    font-size: 12px;
+  }
+
+  .onboarding-setting-item .setting-desc {
+    font-size: 11px;
+  }
+
+  /* Compact buttons on mobile */
+  .onboarding-btn {
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+
+  .onboarding-actions {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .onboarding-actions-right {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  /* Smaller progress dots */
+  .onboarding-progress {
+    gap: 6px;
+    margin-bottom: 16px;
+  }
+
+  .progress-dot {
+    width: 6px;
+    height: 6px;
+  }
+
+  /* Footer adjustments */
+  .onboarding-footer {
+    margin-bottom: 16px;
+  }
+
+  .onboarding-opensource-link {
+    font-size: 12px;
+  }
+}
+
+/* Mock settings button for onboarding */
+.onboarding-mock-settings-btn {
+  position: absolute;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 6px;
+  background: rgba(232, 227, 211, 0.06);
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.onboarding-mock-settings-btn svg {
+  color: var(--color-text-secondary);
+}
+
+/* Mock settings dropdown for onboarding */
+.onboarding-mock-dropdown {
+  position: absolute;
+  transform: translateX(-50%);
+  background: var(--color-base-lighter);
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 6px;
+  min-width: 200px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  animation: mockDropdownFadeIn 0.3s ease;
+}
+
+@keyframes mockDropdownFadeIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.mock-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border-radius: 6px;
+}
+
+.mock-setting-label {
+  font-size: 14px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  color: var(--color-text-secondary);
+}
+
+.mock-toggle {
+  display: block;
+}
+
+.mock-toggle-track {
+  display: block;
+  width: 32px;
+  height: 18px;
+  background: rgba(232, 227, 211, 0.1);
+  border-radius: 9px;
+  position: relative;
+}
+
+.mock-toggle.active .mock-toggle-track {
+  background: var(--color-accent);
+}
+
+.mock-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: #E8E3D3;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.mock-toggle.active .mock-toggle-thumb {
+  transform: translateX(14px);
+}
+
+.mock-select {
+  background: rgba(232, 227, 211, 0.08);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  color: var(--color-text-primary);
+}
+
+/* Very small screens - stack buttons */
+@media (max-width: 380px) {
+  .onboarding-actions {
+    flex-direction: column;
+  }
+
+  .onboarding-actions-right {
+    width: 100%;
+    flex-direction: column;
+  }
+
+  .onboarding-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .onboarding-btn.skip,
+  .onboarding-btn.back {
+    order: 1;
+  }
+}

@@ -1,0 +1,1177 @@
+.project-sidebar {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-shrink: 0;
+  background: var(--color-base);
+  border-right: 1px solid var(--color-border);
+  box-sizing: border-box;
+}
+
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  z-index: 10;
+}
+
+.sidebar-resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 2px;
+  height: 100%;
+  background: transparent;
+  transition: all 0.2s ease;
+}
+
+.sidebar-resize-handle:hover::before {
+  background: var(--color-accent);
+  box-shadow: 0 0 8px rgba(181, 133, 106, 0.3);
+}
+
+/* External file drag over */
+.project-sidebar.drag-over {
+  background: rgba(184, 149, 110, 0.03);
+}
+
+.project-sidebar.drag-over .sidebar-files {
+  background: rgba(184, 149, 110, 0.02);
+  border-radius: 8px;
+  outline: 1px dashed rgba(184, 149, 110, 0.3);
+  outline-offset: -4px;
+}
+
+/* Collapsed state */
+.project-sidebar.collapsed {
+  width: 24px;
+}
+
+.project-sidebar.collapsed .sidebar-expanded-content {
+  display: none;
+}
+
+.project-sidebar.collapsed .sidebar-collapsed-zone {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Expanded state - width is set via inline style for resizing */
+.project-sidebar.expanded {
+}
+
+.project-sidebar.expanded .sidebar-expanded-content {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.project-sidebar.expanded .sidebar-collapsed-zone {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Collapsed zone - the hover trigger */
+.sidebar-collapsed-zone {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 9px;
+  transition: all 0.2s ease;
+  z-index: 10;
+  background: var(--color-base-darker);
+  box-sizing: border-box;
+}
+
+.sidebar-collapsed-zone:hover {
+  background: var(--color-base-lighter);
+}
+
+.sidebar-collapsed-zone:hover .expand-icon {
+  color: var(--color-text-primary);
+}
+
+.expand-icon {
+  color: var(--color-text-secondary);
+  transition: color 0.15s ease;
+}
+
+/* Expanded content */
+.sidebar-expanded-content {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  transition: opacity 0.2s ease;
+}
+
+/* Toolbar */
+.sidebar-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 8px 0 4px;
+  background: var(--color-base-darker);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.sidebar-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sidebar-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+}
+
+.sidebar-add-wrapper {
+  position: relative;
+}
+
+.sidebar-add-btn {
+  background: transparent;
+  border: none;
+  padding: 4px;
+  border-radius: 5px;
+  cursor: pointer;
+  color: var(--color-text-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.sidebar-add-btn:hover {
+  background: rgba(232, 227, 211, 0.08);
+  color: var(--color-text-secondary);
+}
+
+/* Add menu dropdown */
+.sidebar-add-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 12px;
+  background: var(--color-base-lighter);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 140px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  backdrop-filter: blur(20px);
+}
+
+.sidebar-add-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  cursor: pointer;
+  transition: all 0.1s ease;
+  text-align: left;
+}
+
+.sidebar-add-menu button:hover {
+  background: rgba(232, 227, 211, 0.06);
+}
+
+.sidebar-add-menu button svg {
+  opacity: 0.6;
+  color: var(--color-text-tertiary);
+}
+
+/* File tree */
+.sidebar-files {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 8px;
+}
+
+.sidebar-files::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sidebar-files::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-files::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 2px;
+}
+
+.sidebar-files::-webkit-scrollbar-thumb:hover {
+  background: var(--color-accent);
+}
+
+/* Empty state */
+.sidebar-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  text-align: center;
+}
+
+.sidebar-empty p {
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+  margin: 0 0 14px 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+}
+
+.sidebar-empty button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  background: rgba(232, 227, 211, 0.06);
+  border: none;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.sidebar-empty button:hover {
+  background: rgba(232, 227, 211, 0.1);
+  color: var(--color-text-primary);
+}
+
+/* File tree item */
+.file-tree-item {
+  user-select: none;
+}
+
+.file-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin: 1px 0;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  transition: all 0.1s ease;
+  border-radius: 6px;
+}
+
+.file-tree-row:hover {
+  background: rgba(232, 227, 211, 0.04);
+  color: var(--color-text-primary);
+}
+
+.file-tree-row.selected {
+  background: rgba(232, 227, 211, 0.08);
+  color: var(--color-text-primary);
+}
+
+.file-tree-row.selected:hover {
+  background: rgba(232, 227, 211, 0.1);
+}
+
+.file-tree-row.dragging {
+  opacity: 0.4;
+}
+
+.file-tree-row.drag-over {
+  background: rgba(184, 149, 110, 0.12);
+  outline: 1px dashed rgba(184, 149, 110, 0.4);
+  outline-offset: -1px;
+}
+
+.file-tree-row.delete-pending {
+  background: rgba(232, 227, 211, 0.06);
+  border-radius: 6px 6px 0 0;
+}
+
+.file-tree-row svg {
+  flex-shrink: 0;
+  opacity: 0.45;
+  color: var(--color-text-tertiary);
+}
+
+.file-tree-row:hover svg {
+  opacity: 0.6;
+}
+
+.file-tree-row.selected svg {
+  opacity: 0.7;
+  color: var(--color-accent);
+}
+
+.folder-chevron {
+  transition: transform 0.15s ease;
+}
+
+.folder-chevron.open {
+  transform: rotate(90deg);
+}
+
+.file-spacer {
+  width: 12px;
+}
+
+.file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+/* Inline rename input */
+.file-name-input {
+  flex: 1;
+  background: rgba(232, 227, 211, 0.08);
+  border: 1px solid rgba(184, 149, 110, 0.5);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  color: var(--color-text-primary);
+  outline: none;
+  min-width: 0;
+}
+
+.file-name-input:focus {
+  border-color: var(--color-accent);
+  background: rgba(232, 227, 211, 0.1);
+}
+
+.file-tree-children {
+  /* Children are indented via paddingLeft on rows */
+}
+
+/* Context menu */
+.file-context-menu {
+  background: var(--color-base-lighter);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 140px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  backdrop-filter: blur(20px);
+}
+
+.file-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  cursor: pointer;
+  transition: all 0.1s ease;
+  text-align: left;
+}
+
+.file-context-menu button:hover {
+  background: rgba(232, 227, 211, 0.06);
+}
+
+.file-context-menu button svg {
+  opacity: 0.6;
+  color: var(--color-text-tertiary);
+}
+
+.file-context-menu button.delete-btn {
+  color: var(--color-accent);
+}
+
+.file-context-menu button.delete-btn:hover {
+  background: rgba(184, 149, 110, 0.12);
+}
+
+.context-menu-divider {
+  height: 1px;
+  background: var(--color-border-subtle);
+  margin: 4px 0;
+}
+
+/* Collapse button */
+.sidebar-collapse-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--color-text-tertiary);
+  transition: all 0.15s ease;
+}
+
+.sidebar-collapse-btn:hover {
+  background: rgba(232, 227, 211, 0.08);
+  color: var(--color-text-secondary);
+}
+
+.collapse-icon {
+  transform: rotate(180deg);
+  transition: transform 0.2s ease;
+}
+
+/* Delete confirmation dropdown */
+.delete-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  margin: 0 0 2px 0;
+  background: rgba(232, 227, 211, 0.06);
+  border-top: 1px solid rgba(232, 227, 211, 0.06);
+  border-radius: 0 0 6px 6px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+}
+
+.delete-confirm span {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.delete-confirm-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.delete-confirm-cancel,
+.delete-confirm-delete {
+  padding: 3px 5px;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+}
+
+.delete-confirm-cancel {
+  color: var(--color-text-tertiary);
+}
+
+.delete-confirm-cancel:hover {
+  background: rgba(232, 227, 211, 0.1);
+  color: var(--color-text-primary);
+}
+
+.delete-confirm-delete {
+  color: #e07070;
+}
+
+.delete-confirm-delete:hover {
+  background: rgba(220, 80, 80, 0.2);
+}
+
+/* Git Sync Section */
+.sidebar-git-section {
+  position: relative;
+  padding: 8px;
+  border-top: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.git-setup-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.git-setup-btn:hover {
+  background: rgba(232, 227, 211, 0.04);
+  color: var(--color-text-secondary);
+}
+
+.git-setup-btn svg {
+  opacity: 0.5;
+}
+
+.git-setup-btn:hover svg:not(.git-setup-chevron) {
+  opacity: 0.7;
+}
+
+.git-setup-chevron {
+  margin-left: auto;
+  opacity: 0.6;
+  transition: transform 0.2s ease, opacity 0.15s ease;
+}
+
+.git-setup-chevron.open {
+  transform: rotate(90deg);
+  opacity: 0.6;
+}
+
+.git-setup-btn:hover .git-setup-chevron {
+  opacity: 0.6;
+}
+
+/* Git Setup Inline Expand */
+.git-setup-inline {
+  display: flex;
+  flex-direction: column;
+}
+
+.git-setup-content {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 0.2s ease-out, opacity 0.15s ease-out;
+}
+
+.git-setup-inline.expanded .git-setup-content {
+  max-height: 200px;
+  opacity: 1;
+  transition: max-height 0.2s ease-out, opacity 0.2s ease-out 0.05s;
+}
+
+/* Git Connected Inline */
+.git-connected-inline {
+  display: flex;
+  flex-direction: column;
+}
+
+.git-settings-content {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 0.2s ease-out, opacity 0.15s ease-out;
+}
+
+.git-connected-inline.expanded .git-settings-content {
+  max-height: 200px;
+  opacity: 1;
+  transition: max-height 0.2s ease-out, opacity 0.2s ease-out 0.05s;
+}
+
+.git-settings-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0 4px 0;
+}
+
+.git-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+
+.git-setting-label {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.git-branch-input {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-text-primary);
+  font-size: 11px;
+  padding: 4px 8px;
+  width: 100px;
+  outline: none;
+  text-align: right;
+}
+
+.git-branch-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.git-branch-input:focus {
+  border-color: var(--color-accent);
+}
+
+.git-branch-input:disabled {
+  opacity: 0.5;
+}
+
+.git-toggle {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  background: rgba(232, 227, 211, 0.1);
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.git-toggle.active {
+  background: var(--color-accent);
+}
+
+.git-toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #E8E3D3;
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+}
+
+.git-toggle.active .git-toggle-knob {
+  transform: translateX(16px);
+}
+
+.git-setting-label-with-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+
+.git-info-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  color: var(--color-text-tertiary);
+  transition: color 0.15s ease;
+  border-radius: 4px;
+}
+
+.git-info-btn:hover {
+  color: var(--color-text-secondary);
+}
+
+.git-info-popover {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  width: 200px;
+  margin-top: 6px;
+  background: var(--color-base-darker);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  white-space: normal;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.git-setting-select {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-text-primary);
+  font-size: 11px;
+  padding: 4px 8px;
+  outline: none;
+  cursor: pointer;
+}
+
+.git-setting-select:focus {
+  border-color: var(--color-accent);
+}
+
+.git-last-sync-info {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  padding: 4px 0;
+}
+
+.git-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+
+.git-sync-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 6px 0;
+  transition: color 0.15s ease;
+}
+
+.git-sync-btn:hover:not(:disabled) {
+  color: var(--color-text-primary);
+}
+
+.git-sync-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.git-disconnect-btn {
+  background: transparent;
+  border: none;
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 6px 0;
+  text-align: left;
+  transition: color 0.15s ease;
+}
+
+.git-disconnect-btn:hover {
+  color: #dc5050;
+}
+
+/* Conflict UI */
+.git-conflict-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.git-conflict-message {
+  font-size: 11px;
+  color: #e8a855;
+}
+
+.git-conflict-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.git-conflict-btn {
+  flex: 1;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.git-conflict-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.git-conflict-btn.keep-local {
+  background: rgba(232, 227, 211, 0.1);
+  color: var(--color-text-secondary);
+}
+
+.git-conflict-btn.keep-local:hover:not(:disabled) {
+  background: rgba(232, 227, 211, 0.15);
+}
+
+.git-conflict-btn.keep-remote {
+  background: rgba(232, 227, 211, 0.1);
+  color: var(--color-text-secondary);
+}
+
+.git-conflict-btn.keep-remote:hover:not(:disabled) {
+  background: rgba(232, 227, 211, 0.15);
+}
+
+/* Config Form */
+.git-config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0 4px 0;
+}
+
+.git-input {
+  width: 100%;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.15s ease;
+}
+
+.git-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.git-input:focus {
+  border-color: var(--color-accent);
+}
+
+.git-token-link {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  text-decoration: none;
+  padding: 0 4px;
+  transition: color 0.15s ease;
+}
+
+.git-token-link:hover {
+  color: var(--color-accent);
+}
+
+.git-connect-btn {
+  padding: 10px 14px;
+  background: var(--color-accent);
+  border: none;
+  border-radius: 8px;
+  color: var(--color-base);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-top: 4px;
+}
+
+.git-connect-btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.git-connect-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Create Repo Prompt */
+.git-create-repo {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 0 4px 0;
+}
+
+.git-create-repo-message {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.git-create-repo-actions {
+  display: flex;
+  justify-content: space-between;
+}
+
+.git-create-repo-btn {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.git-create-repo-btn.primary {
+  background: var(--color-accent);
+  color: var(--color-base);
+}
+
+.git-create-repo-btn.primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.git-create-repo-btn.secondary {
+  background: rgba(232, 227, 211, 0.08);
+  color: var(--color-text-secondary);
+}
+
+.git-create-repo-btn.secondary:hover:not(:disabled) {
+  background: rgba(232, 227, 211, 0.12);
+}
+
+.git-create-repo-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Connected State */
+.git-connected {
+  position: relative;
+}
+
+.git-status-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.git-status-btn:hover {
+  background: rgba(232, 227, 211, 0.04);
+}
+
+.git-status-btn.syncing {
+  opacity: 0.7;
+}
+
+.git-status-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-secondary);
+}
+
+.git-status-info svg {
+  opacity: 0.6;
+}
+
+.git-status-btn .git-setup-chevron {
+  color: var(--color-text-secondary);
+  stroke: var(--color-text-secondary);
+}
+
+.git-status-btn > svg,
+.git-status-btn > .git-setup-chevron,
+.git-status-btn > .git-sync-spinner,
+.git-status-btn > .git-behind-badge,
+.git-status-btn > .git-sync-indicator {
+  margin-left: 4px;
+}
+
+.git-status-text {
+  font-size: 12px;
+  font-family: 'SF Mono', Monaco, monospace;
+}
+
+.git-sync-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-tertiary);
+}
+
+.git-sync-indicator.connected {
+  background: #4ade80;
+}
+
+.git-sync-spinner {
+  color: var(--color-text-tertiary);
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.git-error-icon {
+  color: #f87171;
+}
+
+.git-behind-badge {
+  color: var(--color-accent);
+  font-size: 12px;
+  font-weight: 600;
+  animation: pulseDown 2s ease-in-out infinite;
+}
+
+@keyframes pulseDown {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Settings Dropdown */
+.git-settings-dropdown {
+  padding: 4px;
+}
+
+.git-error-banner {
+  padding: 8px 12px;
+  margin: 4px;
+  background: rgba(248, 113, 113, 0.1);
+  border-radius: 6px;
+  font-size: 11px;
+  color: #f87171;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+}
+
+.git-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
+}
+
+.git-action-btn:hover:not(:disabled) {
+  background: rgba(232, 227, 211, 0.06);
+  color: var(--color-text-primary);
+}
+
+.git-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.git-action-btn svg {
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.git-action-btn.danger {
+  color: var(--color-text-tertiary);
+}
+
+.git-action-btn.danger:hover {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.1);
+}
+
+.git-last-sync {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  font-family: 'SF Mono', Monaco, monospace;
+}
+
+.git-dropdown-divider {
+  height: 1px;
+  background: var(--color-border);
+  margin: 4px 8px;
+}
+
+/* Done State */
+.git-setup-done {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: #4ade80;
+}
+
+.git-check-icon {
+  animation: checkPop 0.3s ease;
+}
+
+@keyframes checkPop {
+  0% {
+    transform: scale(0);
+  }
+  50% {
+    transform: scale(1.2);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.git-setup-done span {
+  font-size: 13px;
+  font-weight: 500;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+}
+
+/* Mobile: sidebar as slide-in overlay */
+@media (max-width: 768px) {
+  .project-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 280px;
+    z-index: 1000;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
+  }
+
+  .project-sidebar.expanded {
+    transform: translateX(0);
+  }
+
+  .project-sidebar-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 999;
+  }
+
+  .project-sidebar.expanded + .project-sidebar-overlay,
+  .project-sidebar-overlay.visible {
+    display: block;
+  }
+}
