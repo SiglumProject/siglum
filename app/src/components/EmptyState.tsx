@@ -80,7 +80,7 @@ $E = mc^2$
           </button>
           <span className="separator">·</span>
           <button
-            className="link-button"
+            className="link-button search-button"
             onClick={onOpenCommandPalette}
           >
             Search <kbd>⌘K</kbd>
@@ -94,6 +94,7 @@ $E = mc^2$
           className="github-link-bottom"
         >
           <Github size={16} />
+          <span>GitHub</span>
         </a>
       </div>
 

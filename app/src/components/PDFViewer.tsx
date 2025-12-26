@@ -23,7 +23,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 
 interface PDFViewerProps {
   pdfUrl?: string
-  pdfData?: ArrayBuffer
+  pdfData?: Uint8Array
   onCompile?: () => void
   isCompiling?: boolean
 }
@@ -74,6 +74,7 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ pdfUrl, pdfData, onCompile, isCom
   const textLayerRef = useRef<HTMLDivElement>(null)
   const highlightLayerRef = useRef<HTMLDivElement>(null)
   const zoomButtonRef = useRef<HTMLButtonElement>(null)
+  const pdfDataCopyRef = useRef<Uint8Array | null>(null) // Keep a copy for download (pdf.js may detach the buffer)
 
   // Load PDF document
   useEffect(() => {
@@ -95,7 +96,13 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ pdfUrl, pdfData, onCompile, isCom
         let loadingTask: pdfjsLib.PDFDocumentLoadingTask
 
         if (pdfData) {
-          loadingTask = pdfjsLib.getDocument({ data: pdfData })
+          // Keep a copy for download (pdf.js may detach the buffer)
+          // pdfData is already a Uint8Array, but we need our own copy
+          const copy = new Uint8Array(pdfData.length)
+          copy.set(pdfData)
+          pdfDataCopyRef.current = copy
+          // Pass a copy to pdf.js as well since it may detach the buffer
+          loadingTask = pdfjsLib.getDocument({ data: copy.slice() })
         } else if (pdfUrl) {
           loadingTask = pdfjsLib.getDocument(pdfUrl)
         } else {
@@ -595,15 +602,15 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ pdfUrl, pdfData, onCompile, isCom
           <button
             className="control-button"
             onClick={() => {
-              if (pdfData) {
-                const blob = new Blob([pdfData], { type: 'application/pdf' })
+              if (pdfDataCopyRef.current && pdfDataCopyRef.current.length > 0) {
+                const blob = new Blob([pdfDataCopyRef.current], { type: 'application/pdf' })
                 const url = URL.createObjectURL(blob)
                 const a = document.createElement('a')
                 a.href = url
                 a.download = 'document.pdf'
                 a.click()
                 URL.revokeObjectURL(url)
-              } else {
+              } else if (pdfUrl) {
                 window.open(pdfUrl, '_blank')
               }
             }}

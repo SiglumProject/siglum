@@ -34,7 +34,7 @@ const App: React.FC = () => {
   const [showCommandPalette, setShowCommandPalette] = useState(false)
 
   // Compiler state
-  const [pdfData, setPdfData] = useState<ArrayBuffer | null>(null)
+  const [pdfData, setPdfData] = useState<Uint8Array | null>(null)
   const [compileStatus, setCompileStatus] = useState<CompileStatus>('idle')
   const [compileTimeMs, setCompileTimeMs] = useState<number | null>(null)
   const compileTimeoutRef = useRef<number | null>(null)
@@ -194,22 +194,20 @@ const App: React.FC = () => {
   const compile = useCallback(async () => {
     // Use CompilerService.getStatus() directly to avoid stale closure issues
     const currentStatus = CompilerService.getStatus()
-    console.log('[Compile] Called, latexCode length:', latexCode?.length, 'status:', currentStatus)
     if (!latexCode || currentStatus === 'compiling' || currentStatus === 'initializing') {
-      console.log('[Compile] Skipped - no content or already compiling')
       return
     }
 
     try {
-      console.log('[Compile] Starting compilation...')
       const result = await CompilerService.compile(latexCode, {
         engine: compilerSettings.compiler,
       })
-      console.log('[Compile] Result:', result.success, result.error, result.pdf?.length)
       if (result.success && result.pdf) {
-        // Copy the buffer to avoid "detached ArrayBuffer" issues from worker transfers
-        const pdfCopy = result.pdf.slice().buffer
-        setPdfData(pdfCopy as ArrayBuffer)
+        // Copy the bytes explicitly to avoid "detached ArrayBuffer" issues from worker transfers
+        // Use Uint8Array (not ArrayBuffer) to avoid Safari detachment issues
+        const pdfCopy = new Uint8Array(result.pdf.length)
+        pdfCopy.set(result.pdf)
+        setPdfData(pdfCopy)
         setCompileTimeMs(result.timeMs ?? null)
 
         // Generate format (cache preamble) after successful compile if enabled
@@ -220,11 +218,9 @@ const App: React.FC = () => {
             // Format generation errors are logged but don't affect the user
           })
         }
-      } else if (!result.success) {
-        console.error('[Compile] Failed:', result.error, result.log)
       }
-    } catch (e) {
-      console.error('[Compile] Exception:', e)
+    } catch {
+      // Compilation errors are shown in the UI
     }
   }, [latexCode, compilerSettings.compiler, compilerSettings.cachePreamble])
 
@@ -261,7 +257,6 @@ const App: React.FC = () => {
 
       // Trigger compile when initialization completes and we have content
       if (prevStatus === 'initializing' && status === 'idle' && latexCodeRef.current && autoCompileRef.current) {
-        console.log('[Compile] Triggering after init complete')
         // Defer to allow React state to update
         setTimeout(() => compileRef.current(), 0)
       }
