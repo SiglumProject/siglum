@@ -51,6 +51,8 @@ declare module 'busytex-lazy' {
     clearCache(): Promise<void>;
     getStats(): CompilerStats;
     terminate(): void;
+    unload(): void;
+    isLoaded(): boolean;
     enableCtan: boolean;
     enableLazyFS: boolean;
     enableDocCache: boolean;

@@ -10,6 +10,7 @@ import {
   ArrowLeft,
   LayoutTemplate
 } from 'lucide-react'
+import { useIsMobile } from '../hooks/useIsMobile'
 import './DocumentationModal.css'
 
 interface DocumentationModalProps {
@@ -331,6 +332,7 @@ const tabs: Tab[] = [
 const DocumentationModal: React.FC<DocumentationModalProps> = ({ isOpen, isClosing = false, onClose, onBack, onCreateFromTemplate, defaultTab = 'guide' }) => {
   const [activeTab, setActiveTab] = useState<TabId>(defaultTab)
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null)
+  const isMobile = useIsMobile()
 
   // Update active tab when defaultTab changes (e.g., opening from different links)
   React.useEffect(() => {
@@ -384,82 +386,140 @@ const DocumentationModal: React.FC<DocumentationModalProps> = ({ isOpen, isClosi
       case 'guide':
         return (
           <div className="doc-content">
-            <h2>Shortcuts</h2>
-            <p className="doc-lead">The keyboard shortcuts worth memorizing.</p>
+            {isMobile ? (
+              <>
+                <h2>Getting Around</h2>
+                <p className="doc-lead">How to navigate on your phone or tablet.</p>
 
-            <div className="shortcuts-group">
-              <h3>Navigation</h3>
-              <div className="shortcut-list">
-                <div className="shortcut-item">
-                  <div className="shortcut-keys">
-                    <kbd>⌘</kbd><kbd>K</kbd>
+                <div className="shortcuts-group">
+                  <h3>Navigation</h3>
+                  <div className="gesture-list">
+                    <div className="gesture-item">
+                      <div className="gesture-icon">👆</div>
+                      <div className="gesture-text">
+                        <strong>Swipe left</strong>
+                        <span>View compiled PDF</span>
+                      </div>
+                    </div>
+                    <div className="gesture-item">
+                      <div className="gesture-icon">👆</div>
+                      <div className="gesture-text">
+                        <strong>Swipe right</strong>
+                        <span>Back to editor</span>
+                      </div>
+                    </div>
+                    <div className="gesture-item">
+                      <div className="gesture-icon">☰</div>
+                      <div className="gesture-text">
+                        <strong>Tap hamburger menu</strong>
+                        <span>Open sidebar for files & settings</span>
+                      </div>
+                    </div>
                   </div>
-                  <span>Open command palette (this is the big one)</span>
                 </div>
-                <div className="shortcut-item">
-                  <div className="shortcut-keys">
-                    <kbd>⌘</kbd><kbd>S</kbd>
-                  </div>
-                  <span>Compile document</span>
-                </div>
-                <div className="shortcut-item">
-                  <div className="shortcut-keys">
-                    <kbd>⌘</kbd><kbd>N</kbd>
-                  </div>
-                  <span>New document</span>
-                </div>
-              </div>
-            </div>
 
-            <div className="shortcuts-group">
-              <h3>Layout</h3>
-              <div className="shortcut-list">
-                <div className="shortcut-item">
-                  <div className="shortcut-keys">
-                    <kbd>⌘</kbd><kbd>1</kbd>
+                <div className="shortcuts-group">
+                  <h3>Quick Actions</h3>
+                  <div className="gesture-list">
+                    <div className="gesture-item">
+                      <div className="gesture-icon">▶</div>
+                      <div className="gesture-text">
+                        <strong>Tap compile button</strong>
+                        <span>Build your PDF</span>
+                      </div>
+                    </div>
+                    <div className="gesture-item">
+                      <div className="gesture-icon">🔍</div>
+                      <div className="gesture-text">
+                        <strong>Tap search icon</strong>
+                        <span>Open command palette</span>
+                      </div>
+                    </div>
                   </div>
-                  <span>Editor only</span>
                 </div>
-                <div className="shortcut-item">
-                  <div className="shortcut-keys">
-                    <kbd>⌘</kbd><kbd>2</kbd>
-                  </div>
-                  <span>Editor + PDF side by side</span>
-                </div>
-                <div className="shortcut-item">
-                  <div className="shortcut-keys">
-                    <kbd>⌘</kbd><kbd>\</kbd>
-                  </div>
-                  <span>Toggle PDF preview</span>
-                </div>
-              </div>
-            </div>
 
-            <div className="shortcuts-group">
-              <h3>Formatting</h3>
-              <div className="shortcut-list">
-                <div className="shortcut-item">
-                  <div className="shortcut-keys">
-                    <kbd>⌘</kbd><kbd>B</kbd>
-                  </div>
-                  <span>Wrap in \textbf{"{"}...{"}"}</span>
-                </div>
-                <div className="shortcut-item">
-                  <div className="shortcut-keys">
-                    <kbd>⌘</kbd><kbd>I</kbd>
-                  </div>
-                  <span>Wrap in \textit{"{"}...{"}"}</span>
-                </div>
-                <div className="shortcut-item">
-                  <div className="shortcut-keys">
-                    <kbd>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd>
-                  </div>
-                  <span>Wrap in $...$</span>
-                </div>
-              </div>
-            </div>
+                <p className="doc-note">Tip: The editor starts in focus. Swipe left anytime to see your PDF.</p>
+              </>
+            ) : (
+              <>
+                <h2>Shortcuts</h2>
+                <p className="doc-lead">The keyboard shortcuts worth memorizing.</p>
 
-            <p className="doc-note">On Windows/Linux, use Ctrl instead of ⌘</p>
+                <div className="shortcuts-group">
+                  <h3>Navigation</h3>
+                  <div className="shortcut-list">
+                    <div className="shortcut-item">
+                      <div className="shortcut-keys">
+                        <kbd>⌘</kbd><kbd>K</kbd>
+                      </div>
+                      <span>Open command palette (this is the big one)</span>
+                    </div>
+                    <div className="shortcut-item">
+                      <div className="shortcut-keys">
+                        <kbd>⌘</kbd><kbd>S</kbd>
+                      </div>
+                      <span>Compile document</span>
+                    </div>
+                    <div className="shortcut-item">
+                      <div className="shortcut-keys">
+                        <kbd>⌘</kbd><kbd>N</kbd>
+                      </div>
+                      <span>New document</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="shortcuts-group">
+                  <h3>Layout</h3>
+                  <div className="shortcut-list">
+                    <div className="shortcut-item">
+                      <div className="shortcut-keys">
+                        <kbd>⌘</kbd><kbd>1</kbd>
+                      </div>
+                      <span>Editor only</span>
+                    </div>
+                    <div className="shortcut-item">
+                      <div className="shortcut-keys">
+                        <kbd>⌘</kbd><kbd>2</kbd>
+                      </div>
+                      <span>Editor + PDF side by side</span>
+                    </div>
+                    <div className="shortcut-item">
+                      <div className="shortcut-keys">
+                        <kbd>⌘</kbd><kbd>\\</kbd>
+                      </div>
+                      <span>Toggle PDF preview</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="shortcuts-group">
+                  <h3>Formatting</h3>
+                  <div className="shortcut-list">
+                    <div className="shortcut-item">
+                      <div className="shortcut-keys">
+                        <kbd>⌘</kbd><kbd>B</kbd>
+                      </div>
+                      <span>Wrap in \textbf{"{"}...{"}"}</span>
+                    </div>
+                    <div className="shortcut-item">
+                      <div className="shortcut-keys">
+                        <kbd>⌘</kbd><kbd>I</kbd>
+                      </div>
+                      <span>Wrap in \textit{"{"}...{"}"}</span>
+                    </div>
+                    <div className="shortcut-item">
+                      <div className="shortcut-keys">
+                        <kbd>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd>
+                      </div>
+                      <span>Wrap in $...$</span>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="doc-note">On Windows/Linux, use Ctrl instead of ⌘</p>
+              </>
+            )}
           </div>
         )
 

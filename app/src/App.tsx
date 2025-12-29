@@ -45,6 +45,7 @@ const App: React.FC = () => {
     compiler: 'auto' as 'auto' | 'pdflatex' | 'xelatex',
     ctanFetch: true,
     cachePreamble: true,
+    autoUnload: true,
   })
   
   const [isClosingCommandPalette, setIsClosingCommandPalette] = useState(false)
@@ -224,14 +225,18 @@ const App: React.FC = () => {
     }
   }, [latexCode, compilerSettings.compiler, compilerSettings.cachePreamble])
 
-  // Wrapper for compiler settings that clears format cache when cachePreamble is toggled off
+  // Wrapper for compiler settings that handles side effects
   const handleCompilerSettingsChange = useCallback((newSettings: typeof compilerSettings) => {
     // If cachePreamble was just turned off, clear the format cache
     if (compilerSettings.cachePreamble && !newSettings.cachePreamble) {
       CompilerService.clearCache()
     }
+    // Update auto-unload setting
+    if (compilerSettings.autoUnload !== newSettings.autoUnload) {
+      CompilerService.setAutoUnload(newSettings.autoUnload)
+    }
     setCompilerSettings(newSettings)
-  }, [compilerSettings.cachePreamble])
+  }, [compilerSettings.cachePreamble, compilerSettings.autoUnload])
 
   // Keep refs to avoid stale closures in callbacks
   const compileRef = useRef(compile)
