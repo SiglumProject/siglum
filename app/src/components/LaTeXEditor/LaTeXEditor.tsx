@@ -31,6 +31,7 @@ export interface CompilerSettings {
   compiler: CompilerType
   ctanFetch: boolean
   cachePreamble: boolean
+  autoUnload: boolean
 }
 
 export type CompileStatusType = 'idle' | 'initializing' | 'compiling' | 'success' | 'error'
@@ -214,6 +215,7 @@ const LaTeXEditor: React.FC<LaTeXEditorProps> = ({
     compiler: 'auto',
     ctanFetch: true,
     cachePreamble: true,
+    autoUnload: true,
   })
   const compilerSettings = externalSettings ?? localSettings
   const setCompilerSettings = onCompilerSettingsChange ?? setLocalSettings
@@ -665,6 +667,17 @@ const LaTeXEditor: React.FC<LaTeXEditorProps> = ({
                   <button
                     className={`setting-toggle ${compilerSettings.cachePreamble ? 'active' : ''}`}
                     onClick={() => setCompilerSettings({ ...compilerSettings, cachePreamble: !compilerSettings.cachePreamble })}
+                  >
+                    <span className="toggle-track">
+                      <span className="toggle-thumb" />
+                    </span>
+                  </button>
+                </div>
+                <div className="compiler-setting-row">
+                  <span className="setting-label" title="Unload compiler after 5 min idle to save ~500MB RAM">Low memory mode</span>
+                  <button
+                    className={`setting-toggle ${compilerSettings.autoUnload ? 'active' : ''}`}
+                    onClick={() => setCompilerSettings({ ...compilerSettings, autoUnload: !compilerSettings.autoUnload })}
                   >
                     <span className="toggle-track">
                       <span className="toggle-thumb" />

@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { Github } from 'lucide-react'
 import DocumentationModal from './DocumentationModal'
+import { useIsMobile } from '../hooks/useIsMobile'
 import './EmptyState.css'
 
 interface EmptyStateProps {
@@ -10,6 +11,7 @@ interface EmptyStateProps {
 const EmptyState: React.FC<EmptyStateProps> = ({ onOpenCommandPalette }) => {
   const [showDocumentation, setShowDocumentation] = useState(false)
   const [defaultTab, setDefaultTab] = useState<'guide' | 'templates'>('guide')
+  const isMobile = useIsMobile()
 
   const handleCreateWithTemplate = async () => {
     // Create document directly with the template using DocumentManager
@@ -76,16 +78,22 @@ $E = mc^2$
             className="link-button"
             onClick={openHelp}
           >
-            Help <kbd>⌘H</kbd>
+            {isMobile ? 'Help' : <>Help <kbd>⌘H</kbd></>}
           </button>
           <span className="separator">·</span>
           <button
             className="link-button search-button"
             onClick={onOpenCommandPalette}
           >
-            Search <kbd>⌘K</kbd>
+            {isMobile ? 'Search' : <>Search <kbd>⌘K</kbd></>}
           </button>
         </div>
+
+        {isMobile && (
+          <p className="mobile-hint">
+            Swipe left to view PDF · Menu ☰ for files
+          </p>
+        )}
 
         <a
           href="https://github.com/SiglumProject"

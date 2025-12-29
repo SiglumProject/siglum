@@ -75,11 +75,27 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ pdfUrl, pdfData, onCompile, isCom
   const highlightLayerRef = useRef<HTMLDivElement>(null)
   const zoomButtonRef = useRef<HTMLButtonElement>(null)
   const pdfDataCopyRef = useRef<Uint8Array | null>(null) // Keep a copy for download (pdf.js may detach the buffer)
+  const pdfRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null) // Track current PDF for cleanup
+
+  // Cleanup PDF on unmount
+  useEffect(() => {
+    return () => {
+      if (pdfRef.current) {
+        pdfRef.current.destroy()
+        pdfRef.current = null
+      }
+    }
+  }, [])
 
   // Load PDF document
   useEffect(() => {
     // No source provided - show empty state
     if (!pdfData && !pdfUrl) {
+      // Destroy previous PDF before clearing
+      if (pdfRef.current) {
+        pdfRef.current.destroy()
+        pdfRef.current = null
+      }
       setPdf(null)
       setIsLoading(false)
       return
@@ -110,6 +126,13 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ pdfUrl, pdfData, onCompile, isCom
         }
 
         const pdfDoc = await loadingTask.promise
+
+        // Destroy previous PDF before setting new one (frees worker)
+        if (pdfRef.current) {
+          pdfRef.current.destroy()
+        }
+
+        pdfRef.current = pdfDoc
         setPdf(pdfDoc)
         setPageCount(pdfDoc.numPages)
         setIsLoading(false)
@@ -630,7 +653,7 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ pdfUrl, pdfData, onCompile, isCom
         ) : !pdf ? (
           <div className="pdf-empty">
             {isCompiling ? (
-              <span>Downloading Compiler...</span>
+              <span>Initializing...</span>
             ) : (
               onCompile && (
                 <button

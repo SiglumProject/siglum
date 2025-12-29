@@ -8,7 +8,12 @@
 import { BusyTeXCompiler, detectEngine } from 'busytex-lazy';
 
 // API endpoint for bundles and WASM
+// In development, use local wrangler dev server (must run with --remote for R2 access)
+// TEMP: Use production API for faster testing (local wrangler --remote adds latency)
 const API_BASE = 'https://siglum-api.vtp-ips.workers.dev';
+// const API_BASE = import.meta.env.DEV
+//   ? 'http://localhost:8787'
+//   : 'https://siglum-api.vtp-ips.workers.dev';
 
 // Workers must be same-origin - serve from /worker.js in public folder
 const WORKER_URL = '/worker.js';
@@ -38,6 +43,11 @@ export interface CompilerStats {
 type StatusCallback = (status: CompileStatus, detail?: string) => void;
 type LogCallback = (message: string) => void;
 
+// Default idle timeout before unloading (5 minutes)
+const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+// Shorter timeout when tab is hidden (30 seconds)
+const HIDDEN_TAB_TIMEOUT_MS = 30 * 1000;
+
 class CompilerService {
   private compiler: BusyTeXCompiler | null = null;
   private initPromise: Promise<void> | null = null;
@@ -46,6 +56,35 @@ class CompilerService {
   private currentStatus: CompileStatus = 'idle';
   private isInitializing = false;
   private compilePromise: Promise<CompileResult> | null = null;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private autoUnloadEnabled = true;
+  private idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
+  private visibilityHandler: (() => void) | null = null;
+  private isTabHidden = false;
+
+  constructor() {
+    this.setupVisibilityListener();
+  }
+
+  private setupVisibilityListener(): void {
+    this.visibilityHandler = () => {
+      if (!this.autoUnloadEnabled) return;
+
+      const wasHidden = this.isTabHidden;
+      this.isTabHidden = document.hidden;
+
+      if (this.isTabHidden && !wasHidden && this.compiler) {
+        // Tab just became hidden - start shorter timer
+        this.log('Tab hidden - starting 30s unload timer');
+        this.resetIdleTimer(HIDDEN_TAB_TIMEOUT_MS);
+      } else if (!this.isTabHidden && wasHidden && this.compiler) {
+        // Tab just became visible - reset to normal timer
+        this.log('Tab visible - resetting to 5min timer');
+        this.resetIdleTimer();
+      }
+    };
+    document.addEventListener('visibilitychange', this.visibilityHandler);
+  }
 
   /**
    * Subscribe to status changes
@@ -68,10 +107,17 @@ class CompilerService {
   private setStatus(status: CompileStatus, detail?: string) {
     this.currentStatus = status;
     this.statusCallbacks.forEach(cb => cb(status, detail));
+
+    // Reset idle timer when compilation finishes
+    if (status === 'idle' || status === 'success' || status === 'error') {
+      this.resetIdleTimer();
+    } else {
+      // Clear timer during active work
+      this.clearIdleTimer();
+    }
   }
 
   private log(message: string) {
-    console.log('[Compiler]', message);
     this.logCallbacks.forEach(cb => cb(message));
   }
 
@@ -89,7 +135,6 @@ class CompilerService {
   private async _initialize(): Promise<void> {
     this.isInitializing = true;
     this.setStatus('initializing', 'Loading compiler...');
-    console.log('[CompilerService] Initializing...');
 
     try {
       this.compiler = new BusyTeXCompiler({
@@ -115,10 +160,8 @@ class CompilerService {
       this.isInitializing = false;
       this.setStatus('idle');
       this.log('Compiler ready');
-      console.log('[CompilerService] Initialized successfully');
     } catch (error) {
       this.isInitializing = false;
-      console.error('[CompilerService] Init failed:', error);
       this.setStatus('error', (error as Error).message);
       throw error;
     }
@@ -236,7 +279,6 @@ class CompilerService {
       this.log('Format generated successfully');
       return true;
     } catch (error) {
-      console.error('[CompilerService] generateFormat failed:', error);
       this.log('Format generation error: ' + (error as Error).message);
       return false;
     }
@@ -254,6 +296,87 @@ class CompilerService {
    */
   isReady(): boolean {
     return this.compiler !== null;
+  }
+
+  /**
+   * Check if compiler is currently loaded in memory
+   */
+  isLoaded(): boolean {
+    return this.compiler?.isLoaded() ?? false;
+  }
+
+  /**
+   * Unload compiler to free memory (~500-800MB)
+   * Disk caches (OPFS/IndexedDB) are preserved for offline use.
+   */
+  unload(): void {
+    this.clearIdleTimer();
+    if (this.compiler) {
+      // Log memory before (Chrome only)
+      const memBefore = (performance as any).memory?.usedJSHeapSize;
+
+      this.compiler.unload();
+      this.compiler = null;
+      this.initPromise = null;
+
+      // Log memory after (note: GC may not have run yet)
+      const memAfter = (performance as any).memory?.usedJSHeapSize;
+      if (memBefore && memAfter) {
+        const savedMB = (memBefore - memAfter) / 1024 / 1024;
+        this.log(`Compiler unloaded (JS heap: ${savedMB.toFixed(1)}MB freed, GC pending for WASM/worker)`);
+      } else {
+        this.log('Compiler unloaded to free memory');
+      }
+    }
+  }
+
+  /**
+   * Enable/disable auto-unload when idle
+   */
+  setAutoUnload(enabled: boolean): void {
+    this.autoUnloadEnabled = enabled;
+    if (!enabled) {
+      this.clearIdleTimer();
+    } else if (this.currentStatus === 'idle' || this.currentStatus === 'success') {
+      this.resetIdleTimer();
+    }
+    this.log(`Auto-unload ${enabled ? 'enabled' : 'disabled'}`);
+  }
+
+  /**
+   * Get auto-unload setting
+   */
+  getAutoUnload(): boolean {
+    return this.autoUnloadEnabled;
+  }
+
+  /**
+   * Set idle timeout before auto-unload (in milliseconds)
+   */
+  setIdleTimeout(ms: number): void {
+    this.idleTimeoutMs = ms;
+  }
+
+  private clearIdleTimer(): void {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+  }
+
+  private resetIdleTimer(customTimeoutMs?: number): void {
+    this.clearIdleTimer();
+    if (this.autoUnloadEnabled && this.compiler) {
+      const timeout = customTimeoutMs ?? this.idleTimeoutMs;
+      const timeoutSec = Math.round(timeout / 1000);
+      this.log(`Idle timer set: ${timeoutSec}s`);
+      this.idleTimer = setTimeout(() => {
+        if (this.currentStatus === 'idle' || this.currentStatus === 'success' || this.currentStatus === 'error') {
+          this.log('Idle timeout reached - unloading compiler');
+          this.unload();
+        }
+      }, timeout);
+    }
   }
 }
 
