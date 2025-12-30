@@ -242,6 +242,11 @@ const LaTeXEditor: React.FC<LaTeXEditorProps> = ({
     return unsubscribe
   }, [])
 
+  // Clear logs when compilation starts
+  useEffect(() => {
+    if (compileStatus === 'compiling') setLogs([])
+  }, [compileStatus])
+
   // Create editor on mount
   useEffect(() => {
     if (!editorContainerRef.current || editorViewRef.current) return
