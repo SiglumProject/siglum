@@ -13,8 +13,8 @@ Bun.serve({
     // CORS headers for all responses
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Zotero-API-Key',
     };
 
     if (req.method === 'OPTIONS') {
@@ -112,6 +112,37 @@ Bun.serve({
       });
     }
 
+    // /api/zotero/* - proxy to Zotero API (CORS workaround)
+    if (path.startsWith('/api/zotero/')) {
+      const zoteroPath = path.slice(12);
+      const zoteroUrl = `https://api.zotero.org/${zoteroPath}${url.search}`;
+
+      // Forward the API key from request headers
+      const apiKey = req.headers.get('Zotero-API-Key');
+      const headers: Record<string, string> = {
+        'Zotero-API-Version': '3',
+      };
+      if (apiKey) {
+        headers['Zotero-API-Key'] = apiKey;
+      }
+
+      console.log(`Proxying Zotero request: ${zoteroPath}`);
+      const response = await fetch(zoteroUrl, { headers });
+      const body = await response.text();
+
+      // Forward relevant headers from Zotero
+      const responseHeaders = { ...corsHeaders, 'Content-Type': 'application/json' };
+      const totalResults = response.headers.get('Total-Results');
+      if (totalResults) {
+        responseHeaders['Total-Results'] = totalResults;
+      }
+
+      return new Response(body, {
+        status: response.status,
+        headers: responseHeaders,
+      });
+    }
+
     // /src/* - serve source files (for local development)
     if (path.startsWith('/src/')) {
       const file = path.slice(5);
@@ -151,7 +182,8 @@ Bun.serve({
 });
 
 console.log('Local dev server: http://localhost:8787');
-console.log('  /bundles/*  -> ./packages/bundles/');
-console.log('  /wasm/*     -> ./busytex/build/wasm/');
-console.log('  /src/*      -> ./src/');
-console.log('  /api/fetch/ -> CTAN proxy');
+console.log('  /bundles/*   -> ./packages/bundles/');
+console.log('  /wasm/*      -> ./busytex/build/wasm/');
+console.log('  /src/*       -> ./src/');
+console.log('  /api/fetch/  -> CTAN proxy');
+console.log('  /api/zotero/ -> Zotero API proxy');

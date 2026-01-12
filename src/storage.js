@@ -180,7 +180,10 @@ export async function checkBundleCacheVersion() {
         const version = parseInt(text) || 0;
 
         if (version < BUNDLE_CACHE_VERSION) {
-            console.log('Bundle cache version mismatch, clearing cache...');
+            // Only log on actual upgrade, not first run (version 0)
+            if (version > 0) {
+                console.log(`Bundle cache version upgrade (${version} → ${BUNDLE_CACHE_VERSION}), clearing cache...`);
+            }
             await clearBundleCache();
             const writable = await versionHandle.createWritable();
             await writable.write(String(BUNDLE_CACHE_VERSION));

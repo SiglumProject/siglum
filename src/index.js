@@ -10,3 +10,25 @@ export {
     saveCachedPdf,
     listAllCachedPackages,
 } from './storage.js';
+
+// New citation system (recommended)
+export {
+    CitationProvider,
+    CitationManager,
+    getCitationManager,
+    ZoteroProvider,
+    getZoteroProvider,
+    initCitations,
+} from './citations/index.js';
+
+// Legacy Zotero exports (deprecated - use citations module instead)
+export {
+    ZoteroService,
+    getZoteroService,
+    getZoteroConfig,
+    saveZoteroConfig,
+    disconnectZotero,
+    getCachedLibrary,
+    searchLibrary,
+    itemToBibtex,
+} from './zotero.js';
