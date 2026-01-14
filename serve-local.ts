@@ -6,16 +6,22 @@ const DIST_DIR = './dist';
 
 Bun.serve({
   port: 8787,
+  hostname: '0.0.0.0', // Listen on all interfaces for network access
   async fetch(req) {
     const url = new URL(req.url);
     const path = url.pathname;
 
     // CORS headers for all responses
+    // Cross-Origin-Resource-Policy: cross-origin is needed for COEP on the main page
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Zotero-API-Key',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
     };
+
+    // Log all requests
+    console.log(`[${req.method}] ${path}`);
 
     if (req.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
@@ -95,6 +101,50 @@ Bun.serve({
         });
       }
       return new Response('Not found: ' + filePath, { status: 404, headers: corsHeaders });
+    }
+
+    // /api/texlive/* - proxy to TexLive archive (raw .tar.xz)
+    // This is preferred over CTAN because TexLive has pre-built .sty files
+    if (path.startsWith('/api/texlive/')) {
+      const pkg = path.slice(13);
+      const texliveUrl = `https://siglum-api.vtp-ips.workers.dev/api/texlive/${pkg}`;
+
+      console.log(`Proxying TexLive request: ${pkg}`);
+      try {
+        const response = await fetch(texliveUrl);
+        if (!response.ok) {
+          return new Response(JSON.stringify({ error: 'Package not found in TexLive' }), {
+            status: response.status,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+        const body = await response.arrayBuffer();
+        return new Response(body, {
+          status: response.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/x-xz' },
+        });
+      } catch (e: any) {
+        console.error(`TexLive proxy error: ${e.message}`);
+        return new Response(JSON.stringify({ error: e.message }), {
+          status: 502,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    // /api/ctan-pkg/* - proxy to CTAN package info API
+    if (path.startsWith('/api/ctan-pkg/')) {
+      const pkg = path.slice(14);
+      const ctanPkgUrl = `https://siglum-api.vtp-ips.workers.dev/api/ctan-pkg/${pkg}`;
+
+      console.log(`Proxying CTAN pkg info request: ${pkg}`);
+      const response = await fetch(ctanPkgUrl);
+      const body = await response.text();
+
+      return new Response(body, {
+        status: response.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
     // /api/fetch/* - proxy to CTAN (or use cached)
@@ -182,8 +232,10 @@ Bun.serve({
 });
 
 console.log('Local dev server: http://localhost:8787');
-console.log('  /bundles/*   -> ./packages/bundles/');
-console.log('  /wasm/*      -> ./busytex/build/wasm/');
-console.log('  /src/*       -> ./src/');
-console.log('  /api/fetch/  -> CTAN proxy');
-console.log('  /api/zotero/ -> Zotero API proxy');
+console.log('  /bundles/*    -> ./packages/bundles/');
+console.log('  /wasm/*       -> ./busytex/build/wasm/');
+console.log('  /src/*        -> ./src/');
+console.log('  /api/texlive/ -> TexLive archive proxy (pre-built packages)');
+console.log('  /api/ctan-pkg/-> CTAN package info proxy');
+console.log('  /api/fetch/   -> CTAN package proxy');
+console.log('  /api/zotero/  -> Zotero API proxy');

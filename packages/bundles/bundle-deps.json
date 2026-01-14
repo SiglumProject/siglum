@@ -23,6 +23,7 @@
         "l3",
         "fonts-cm",
         "fonts-misc",
+        "fonts-lm-tfm",
         "fonts-lm-type1",
         "dvips",
         "extra"

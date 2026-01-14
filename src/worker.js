@@ -680,9 +680,9 @@ function extractMissingFile(logContent, alreadyFetched) {
         /! I can't find file `([^']+)'/g,
         /LaTeX Warning:.*File `([^']+)' not found/g,
         /Package .* Error:.*`([^']+)' not found/g,
-        /! Font [^=]+=([a-z0-9]+) at .* not loadable: Metric \(TFM\) file/g,
-        /!pdfTeX error:.*\(file ([a-z0-9]+)\): Font .* not found/g,
-        /! Font ([a-z]+[0-9]+) at [0-9]+ not found/g,
+        /! Font [^=]+=([a-z0-9-]+) at .* not loadable: Metric \(TFM\) file/g,
+        /!pdfTeX error:.*\(file ([a-z0-9-]+)\): Font .* not found/g,
+        /! Font ([a-z0-9-]+) at [0-9]+ not found/g,
     ];
     const fetchedSet = alreadyFetched || new Set();
 
@@ -698,7 +698,11 @@ function extractMissingFile(logContent, alreadyFetched) {
 }
 
 function getFontPackage(fontName) {
+    // cm-super fonts: ecxx10, tcxx10, etc.
     if (/^(ec|tc)[a-z]{2}\d+$/.test(fontName)) return 'cm-super';
+    // Latin Modern fonts: rm-lmr12, cs-lmb10, ec-lmr10, etc.
+    // Return 'lm' (TexLive package name) so it can be fetched from /api/texlive/lm
+    if (/^(rm|cs|ec|ts|qx|t5|l7x)-?lm/.test(fontName)) return 'lm';
     return null;
 }
 
@@ -1295,6 +1299,13 @@ self.onmessage = async function(e) {
             // Queue compile operations to prevent concurrent execution
             operationQueue = operationQueue.then(() => handleCompile(msg)).catch(e => {
                 workerLog(`Compile queue error: ${e.message}`);
+                // IMPORTANT: Send error response so main thread doesn't hang
+                self.postMessage({
+                    type: 'compile-response',
+                    id: msg.id,
+                    success: false,
+                    error: e.message,
+                });
             });
             break;
 
@@ -1302,6 +1313,13 @@ self.onmessage = async function(e) {
             // Queue format operations to prevent concurrent execution
             operationQueue = operationQueue.then(() => handleFormatGenerate(msg)).catch(e => {
                 workerLog(`Format queue error: ${e.message}`);
+                // IMPORTANT: Send error response so main thread doesn't hang
+                self.postMessage({
+                    type: 'format-generate-response',
+                    id: msg.id,
+                    success: false,
+                    error: e.message,
+                });
             });
             break;
 

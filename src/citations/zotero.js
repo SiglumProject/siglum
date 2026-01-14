@@ -32,6 +32,17 @@ export class ZoteroProvider extends CitationProvider {
         this._itemCount = 0;
         this._db = null;
         this._subscribers = new Set();
+
+        // L1 memory cache - fast lookup before IndexedDB
+        this._itemCache = new Map();          // key -> item (LRU)
+        this._itemCacheByKey = new Map();     // citeKey -> item
+        this._searchCache = new Map();        // query -> {results, timestamp}
+        this._cacheMaxSize = 200;
+        this._searchCacheTTL = 60000;         // 1 minute for search results
+
+        // Request deduplication - coalesce parallel requests
+        this._inFlightSearches = new Map();   // query -> Promise
+        this._inFlightItems = new Map();      // key -> Promise
     }
 
     // ========================================
@@ -211,6 +222,49 @@ export class ZoteroProvider extends CitationProvider {
         this._notify();
     }
 
+    /**
+     * Sync - Clear caches and force fresh data from Zotero API
+     * Does not re-download the full library, just clears stale cache
+     */
+    async sync() {
+        if (!this._connected) return false;
+
+        this._syncing = true;
+        this._notify();
+
+        try {
+            // Clear L1 memory caches
+            this._itemCache.clear();
+            this._itemCacheByKey.clear();
+            this._searchCache.clear();
+
+            // Clear in-flight deduplication (allow new requests)
+            this._inFlightSearches.clear();
+            this._inFlightItems.clear();
+
+            // Verify connection is still valid with a minimal API call
+            const response = await fetch(
+                `${this.proxyUrl}/api/zotero/users/${this.userId}/items?limit=1`,
+                { headers: { 'Zotero-API-Key': this.apiKey } }
+            );
+
+            if (!response.ok) {
+                throw new Error('Zotero sync failed - connection invalid');
+            }
+
+            // Update cached item count from IndexedDB
+            this._itemCount = await this._getCachedItemCount();
+
+            this._syncing = false;
+            this._notify();
+            return true;
+        } catch (e) {
+            this._syncing = false;
+            this._notify();
+            throw e;
+        }
+    }
+
     // ========================================
     // Search - The core of hybrid approach
     // ========================================
@@ -227,18 +281,69 @@ export class ZoteroProvider extends CitationProvider {
             return this._getRecentlyUsed(limit);
         }
 
+        const cacheKey = `${trimmedQuery}:${limit}`;
+
+        // Check L1 search cache first
+        const cached = this._searchCache.get(cacheKey);
+        if (cached && Date.now() - cached.timestamp < this._searchCacheTTL) {
+            return cached.results;
+        }
+
+        // Check for in-flight request (deduplication)
+        if (this._inFlightSearches.has(cacheKey)) {
+            return this._inFlightSearches.get(cacheKey);
+        }
+
+        // Create and track the search promise
+        const searchPromise = this._executeSearch(trimmedQuery, limit, cacheKey);
+        this._inFlightSearches.set(cacheKey, searchPromise);
+
+        try {
+            return await searchPromise;
+        } finally {
+            this._inFlightSearches.delete(cacheKey);
+        }
+    }
+
+    async _executeSearch(query, limit, cacheKey) {
+        let results;
+
         // Online: use Zotero API server-side search
         if (navigator.onLine) {
             try {
-                return await this._apiSearch(trimmedQuery, limit);
+                results = await this._apiSearch(query, limit);
             } catch (e) {
                 console.warn('Zotero API search failed, falling back to cache:', e);
-                return this._searchCached(trimmedQuery, limit);
+                results = await this._searchCached(query, limit);
+            }
+        } else {
+            // Offline: search cached items only
+            results = await this._searchCached(query, limit);
+        }
+
+        // Populate L1 cache
+        this._searchCache.set(cacheKey, { results, timestamp: Date.now() });
+
+        // Also cache individual items for fast lookup
+        for (const item of results) {
+            this._addToItemCache(item);
+        }
+
+        // Lazy prune: only when cache gets large, delete oldest entries
+        if (this._searchCache.size > 100) {
+            // Delete entries older than TTL, but stop after pruning half
+            const now = Date.now();
+            let pruned = 0;
+            const maxPrune = 50;
+            for (const [key, entry] of this._searchCache) {
+                if (now - entry.timestamp > this._searchCacheTTL) {
+                    this._searchCache.delete(key);
+                    if (++pruned >= maxPrune) break;
+                }
             }
         }
 
-        // Offline: search cached items only
-        return this._searchCached(trimmedQuery, limit);
+        return results;
     }
 
     async _apiSearch(query, limit) {
@@ -299,34 +404,58 @@ export class ZoteroProvider extends CitationProvider {
             const db = await this._openDb();
             const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 0);
 
+            // First check L1 memory cache for quick results
+            const memoryCacheResults = [];
+            for (const item of this._itemCache.values()) {
+                const searchText = (item.searchText || this._buildSearchText(item)).toLowerCase();
+                if (terms.every(term => searchText.includes(term))) {
+                    memoryCacheResults.push(item);
+                    if (memoryCacheResults.length >= limit * 2) break;
+                }
+            }
+
+            // If we have enough from memory cache, return early
+            if (memoryCacheResults.length >= limit) {
+                return this._scoreAndSort(memoryCacheResults, terms, limit);
+            }
+
+            // Fall back to IndexedDB scan
             return new Promise((resolve) => {
                 const tx = db.transaction(ZOTERO_ITEMS_STORE, 'readonly');
                 const store = tx.objectStore(ZOTERO_ITEMS_STORE);
-                const results = [];
+                const results = [...memoryCacheResults]; // Start with memory cache results
+                const seenKeys = new Set(memoryCacheResults.map(r => r.key));
 
                 const request = store.openCursor();
                 request.onsuccess = (e) => {
                     const cursor = e.target.result;
                     if (cursor) {
                         const item = cursor.value;
+
+                        // Skip if already in memory cache results
+                        if (seenKeys.has(item.key)) {
+                            cursor.continue();
+                            return;
+                        }
+
                         const searchText = item.searchText || '';
 
                         // Check if all terms match
-                        const matches = terms.every(term => searchText.includes(term));
-                        if (matches) {
+                        if (terms.every(term => searchText.includes(term))) {
                             results.push(item);
                         }
 
-                        if (results.length < limit * 2) { // Collect more for scoring
-                            cursor.continue();
-                        } else {
+                        // Early exit when we have enough
+                        if (results.length >= limit * 2) {
                             resolve(this._scoreAndSort(results, terms, limit));
+                        } else {
+                            cursor.continue();
                         }
                     } else {
                         resolve(this._scoreAndSort(results, terms, limit));
                     }
                 };
-                request.onerror = () => resolve([]);
+                request.onerror = () => resolve(this._scoreAndSort(memoryCacheResults, terms, limit));
             });
         } catch {
             return [];
@@ -375,9 +504,33 @@ export class ZoteroProvider extends CitationProvider {
     // ========================================
 
     async getItem(id) {
-        // First check cache
+        // L1: Check memory cache first
+        if (this._itemCache.has(id)) {
+            return this._itemCache.get(id);
+        }
+
+        // Check for in-flight request (deduplication)
+        if (this._inFlightItems.has(id)) {
+            return this._inFlightItems.get(id);
+        }
+
+        const fetchPromise = this._fetchItem(id);
+        this._inFlightItems.set(id, fetchPromise);
+
+        try {
+            return await fetchPromise;
+        } finally {
+            this._inFlightItems.delete(id);
+        }
+    }
+
+    async _fetchItem(id) {
+        // L2: Check IndexedDB cache
         const cached = await this._getCachedItem(id);
-        if (cached) return cached;
+        if (cached) {
+            this._addToItemCache(cached);
+            return cached;
+        }
 
         // Fetch from API if online
         if (!navigator.onLine || !this._connected) return null;
@@ -391,13 +544,21 @@ export class ZoteroProvider extends CitationProvider {
             if (!response.ok) return null;
 
             const item = await response.json();
-            return this._normalizeItem(item);
+            const normalized = this._normalizeItem(item);
+            this._addToItemCache(normalized);
+            return normalized;
         } catch {
             return null;
         }
     }
 
     async getItemByCiteKey(citeKey) {
+        // L1: Check memory cache by citeKey
+        if (this._itemCacheByKey.has(citeKey)) {
+            return this._itemCacheByKey.get(citeKey);
+        }
+
+        // L2: Check IndexedDB
         try {
             const db = await this._openDb();
             return new Promise((resolve) => {
@@ -406,7 +567,11 @@ export class ZoteroProvider extends CitationProvider {
                 const index = store.index('citeKey');
                 const request = index.get(citeKey);
                 request.onerror = () => resolve(null);
-                request.onsuccess = () => resolve(request.result || null);
+                request.onsuccess = () => {
+                    const item = request.result || null;
+                    if (item) this._addToItemCache(item);
+                    resolve(item);
+                };
             });
         } catch {
             return null;
@@ -425,6 +590,29 @@ export class ZoteroProvider extends CitationProvider {
             });
         } catch {
             return null;
+        }
+    }
+
+    /**
+     * Add item to L1 memory cache with LRU eviction
+     */
+    _addToItemCache(item) {
+        if (!item?.key) return;
+
+        // Evict oldest if at capacity (simple LRU: Map preserves insertion order)
+        if (this._itemCache.size >= this._cacheMaxSize) {
+            const firstKey = this._itemCache.keys().next().value;
+            const evicted = this._itemCache.get(firstKey);
+            this._itemCache.delete(firstKey);
+            if (evicted?.citeKey) {
+                this._itemCacheByKey.delete(evicted.citeKey);
+            }
+        }
+
+        // Add to both caches
+        this._itemCache.set(item.key, item);
+        if (item.citeKey) {
+            this._itemCacheByKey.set(item.citeKey, item);
         }
     }
 
