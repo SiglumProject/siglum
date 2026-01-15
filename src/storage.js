@@ -1,7 +1,22 @@
 // Storage module for OPFS and IndexedDB caching
+import { fileSystem } from '@siglum/filesystem';
 
 // Safari detection - Safari has issues with ArrayBuffer detachment and WebAssembly.Module serialization
 const isSafari = typeof navigator !== 'undefined' && /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+
+// Mount filesystem for WASM cache - uses OPFS when available, IndexedDB fallback
+let wasmCacheMounted = false;
+async function ensureWasmCacheMounted() {
+    if (wasmCacheMounted) return true;
+    try {
+        await fileSystem.mountAuto('/wasm-cache');
+        wasmCacheMounted = true;
+        return true;
+    } catch (e) {
+        console.warn('Failed to mount wasm-cache filesystem:', e);
+        return false;
+    }
+}
 
 const IDB_NAME = 'siglum-ctan-cache';
 const IDB_STORE = 'packages';
@@ -377,67 +392,12 @@ export async function saveCachedPdf(docHash, engine, pdfData) {
     } catch (e) {}
 }
 
-// Format cache
-const FMT_STORE = 'fmt-cache';
-let fmtCacheDb = null;
-const fmtMemoryCache = new Map();
+// Format cache - simplified to use direct OPFS paths
+// Format files are stored at fmt-cache/{fmtKey}.fmt
+// No IndexedDB metadata layer needed - paths are deterministic from the key
 
-export async function openFmtCacheDb() {
-    if (fmtCacheDb) return fmtCacheDb;
-    return new Promise((resolve, reject) => {
-        const request = indexedDB.open('siglum-fmt-cache', 1);
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => {
-            fmtCacheDb = request.result;
-            resolve(fmtCacheDb);
-        };
-        request.onupgradeneeded = (event) => {
-            const db = event.target.result;
-            if (!db.objectStoreNames.contains(FMT_STORE)) {
-                db.createObjectStore(FMT_STORE, { keyPath: 'hash' });
-            }
-        };
-    });
-}
-
-export async function getFmtMeta(preambleHash) {
-    if (fmtMemoryCache.has(preambleHash)) {
-        return fmtMemoryCache.get(preambleHash);
-    }
-    try {
-        const db = await openFmtCacheDb();
-        return new Promise((resolve) => {
-            const tx = db.transaction(FMT_STORE, 'readonly');
-            const store = tx.objectStore(FMT_STORE);
-            const request = store.get(preambleHash);
-            request.onerror = () => resolve(null);
-            request.onsuccess = () => {
-                const result = request.result;
-                if (result) fmtMemoryCache.set(preambleHash, result);
-                resolve(result);
-            };
-        });
-    } catch (e) {
-        return null;
-    }
-}
-
-export async function saveFmtMeta(preambleHash, meta) {
-    fmtMemoryCache.set(preambleHash, meta);
-    try {
-        const db = await openFmtCacheDb();
-        const tx = db.transaction(FMT_STORE, 'readwrite');
-        const store = tx.objectStore(FMT_STORE);
-        store.put({ hash: preambleHash, ...meta, timestamp: Date.now() });
-    } catch (e) {}
-}
-
-export async function loadFmtFromOPFS(fmtPath) {
-    return await readFromOPFS(fmtPath);
-}
-
-export async function saveFmtToOPFS(fmtPath, fmtData) {
-    return await writeToOPFS(fmtPath, fmtData);
+export function getFmtPath(fmtKey) {
+    return `fmt-cache/${fmtKey}.fmt`;
 }
 
 // Clear all CTAN cache
@@ -489,13 +449,9 @@ async function openWasmCacheDb() {
     });
 }
 
-// Get cached compiled WebAssembly.Module from IndexedDB
+// Get cached WASM bytes from IndexedDB and compile to module
+// We cache bytes (not Module) because WebAssembly.Module can't be serialized to IndexedDB in Chrome/Safari
 export async function getCompiledWasmModule() {
-    // Safari has bugs with WebAssembly.Module serialization in IndexedDB - skip cache entirely
-    if (isSafari) {
-        console.log('Safari detected - skipping WASM module cache (serialization bugs)');
-        return null;
-    }
     try {
         const db = await openWasmCacheDb();
         return new Promise((resolve) => {
@@ -503,47 +459,60 @@ export async function getCompiledWasmModule() {
             const store = tx.objectStore(WASM_STORE);
             const request = store.get('busytex');
             request.onerror = () => resolve(null);
-            request.onsuccess = () => {
+            request.onsuccess = async () => {
                 const result = request.result;
-                if (result?.module instanceof WebAssembly.Module) {
-                    console.log('Loaded compiled WASM module from IndexedDB cache');
-                    resolve(result.module);
+                console.log('[WASM-CACHE] Checking IndexedDB cache...', { hasResult: !!result });
+                if (result?.bytes instanceof Uint8Array) {
+                    console.log('[WASM-CACHE] ✅ HIT - Found cached bytes, compiling...');
+                    const startTime = performance.now();
+                    try {
+                        const module = await WebAssembly.compile(result.bytes);
+                        const elapsed = (performance.now() - startTime).toFixed(0);
+                        console.log(`[WASM-CACHE] ✅ Compiled from cache in ${elapsed}ms`);
+                        resolve(module);
+                    } catch (e) {
+                        console.log('[WASM-CACHE] ❌ Compile from cache failed:', e.message);
+                        resolve(null);
+                    }
                 } else {
+                    console.log('[WASM-CACHE] ❌ MISS - No cached bytes');
                     resolve(null);
                 }
             };
         });
     } catch (e) {
-        console.warn('Failed to get cached WASM module:', e);
+        console.warn('Failed to get cached WASM:', e);
         return null;
     }
 }
 
-// Save compiled WebAssembly.Module to IndexedDB
-export async function saveCompiledWasmModule(module) {
-    // Safari has bugs with WebAssembly.Module serialization - don't cache
-    if (isSafari) {
-        return false;
-    }
+// Save WASM bytes to IndexedDB (not Module - Module can't be serialized)
+export async function saveWasmBytes(bytes) {
     try {
         const db = await openWasmCacheDb();
         return new Promise((resolve) => {
             const tx = db.transaction(WASM_STORE, 'readwrite');
             const store = tx.objectStore(WASM_STORE);
-            const request = store.put({ key: 'busytex', module, timestamp: Date.now() });
+            const request = store.put({ key: 'busytex', bytes, timestamp: Date.now() });
             request.onerror = () => {
-                console.warn('Failed to cache compiled WASM module');
+                console.warn('[WASM-CACHE] Failed to save bytes');
                 resolve(false);
             };
             request.onsuccess = () => {
-                console.log('Cached compiled WASM module to IndexedDB');
+                console.log(`[WASM-CACHE] ✅ Saved ${(bytes.length / 1024 / 1024).toFixed(1)}MB to cache`);
                 resolve(true);
             };
         });
     } catch (e) {
-        console.warn('Failed to save compiled WASM module:', e);
+        console.warn('[WASM-CACHE] Failed to save bytes:', e);
         return false;
     }
+}
+
+// Keep old function name for backwards compat but it's now a no-op
+export async function saveCompiledWasmModule(module) {
+    console.log('[WASM-CACHE] saveCompiledWasmModule called but ignored - use saveWasmBytes instead');
+    return false;
 }
 
 // Legacy OPFS functions - keep for backwards compatibility during transition
@@ -557,4 +526,138 @@ export async function saveWasmToOPFS(wasmBytes) {
     return false;
 }
 
-export { CTAN_CACHE_VERSION, BUNDLE_CACHE_VERSION, WASM_CACHE_VERSION };
+// WASM Memory Snapshot Cache - stores initialized WASM heap for instant restore
+// This caches the WASM linear memory after first successful initialization
+// Restoring from snapshot skips the ~3-5s initialization overhead
+// Uses siglum-filesystem for storage (OPFS when available, IndexedDB fallback)
+const MEMORY_SNAPSHOT_VERSION = 1;
+const MEMORY_SNAPSHOT_PATH = '/wasm-cache/memory-snapshot.bin';
+const MEMORY_SNAPSHOT_META_PATH = '/wasm-cache/memory-snapshot-meta.json';
+
+// Prevent concurrent save operations (race condition protection)
+let snapshotSaveInProgress = false;
+
+// Save WASM memory snapshot after successful initialization
+// Accepts either a WebAssembly.Memory object or a Uint8Array directly
+// The snapshot is written to persistent storage for instant restore on next load
+export async function saveWasmMemorySnapshot(memoryOrSnapshot, metadata = {}) {
+    // Prevent concurrent saves - only one save operation at a time
+    if (snapshotSaveInProgress) {
+        console.log('Memory snapshot save already in progress, skipping');
+        return false;
+    }
+    snapshotSaveInProgress = true;
+
+    try {
+        if (!await ensureWasmCacheMounted()) {
+            console.warn('Cannot save memory snapshot - filesystem not available');
+            return false;
+        }
+
+        // Accept either a memory object (with .buffer) or a Uint8Array directly
+        // This avoids unnecessary copies when we already have a Uint8Array
+        const snapshot = memoryOrSnapshot instanceof Uint8Array
+            ? memoryOrSnapshot
+            : new Uint8Array(memoryOrSnapshot.buffer);
+
+        const byteLength = snapshot.byteLength;
+
+        // Write snapshot binary - fileSystem handles any necessary copying internally
+        await fileSystem.writeBinary(MEMORY_SNAPSHOT_PATH, snapshot, { createParents: true, silent: true });
+
+        // Write metadata as JSON (small, no optimization needed)
+        const metaData = {
+            byteLength,
+            metadata,
+            timestamp: Date.now(),
+            version: MEMORY_SNAPSHOT_VERSION,
+        };
+        await fileSystem.writeFile(MEMORY_SNAPSHOT_META_PATH, JSON.stringify(metaData), { silent: true });
+
+        console.log(`Saved WASM memory snapshot (${(byteLength / 1024 / 1024).toFixed(1)}MB)`);
+        return true;
+    } catch (e) {
+        console.warn('Failed to save memory snapshot:', e);
+        return false;
+    } finally {
+        snapshotSaveInProgress = false;
+    }
+}
+
+// Restore WASM memory from cached snapshot
+// Returns null if no valid snapshot exists
+export async function getWasmMemorySnapshot() {
+    try {
+        if (!await ensureWasmCacheMounted()) {
+            return null;
+        }
+
+        // Read metadata first (small file, fast) to validate before loading large snapshot
+        let metaJson;
+        try {
+            metaJson = await fileSystem.readFile(MEMORY_SNAPSHOT_META_PATH);
+        } catch {
+            // Metadata doesn't exist - no snapshot available
+            return null;
+        }
+
+        const meta = JSON.parse(metaJson);
+
+        if (meta.version !== MEMORY_SNAPSHOT_VERSION) {
+            console.log('Memory snapshot version mismatch, clearing...');
+            // Clear asynchronously - don't block the return
+            clearWasmMemorySnapshot().catch(() => {});
+            return null;
+        }
+
+        // Read snapshot binary - this is the large (~500MB) operation
+        let snapshot;
+        try {
+            snapshot = await fileSystem.readBinary(MEMORY_SNAPSHOT_PATH);
+        } catch {
+            // Snapshot file missing (possibly corrupted state) - clear metadata
+            clearWasmMemorySnapshot().catch(() => {});
+            return null;
+        }
+
+        // Validate snapshot size matches metadata
+        if (snapshot.byteLength !== meta.byteLength) {
+            console.warn('Memory snapshot size mismatch, clearing...');
+            clearWasmMemorySnapshot().catch(() => {});
+            return null;
+        }
+
+        console.log(`Loaded WASM memory snapshot (${(meta.byteLength / 1024 / 1024).toFixed(1)}MB)`);
+        return {
+            snapshot,
+            byteLength: meta.byteLength,
+            metadata: meta.metadata || {},
+        };
+    } catch (e) {
+        console.warn('Failed to get memory snapshot:', e);
+        return null;
+    }
+}
+
+// Clear memory snapshot (call when WASM version changes)
+export async function clearWasmMemorySnapshot() {
+    try {
+        if (!await ensureWasmCacheMounted()) {
+            return false;
+        }
+
+        // Delete both files in parallel for efficiency
+        await Promise.all([
+            fileSystem.deleteFile(MEMORY_SNAPSHOT_PATH, { silent: true }).catch(() => {}),
+            fileSystem.deleteFile(MEMORY_SNAPSHOT_META_PATH, { silent: true }).catch(() => {}),
+        ]);
+
+        console.log('Cleared WASM memory snapshot');
+        return true;
+    } catch (e) {
+        console.warn('Failed to clear memory snapshot:', e);
+        return false;
+    }
+}
+
+export { CTAN_CACHE_VERSION, BUNDLE_CACHE_VERSION, WASM_CACHE_VERSION, MEMORY_SNAPSHOT_VERSION };

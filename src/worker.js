@@ -381,9 +381,16 @@ class VirtualFileSystem {
 
     /**
      * Store fetched file data for later resolution
+     * Uses LRU-style eviction when cache exceeds max entries
      */
     storeFetchedFile(bundleName, start, end, data) {
         const key = `${bundleName}:${start}:${end}`;
+        // Evict oldest entries if cache is at limit (200 entries max)
+        const maxEntries = 200;
+        while (this.fetchedFiles.size >= maxEntries) {
+            const oldestKey = this.fetchedFiles.keys().next().value;
+            this.fetchedFiles.delete(oldestKey);
+        }
         this.fetchedFiles.set(key, data);
         this.onLog(`Stored file in cache: ${key} (${data.length} bytes, cache size: ${this.fetchedFiles.size})`);
     }
@@ -556,6 +563,13 @@ let packageMap = null;
 let bundleDeps = null;
 let bundleRegistry = null;
 
+// SharedArrayBuffer support - check once at startup
+const sharedArrayBufferAvailable = typeof SharedArrayBuffer !== 'undefined';
+
+// Memory snapshot caching state
+let cachedMemorySnapshot = null;
+let memorySnapshotSaved = false;
+
 // Global Module instance - reused across compilations to avoid memory leaks
 // Each initBusyTeX call creates a 512MB WASM heap; we want only ONE
 let globalModule = null;
@@ -565,7 +579,78 @@ let globalModulePromise = null;
 const pendingCtanRequests = new Map();
 const pendingBundleRequests = new Map();
 const pendingFileRangeRequests = new Map();
+
+// Global caches with size limits to prevent unbounded memory growth
+const CACHE_MAX_BUNDLE_SIZE_MB = 200;  // Max total size of cached bundles
+const CACHE_MAX_CTAN_FILES = 500;      // Max number of CTAN files to cache
+const CACHE_MAX_FETCHED_FILES = 200;   // Max number of Range-fetched files to cache
+
 const globalFetchedFilesCache = new Map();  // Persist Range-fetched files across compiles
+const globalBundleDataCache = new Map();    // Persist bundle data across compilations
+const globalCtanFilesCache = new Map();     // Persist CTAN files across compilations
+let globalBundleCacheBytes = 0;             // Track total bytes in bundle cache
+
+/**
+ * Add bundle to cache with size limit enforcement.
+ * Uses LRU-style eviction when cache exceeds max size.
+ */
+function cacheBundleData(bundleName, data) {
+    // Skip if data is detached or invalid
+    if (!data || !data.byteLength || data.byteLength === 0) {
+        return;
+    }
+
+    // If already cached with same size, skip
+    if (globalBundleDataCache.has(bundleName)) {
+        const existing = globalBundleDataCache.get(bundleName);
+        if (existing && existing.byteLength === data.byteLength) {
+            return;
+        }
+        // Remove old entry's size
+        globalBundleCacheBytes -= existing?.byteLength || 0;
+    }
+
+    const dataBytes = data.byteLength;
+    const maxBytes = CACHE_MAX_BUNDLE_SIZE_MB * 1024 * 1024;
+
+    // Evict oldest entries if cache would exceed limit
+    while (globalBundleCacheBytes + dataBytes > maxBytes && globalBundleDataCache.size > 0) {
+        const oldestKey = globalBundleDataCache.keys().next().value;
+        const oldestData = globalBundleDataCache.get(oldestKey);
+        globalBundleCacheBytes -= oldestData?.byteLength || 0;
+        globalBundleDataCache.delete(oldestKey);
+        workerLog(`Cache evicted bundle: ${oldestKey}`);
+    }
+
+    // Store a copy to prevent detachment issues if original gets transferred
+    const dataCopy = new Uint8Array(data).slice();
+    globalBundleDataCache.set(bundleName, dataCopy);
+    globalBundleCacheBytes += dataCopy.byteLength;
+}
+
+/**
+ * Add CTAN files to cache with entry limit enforcement.
+ */
+function cacheCtanFile(path, content) {
+    // Evict oldest if at limit
+    while (globalCtanFilesCache.size >= CACHE_MAX_CTAN_FILES) {
+        const oldestKey = globalCtanFilesCache.keys().next().value;
+        globalCtanFilesCache.delete(oldestKey);
+    }
+    globalCtanFilesCache.set(path, content);
+}
+
+/**
+ * Add fetched file to cache with entry limit enforcement.
+ */
+function cacheFetchedFile(key, data) {
+    // Evict oldest if at limit
+    while (globalFetchedFilesCache.size >= CACHE_MAX_FETCHED_FILES) {
+        const oldestKey = globalFetchedFilesCache.keys().next().value;
+        globalFetchedFilesCache.delete(oldestKey);
+    }
+    globalFetchedFilesCache.set(key, data);
+}
 
 // Operation queue to serialize compile and format-generate operations
 // (async onmessage doesn't block new messages from being processed concurrently)
@@ -739,7 +824,7 @@ function restoreAuxFiles(FS, auxFiles) {
 
 // ============ WASM Initialization ============
 
-async function initBusyTeX(wasmModule, jsUrl) {
+async function initBusyTeX(wasmModule, jsUrl, memorySnapshot = null) {
     workerLog('Initializing WASM...');
     const startTime = performance.now();
     importScripts(jsUrl);
@@ -750,6 +835,22 @@ async function initBusyTeX(wasmModule, jsUrl) {
         noExitRuntime: true,
         instantiateWasm: (imports, successCallback) => {
             WebAssembly.instantiate(wasmModule, imports).then(instance => {
+                // Restore memory from snapshot if available
+                if (memorySnapshot) {
+                    try {
+                        const memory = instance.exports.memory;
+                        const targetView = new Uint8Array(memory.buffer);
+                        // Only restore if sizes match (snapshot may be from different WASM version)
+                        if (memorySnapshot.length <= targetView.length) {
+                            targetView.set(memorySnapshot);
+                            workerLog(`Restored memory snapshot (${(memorySnapshot.length / 1024 / 1024).toFixed(1)}MB)`);
+                        } else {
+                            workerLog('Memory snapshot size mismatch, skipping restore');
+                        }
+                    } catch (e) {
+                        workerLog('Failed to restore memory snapshot: ' + e.message);
+                    }
+                }
                 successCallback(instance);
             });
             return {};
@@ -795,7 +896,8 @@ async function initBusyTeX(wasmModule, jsUrl) {
         return { exit_code, stdout: Module.output_stdout, stderr: Module.output_stderr };
     };
 
-    workerLog('WASM ready in ' + (performance.now() - startTime).toFixed(0) + 'ms');
+    const elapsed = (performance.now() - startTime).toFixed(0);
+    workerLog(`WASM ready in ${elapsed}ms` + (memorySnapshot ? ' (from snapshot)' : ''));
     return Module;
 }
 
@@ -809,7 +911,8 @@ async function initBusyTeX(wasmModule, jsUrl) {
  */
 async function getOrCreateModule() {
     // Always create fresh Module - pdfTeX internal state doesn't reset properly
-    return await initBusyTeX(cachedWasmModule, busytexJsUrl);
+    // If we have a cached memory snapshot, use it for faster init
+    return await initBusyTeX(cachedWasmModule, busytexJsUrl, cachedMemorySnapshot);
 }
 
 /**
@@ -868,16 +971,37 @@ async function handleCompile(request) {
     if (!fileManifest) throw new Error('fileManifest not set');
 
     // Track accumulated resources across retries
-    const bundleDataMap = bundleData instanceof Map ? bundleData : new Map(Object.entries(bundleData));
+    // Start with any previously cached bundles (incremental VFS state)
+    const bundleDataMap = new Map(globalBundleDataCache);
     const bundleMetaMap = new Map(); // Store bundle metadata for dynamically loaded bundles
-    const accumulatedCtanFiles = new Map();
+    const accumulatedCtanFiles = new Map(globalCtanFilesCache);
+
+    // Add bundles from current request (may be new or updated)
+    const incomingBundles = bundleData instanceof Map ? bundleData : new Map(Object.entries(bundleData));
+    let newBundlesCount = 0;
+    for (const [name, data] of incomingBundles) {
+        if (!bundleDataMap.has(name)) {
+            newBundlesCount++;
+        }
+        bundleDataMap.set(name, data);
+        cacheBundleData(name, data);  // Persist for future compilations (with size limits)
+    }
+    if (newBundlesCount > 0) {
+        workerLog(`Incremental VFS: ${bundleDataMap.size - newBundlesCount} cached + ${newBundlesCount} new bundles`);
+    } else if (globalBundleDataCache.size > 0) {
+        workerLog(`Incremental VFS: using ${bundleDataMap.size} cached bundles`);
+    }
 
     // Bundles to load on-demand (e.g., font bundles like cm-super)
     const deferredBundles = new Set(effectiveDeferredBundles);
 
+    // Add CTAN files from current request and cache for future
     if (ctanFiles) {
         const ctanFilesMap = ctanFiles instanceof Map ? ctanFiles : new Map(Object.entries(ctanFiles));
-        for (const [path, content] of ctanFilesMap) accumulatedCtanFiles.set(path, content);
+        for (const [path, content] of ctanFilesMap) {
+            accumulatedCtanFiles.set(path, content);
+            cacheCtanFile(path, content);  // Persist for future compilations (with entry limits)
+        }
     }
 
     let pdfData = null;
@@ -1044,6 +1168,7 @@ async function handleCompile(request) {
                             const bundleResult = await requestBundleFetch(bundleName);
                             if (bundleResult.success) {
                                 bundleDataMap.set(bundleName, bundleResult.bundleData);
+                                cacheBundleData(bundleName, bundleResult.bundleData);  // Persist (with size limits)
                                 if (bundleResult.bundleMeta) {
                                     bundleMetaMap.set(bundleName, bundleResult.bundleMeta);
                                 }
@@ -1081,6 +1206,7 @@ async function handleCompile(request) {
                                 if (bundleResult.success) {
                                     fetchedPackages.add(pkgName);
                                     bundleDataMap.set(bundleName, bundleResult.bundleData);
+                                    cacheBundleData(bundleName, bundleResult.bundleData);  // Persist (with size limits)
                                     if (bundleResult.bundleMeta) {
                                         bundleMetaMap.set(bundleName, bundleResult.bundleMeta);
                                     }
@@ -1101,6 +1227,7 @@ async function handleCompile(request) {
                                 const files = ctanData.files instanceof Map ? ctanData.files : new Map(Object.entries(ctanData.files));
                                 for (const [path, content] of files) {
                                     accumulatedCtanFiles.set(path, content);
+                                    cacheCtanFile(path, content);  // Persist (with entry limits)
                                 }
                                 retryCount++;
                                 continue;
@@ -1125,16 +1252,64 @@ async function handleCompile(request) {
     const totalTime = performance.now() - totalStart;
     workerLog(`Total time: ${totalTime.toFixed(0)}ms`);
 
-    const transferables = pdfData ? [pdfData.buffer] : [];
-    self.postMessage({
-        type: 'compile-response',
-        id,
-        success: compileSuccess,
-        pdfData: pdfData ? pdfData.buffer : null,
-        exitCode: lastExitCode,
-        auxFilesToCache: auxFiles,
-        stats: { compileTimeMs: totalTime, bundlesUsed: [...bundleDataMap.keys()] }
-    }, transferables);
+    // After first successful compile, capture and send memory snapshot for caching
+    // This allows future sessions to restore WASM heap state instantly
+    if (compileSuccess && !memorySnapshotSaved && !cachedMemorySnapshot && Module) {
+        try {
+            const memory = Module.HEAPU8;
+            if (memory && memory.buffer.byteLength > 0) {
+                // Create a copy for transfer (original stays in WASM heap)
+                const snapshot = new Uint8Array(memory.length);
+                snapshot.set(memory);
+                workerLog(`Capturing memory snapshot (${(snapshot.length / 1024 / 1024).toFixed(1)}MB) for cache`);
+
+                // Send to main thread for IndexedDB storage
+                self.postMessage({
+                    type: 'memory-snapshot',
+                    snapshot: snapshot.buffer,
+                    byteLength: snapshot.length,
+                }, [snapshot.buffer]);
+
+                memorySnapshotSaved = true;
+            }
+        } catch (e) {
+            workerLog('Failed to capture memory snapshot: ' + e.message);
+        }
+    }
+
+    // Build response message once, share between paths
+    const stats = { compileTimeMs: totalTime, bundlesUsed: [...bundleDataMap.keys()] };
+
+    // Use SharedArrayBuffer for zero-copy PDF transfer when available
+    // SharedArrayBuffer: allows main thread to access PDF data directly without serialization
+    // ArrayBuffer transfer: efficient but transfers ownership (receiver gets the buffer)
+    if (pdfData && sharedArrayBufferAvailable) {
+        const sharedBuffer = new SharedArrayBuffer(pdfData.byteLength);
+        new Uint8Array(sharedBuffer).set(pdfData);
+
+        self.postMessage({
+            type: 'compile-response',
+            id,
+            success: compileSuccess,
+            pdfData: sharedBuffer,
+            pdfDataIsShared: true,
+            exitCode: lastExitCode,
+            auxFilesToCache: auxFiles,
+            stats
+        });
+    } else {
+        // Fallback to transferable ArrayBuffer
+        self.postMessage({
+            type: 'compile-response',
+            id,
+            success: compileSuccess,
+            pdfData: pdfData ? pdfData.buffer : null,
+            pdfDataIsShared: false,
+            exitCode: lastExitCode,
+            auxFilesToCache: auxFiles,
+            stats
+        }, pdfData ? [pdfData.buffer] : []);
+    }
 }
 
 // ============ Format Generation ============
@@ -1292,6 +1467,13 @@ self.onmessage = async function(e) {
             }
 
             cachedWasmModule = msg.wasmModule;
+
+            // Store memory snapshot if provided (for instant restore)
+            if (msg.memorySnapshot) {
+                cachedMemorySnapshot = new Uint8Array(msg.memorySnapshot);
+                workerLog(`Received memory snapshot (${(cachedMemorySnapshot.length / 1024 / 1024).toFixed(1)}MB)`);
+            }
+
             self.postMessage({ type: 'ready' });
             break;
 

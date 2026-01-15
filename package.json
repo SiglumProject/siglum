@@ -9,7 +9,8 @@
     "./compiler": "./src/compiler.js",
     "./bundles": "./src/bundles.js",
     "./ctan": "./src/ctan.js",
-    "./storage": "./src/storage.js"
+    "./storage": "./src/storage.js",
+    "./incremental": "./src/incremental/index.js"
   },
   "files": [
     "src/",
@@ -43,7 +44,9 @@
   },
   "homepage": "https://github.com/SiglumProject/busytex-lazy#readme",
   "dependencies": {
+    "@siglum/filesystem": "file:../siglum-filesystem",
     "jszip": "^3.10.1",
+    "pdf-lib": "^1.17.1",
     "xzwasm": "^0.1.2"
   }
 }
