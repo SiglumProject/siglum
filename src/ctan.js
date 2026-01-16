@@ -344,6 +344,7 @@ export class CTANFetcher {
             const texExtensions = ['.sty', '.cls', '.def', '.cfg', '.tex', '.fd', '.clo', '.ltx'];
             const fontExtensions = ['.pfb', '.pfm', '.afm', '.tfm', '.vf', '.map', '.enc'];
             const files = new Map();
+            const opfsWrites = [];
 
             for (const [tarPath, content] of tarFiles) {
                 // Skip docs and source
@@ -369,12 +370,16 @@ export class CTANFetcher {
                         targetPath = `/texlive/texmf-dist/tex/latex/${packageName}/${fileName}`;
                     }
 
-                    files.set(targetPath, new Uint8Array(content));
+                    const fileData = new Uint8Array(content);
+                    files.set(targetPath, fileData);
                     this.mountedFiles.add(targetPath);
-                    this.fileCache.set(targetPath, new Uint8Array(content));
-                    await writeToOPFS(targetPath, content);
+                    this.fileCache.set(targetPath, fileData);
+                    opfsWrites.push(writeToOPFS(targetPath, content));
                 }
             }
+
+            // Parallel OPFS writes
+            await Promise.all(opfsWrites);
 
             this.onLog(`Processed ${files.size} TeX/font files from ${packageName}`);
 
@@ -455,6 +460,7 @@ export class CTANFetcher {
 
             // Process and cache files
             const files = new Map();
+            const opfsWrites = [];
             for (const [path, info] of Object.entries(data.files)) {
                 let content;
                 if (info.encoding === 'base64') {
@@ -471,8 +477,11 @@ export class CTANFetcher {
                 files.set(path, content);
                 this.mountedFiles.add(path);
                 this.fileCache.set(path, content);
-                await writeToOPFS(path, content);
+                opfsWrites.push(writeToOPFS(path, content));
             }
+
+            // Parallel OPFS writes
+            await Promise.all(opfsWrites);
 
             // Cache metadata
             await savePackageMeta(packageName, {

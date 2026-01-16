@@ -22,6 +22,7 @@ const IDB_NAME = 'siglum-ctan-cache';
 const IDB_STORE = 'packages';
 const CTAN_CACHE_VERSION = 7;
 const BUNDLE_CACHE_VERSION = 4;
+const MANIFEST_CACHE_VERSION = 1;
 
 let idbCache = null;
 let opfsRoot = null;
@@ -258,6 +259,76 @@ export async function saveBundleToOPFS(bundleName, data) {
     } catch (e) {}
 }
 
+// Manifest cache - stores file-manifest.json, registry.json, package-map.json in OPFS
+export async function getManifestFromOPFS(name) {
+    try {
+        const root = await getOPFSRoot();
+        if (!root) return null;
+
+        const manifestDir = await root.getDirectoryHandle('manifests');
+        const fileHandle = await manifestDir.getFileHandle(name + '.json');
+        const file = await fileHandle.getFile();
+        const text = await file.text();
+        return JSON.parse(text);
+    } catch (e) {
+        return null;
+    }
+}
+
+export async function saveManifestToOPFS(name, data) {
+    try {
+        const root = await getOPFSRoot();
+        if (!root) return false;
+
+        const manifestDir = await root.getDirectoryHandle('manifests', { create: true });
+        const fileHandle = await manifestDir.getFileHandle(name + '.json', { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(JSON.stringify(data));
+        await writable.close();
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+export async function getManifestVersion() {
+    try {
+        const root = await getOPFSRoot();
+        if (!root) return 0;
+
+        const manifestDir = await root.getDirectoryHandle('manifests');
+        const fileHandle = await manifestDir.getFileHandle('version');
+        const file = await fileHandle.getFile();
+        return parseInt(await file.text()) || 0;
+    } catch (e) {
+        return 0;
+    }
+}
+
+export async function saveManifestVersion(version) {
+    try {
+        const root = await getOPFSRoot();
+        if (!root) return false;
+
+        const manifestDir = await root.getDirectoryHandle('manifests', { create: true });
+        const fileHandle = await manifestDir.getFileHandle('version', { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(String(version));
+        await writable.close();
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+export async function clearManifestCache() {
+    try {
+        const root = await getOPFSRoot();
+        if (!root) return;
+        await root.removeEntry('manifests', { recursive: true });
+    } catch (e) {}
+}
+
 // Aux file cache
 const AUX_CACHE_VERSION = 1;
 const AUX_STORE = 'aux-cache';
@@ -340,14 +411,8 @@ export async function openDocCacheDb() {
     });
 }
 
-export function hashDocument(source) {
-    let hash = 5381;
-    for (let i = 0; i < source.length; i++) {
-        hash = ((hash << 5) + hash) + source.charCodeAt(i);
-        hash = hash & hash;
-    }
-    return hash.toString(16);
-}
+// Re-export hashDocument from centralized hash module (BLAKE3-WASM)
+export { hashDocument } from './hash.js';
 
 export async function getCachedPdf(docHash, engine) {
     const key = docHash + '_' + engine;
@@ -660,4 +725,4 @@ export async function clearWasmMemorySnapshot() {
     }
 }
 
-export { CTAN_CACHE_VERSION, BUNDLE_CACHE_VERSION, WASM_CACHE_VERSION, MEMORY_SNAPSHOT_VERSION };
+export { CTAN_CACHE_VERSION, BUNDLE_CACHE_VERSION, MANIFEST_CACHE_VERSION, WASM_CACHE_VERSION, MEMORY_SNAPSHOT_VERSION };

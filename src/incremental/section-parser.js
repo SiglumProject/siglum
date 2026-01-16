@@ -2,19 +2,7 @@
 // Extracts section boundaries from LaTeX source
 // Optimized for memory and performance
 
-/**
- * DJB2 hash - fast, good distribution, uses unsigned 32-bit arithmetic
- * @param {string} content
- * @returns {string} hex hash
- */
-function hashContent(content) {
-    let hash = 5381 >>> 0;
-    const len = content.length;
-    for (let i = 0; i < len; i++) {
-        hash = ((hash * 33) ^ content.charCodeAt(i)) >>> 0;
-    }
-    return hash.toString(16);
-}
+import { hashContent } from '../hash.js';
 
 // Precompiled regex patterns - created once at module load
 const SECTION_PATTERNS = Object.freeze([
@@ -242,4 +230,5 @@ export function findIncludedFiles(source) {
     return files;
 }
 
-export { hashContent };
+// Re-export hashContent from centralized hash module for backwards compatibility
+export { hashContent } from '../hash.js';

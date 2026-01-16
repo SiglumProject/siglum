@@ -1,6 +1,14 @@
 // Bundle loading and package resolution module
 
-import { getBundleFromOPFS, saveBundleToOPFS } from './storage.js';
+import {
+    getBundleFromOPFS,
+    saveBundleToOPFS,
+    getManifestFromOPFS,
+    saveManifestToOPFS,
+    getManifestVersion,
+    saveManifestVersion,
+    MANIFEST_CACHE_VERSION,
+} from './storage.js';
 
 // Decompression using native CompressionStream
 async function decompress(compressed, format = 'gzip') {
@@ -31,19 +39,48 @@ export class BundleManager {
     async loadManifest() {
         if (this.fileManifest) return this.fileManifest;
 
-        // Cache-bust config files to ensure fresh data after deployments
-        const cacheBuster = `?v=${Date.now()}`;
+        // Check OPFS cache first
+        const cachedVersion = await getManifestVersion();
+        if (cachedVersion === MANIFEST_CACHE_VERSION) {
+            const [manifest, registry, packageMap] = await Promise.all([
+                getManifestFromOPFS('file-manifest'),
+                getManifestFromOPFS('registry'),
+                getManifestFromOPFS('package-map'),
+            ]);
+
+            if (manifest && registry && packageMap) {
+                this.onLog('Manifests loaded from OPFS cache');
+                this.fileManifest = manifest;
+                this.bundleRegistry = new Set(registry.map(b => typeof b === 'string' ? b : b.name));
+                this.packageMap = packageMap;
+                return this.fileManifest;
+            }
+        }
+
+        // Fetch fresh manifests
         const [manifestRes, registryRes, packageMapRes] = await Promise.all([
-            fetch(`${this.bundleBase}/file-manifest.json${cacheBuster}`),
-            fetch(`${this.bundleBase}/registry.json${cacheBuster}`),
-            fetch(`${this.bundleBase}/package-map.json${cacheBuster}`),
+            fetch(`${this.bundleBase}/file-manifest.json`),
+            fetch(`${this.bundleBase}/registry.json`),
+            fetch(`${this.bundleBase}/package-map.json`),
         ]);
 
         this.fileManifest = await manifestRes.json();
         const registryData = await registryRes.json();
-        // Registry contains objects with {name, files, size} - extract just names
         this.bundleRegistry = new Set(registryData.map(b => typeof b === 'string' ? b : b.name));
         this.packageMap = await packageMapRes.json();
+
+        // Save to OPFS (await to ensure cache is populated)
+        try {
+            await Promise.all([
+                saveManifestToOPFS('file-manifest', this.fileManifest),
+                saveManifestToOPFS('registry', registryData),
+                saveManifestToOPFS('package-map', this.packageMap),
+                saveManifestVersion(MANIFEST_CACHE_VERSION),
+            ]);
+            this.onLog('Manifests saved to OPFS cache');
+        } catch (e) {
+            // OPFS save failed, continue anyway
+        }
 
         return this.fileManifest;
     }
@@ -51,16 +88,39 @@ export class BundleManager {
     async loadBundleDeps() {
         if (this.bundleDeps) return this.bundleDeps;
 
+        // Check OPFS cache first (same version as manifests)
+        const cachedVersion = await getManifestVersion();
+        if (cachedVersion === MANIFEST_CACHE_VERSION) {
+            const [bundleDeps, packageDeps] = await Promise.all([
+                getManifestFromOPFS('bundle-deps'),
+                getManifestFromOPFS('package-deps'),
+            ]);
+
+            if (bundleDeps) {
+                this.bundleDeps = bundleDeps;
+                if (packageDeps) this.packageDeps = packageDeps;
+                return this.bundleDeps;
+            }
+        }
+
         try {
-            // Cache-bust config files to ensure fresh data after deployments
-            const cacheBuster = `?v=${Date.now()}`;
             const [bundleDepsRes, packageDepsRes] = await Promise.all([
-                fetch(`${this.bundleBase}/bundle-deps.json${cacheBuster}`),
-                fetch(`${this.bundleBase}/package-deps.json${cacheBuster}`).catch(() => null),
+                fetch(`${this.bundleBase}/bundle-deps.json`),
+                fetch(`${this.bundleBase}/package-deps.json`).catch(() => null),
             ]);
             this.bundleDeps = await bundleDepsRes.json();
-            if (packageDepsRes) {
-                this.packageDeps = await packageDepsRes.json();
+            const packageDepsData = packageDepsRes ? await packageDepsRes.json() : null;
+            if (packageDepsData) {
+                this.packageDeps = packageDepsData;
+            }
+
+            // Save to OPFS (await to ensure cache is populated)
+            try {
+                const saves = [saveManifestToOPFS('bundle-deps', this.bundleDeps)];
+                if (packageDepsData) saves.push(saveManifestToOPFS('package-deps', packageDepsData));
+                await Promise.all(saves);
+            } catch (e) {
+                // OPFS save failed, continue anyway
             }
         } catch (e) {
             this.bundleDeps = {};
@@ -334,11 +394,5 @@ export function extractPreamble(source) {
     return source.substring(0, beginDocIdx);
 }
 
-export function hashPreamble(preamble) {
-    let hash = 5381;
-    for (let i = 0; i < preamble.length; i++) {
-        hash = ((hash << 5) + hash) + preamble.charCodeAt(i);
-        hash = hash & hash;
-    }
-    return hash.toString(16);
-}
+// Re-export hashPreamble from centralized hash module (BLAKE3-WASM)
+export { hashPreamble } from './hash.js';

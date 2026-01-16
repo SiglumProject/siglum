@@ -45,6 +45,7 @@
   "homepage": "https://github.com/SiglumProject/busytex-lazy#readme",
   "dependencies": {
     "@siglum/filesystem": "file:../siglum-filesystem",
+    "blake3-wasm": "2.1.5",
     "jszip": "^3.10.1",
     "pdf-lib": "^1.17.1",
     "xzwasm": "^0.1.2"
