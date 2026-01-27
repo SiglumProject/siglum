@@ -1,7 +1,11 @@
-// Main BusyTeXCompiler class - orchestrates compilation
+// Main SiglumCompiler class - orchestrates compilation
 
 import { BundleManager, detectEngine, extractPreamble, hashPreamble } from './bundles.js';
 import { CTANFetcher, getPackageFromFile } from './ctan.js';
+
+// Module-level tracking to prevent multiple workers across all instances
+let _globalActiveWorker = null;
+let _globalWorkerId = 0;
 import {
     getAuxCache,
     saveAuxCache,
@@ -19,12 +23,12 @@ import {
     clearWasmMemorySnapshot,
 } from './storage.js';
 
-export class BusyTeXCompiler {
+export class SiglumCompiler {
     constructor(options = {}) {
         this.bundlesUrl = options.bundlesUrl || 'packages/bundles';
         this.wasmUrl = options.wasmUrl || 'busytex.wasm';
         this.workerUrl = options.workerUrl || null; // Will use embedded worker if not provided
-        this.ctanProxyUrl = options.ctanProxyUrl || 'http://localhost:8081';
+        this.ctanProxyUrl = options.ctanProxyUrl || 'http://localhost:8787';
         this.xzwasmUrl = options.xzwasmUrl || './src/xzwasm.js';
 
         this.bundleManager = new BundleManager({
@@ -40,6 +44,7 @@ export class BusyTeXCompiler {
 
         this.worker = null;
         this.workerReady = false;
+        this._initWorkerPromise = null;
         this.pendingCompile = null;
         this.formatCache = new Map();
         this.formatGenerationPromise = null;
@@ -103,7 +108,7 @@ export class BusyTeXCompiler {
     }
 
     async init() {
-        this._log('Initializing BusyTeX compiler...');
+        this._log('Initializing Siglum compiler...');
 
         // Load manifests + WASM in parallel
         await Promise.all([
@@ -133,38 +138,28 @@ export class BusyTeXCompiler {
 
         try {
             // Try loading cached compiled module first (skips fetch + compile)
-            console.log('[WASM-CACHE] Attempting to load cached WASM module...');
             const cachedModule = await getCompiledWasmModule();
             if (cachedModule) {
                 this.wasmModule = cachedModule;
                 const elapsed = (performance.now() - startTime).toFixed(0);
-                console.log(`[WASM-CACHE] ✅ Using cached module (${elapsed}ms)`);
                 this._log('WASM loaded from cache in ' + elapsed + 'ms');
                 return;
             }
 
             // Fetch WASM as bytes (not streaming compile - we need bytes for caching)
-            console.log('[WASM-CACHE] ⬇️ Cache miss - fetching WASM from:', this.wasmUrl);
             const response = await fetch(this.wasmUrl);
             const wasmBytes = new Uint8Array(await response.arrayBuffer());
             const fetchElapsed = (performance.now() - startTime).toFixed(0);
-            console.log(`[WASM-CACHE] Fetched ${(wasmBytes.length / 1024 / 1024).toFixed(1)}MB in ${fetchElapsed}ms`);
 
             // Compile from bytes
             const compileStart = performance.now();
             this.wasmModule = await WebAssembly.compile(wasmBytes);
             const compileElapsed = (performance.now() - compileStart).toFixed(0);
-            console.log(`[WASM-CACHE] Compiled WASM (${compileElapsed}ms)`);
             this._log(`WASM fetched in ${fetchElapsed}ms, compiled in ${compileElapsed}ms`);
 
             // Cache the bytes for future loads (Module can't be serialized to IndexedDB)
-            console.log('[WASM-CACHE] Saving bytes to cache...');
-            saveWasmBytes(wasmBytes).catch(e => {
-                console.log('[WASM-CACHE] Save error:', e.message);
-                this._log('Failed to cache WASM bytes: ' + e.message);
-            });
+            saveWasmBytes(wasmBytes).catch(() => {});
         } catch (e) {
-            console.log('[WASM-CACHE] Load failed:', e.message);
             this._log('WASM load failed: ' + e.message);
             throw e;
         }
@@ -172,6 +167,27 @@ export class BusyTeXCompiler {
 
     async _initWorker() {
         if (this.worker) return;
+
+        // Prevent race condition: if init is already in progress, wait for it
+        if (this._initWorkerPromise) {
+            return this._initWorkerPromise;
+        }
+
+        this._initWorkerPromise = this._doInitWorker();
+        try {
+            await this._initWorkerPromise;
+        } finally {
+            this._initWorkerPromise = null;
+        }
+    }
+
+    async _doInitWorker() {
+        // Check for existing global worker - prevents duplicates across instances
+        if (_globalActiveWorker && _globalActiveWorker !== this.worker) {
+            console.warn('[SiglumCompiler] WARNING: Another worker already exists! Terminating old worker.');
+            _globalActiveWorker.terminate();
+            _globalActiveWorker = null;
+        }
 
         // Get worker code - use external URL or read from src/worker.js
         let workerUrl = this.workerUrl;
@@ -183,7 +199,12 @@ export class BusyTeXCompiler {
             workerUrl = URL.createObjectURL(blob);
         }
 
+        const workerId = ++_globalWorkerId;
+
         this.worker = new Worker(workerUrl);
+        this.worker._workerId = workerId;
+        _globalActiveWorker = this.worker;
+
         this.worker.onmessage = (e) => this._handleWorkerMessage(e);
         this.worker.onerror = (e) => this._handleWorkerError(e);
 
@@ -191,17 +212,9 @@ export class BusyTeXCompiler {
         const wasmUrlObj = new URL(this.wasmUrl, window.location.href);
         const busytexJsUrl = new URL('busytex.js', wasmUrlObj.href).href;
 
-        // Try to load cached memory snapshot for instant restore
-        let memorySnapshot = null;
-        try {
-            const cached = await getWasmMemorySnapshot();
-            if (cached?.snapshot) {
-                memorySnapshot = cached.snapshot.buffer;
-                this._log(`Loaded memory snapshot from cache (${(cached.byteLength / 1024 / 1024).toFixed(1)}MB)`);
-            }
-        } catch (e) {
-            this._log('Failed to load memory snapshot: ' + e.message);
-        }
+        // NOTE: Memory snapshots are DISABLED - pdfTeX's internal globals cause assertion
+        // failures when restored. Fast recompiles come from format caching (.fmt files).
+        const memorySnapshot = null;
 
         // Send init message
         return new Promise((resolve, reject) => {
@@ -300,6 +313,14 @@ export class BusyTeXCompiler {
             this.pendingCompile = null;
         }
         this.workerReady = false;
+        // Terminate the worker before clearing the reference to avoid memory leak
+        if (this.worker) {
+            this.worker.terminate();
+            // Clear global reference if this is the active worker
+            if (_globalActiveWorker === this.worker) {
+                _globalActiveWorker = null;
+            }
+        }
         this.worker = null;
     }
 
@@ -307,11 +328,14 @@ export class BusyTeXCompiler {
         const { requestId, packageName } = msg;
 
         try {
-            this._log('Worker requested CTAN package: ' + packageName);
+            this._log(`[CTAN-REQ] Worker requested package: ${packageName}`);
             // Only fetch this specific package, not dependencies
             // Dependencies are resolved by the worker's retry loop - if a dependency
             // is missing, the worker will request it specifically
             const result = await this.ctanFetcher.fetchPackage(packageName);
+            if (result) {
+                this._log(`[CTAN-REQ] ${packageName}: got ${result.files?.size || 0} files`);
+            }
 
             if (!result) {
                 this.worker.postMessage({
@@ -532,16 +556,24 @@ export class BusyTeXCompiler {
 
     async _handleMemorySnapshot(msg) {
         // Save memory snapshot to persistent storage for future instant restore
-        const { snapshot, byteLength } = msg;
+        const { snapshot, byteLength, isShared } = msg;
         if (!snapshot || byteLength === 0) {
             this._log('Memory snapshot is empty, skipping save');
             return;
         }
 
-        // snapshot is a transferred ArrayBuffer - wrap in Uint8Array for saveWasmMemorySnapshot
-        // Pass directly to avoid unnecessary copies (the function accepts Uint8Array)
-        const snapshotArray = new Uint8Array(snapshot);
-        this._log(`Saving memory snapshot to cache (${(byteLength / 1024 / 1024).toFixed(1)}MB)...`);
+        // For SharedArrayBuffer: create a regular copy for IndexedDB (can't store SAB)
+        // For transferred ArrayBuffer: wrap in Uint8Array view
+        let snapshotArray;
+        if (isShared) {
+            // Copy from SharedArrayBuffer to regular ArrayBuffer for IndexedDB
+            snapshotArray = new Uint8Array(byteLength);
+            snapshotArray.set(new Uint8Array(snapshot));
+            this._log(`Saving memory snapshot to cache (${(byteLength / 1024 / 1024).toFixed(1)}MB, from shared)...`);
+        } else {
+            snapshotArray = new Uint8Array(snapshot);
+            this._log(`Saving memory snapshot to cache (${(byteLength / 1024 / 1024).toFixed(1)}MB)...`);
+        }
 
         const success = await saveWasmMemorySnapshot(snapshotArray, {
             savedAt: Date.now(),
@@ -589,29 +621,57 @@ export class BusyTeXCompiler {
         const { bundles } = this.bundleManager.checkPackages(source, engine);
         this._log('Required bundles: ' + bundles.join(', '));
 
-        // Load bundle data and transfer to worker
-        // Worker VFS resets each compile, so bundles must be sent every time
-        // Use transfer (not clone) to avoid duplication - copies are made from cache
+        // Prepare bundle data for worker
+        // Two modes:
+        // 1. OPFS mode: bundles extracted to OPFS, worker reads directly (no memory transfer)
+        // 2. Legacy mode: bundle blobs transferred to worker (SharedArrayBuffer or copy)
         this.onProgress('loading', 'Loading bundles...');
-        const loadedBundles = await this.bundleManager.loadBundles(bundles);
 
         let bundleData = {};
+        let bundleNames = [];
         let transferList = [];
-        let totalBytes = 0;
+        let useOPFSMode = false;
 
-        for (const [name, data] of Object.entries(loadedBundles)) {
-            if (data) {
-                // Create copy for transfer (original stays in bundleManager cache)
-                const copy = data.slice(0);
-                bundleData[name] = copy;
-                transferList.push(copy);
-                totalBytes += copy.byteLength;
+        if (this.bundleManager.useOPFSExtraction && this.bundleManager.isOPFSAvailable()) {
+            // OPFS mode: extract bundles to OPFS, send only names
+            bundleNames = await this.bundleManager.ensureBundlesExtracted(bundles);
+            useOPFSMode = true;
+            this._log(`OPFS mode: ${bundleNames.length} bundles ready (zero memory transfer)`);
+        } else {
+            // Legacy mode: load bundle blobs
+            const loadedBundles = await this.bundleManager.loadBundles(bundles);
+            let totalBytes = 0;
+            let usingSharedArrayBuffer = false;
+
+            for (const [name, data] of Object.entries(loadedBundles)) {
+                if (data) {
+                    // Check if data is SharedArrayBuffer (zero-copy) or regular ArrayBuffer (needs transfer)
+                    if (data instanceof SharedArrayBuffer) {
+                        // SharedArrayBuffer: no copy needed, worker reads same memory
+                        bundleData[name] = data;
+                        usingSharedArrayBuffer = true;
+                    } else {
+                        // Regular ArrayBuffer: copy for transfer (original stays in cache)
+                        const copy = data.slice(0);
+                        bundleData[name] = copy;
+                        transferList.push(copy);
+                    }
+                    totalBytes += data.byteLength;
+                }
+            }
+            if (usingSharedArrayBuffer) {
+                this._log(`Sharing ${Object.keys(bundleData).length} bundles via SharedArrayBuffer (${(totalBytes/1024/1024).toFixed(1)}MB, zero-copy)`);
+            } else {
+                this._log(`Transferring ${Object.keys(bundleData).length} bundles (${(totalBytes/1024/1024).toFixed(1)}MB)`);
             }
         }
-        this._log(`Transferring ${Object.keys(bundleData).length} bundles (${(totalBytes/1024/1024).toFixed(1)}MB)`);
 
         // Get CTAN files from memory cache (populated by previous fetches)
         const ctanFiles = this.ctanFetcher.getCachedFiles();
+        const ctanFileCount = Object.keys(ctanFiles).length;
+        if (ctanFileCount > 0) {
+            this._log(`Passing ${ctanFileCount} cached CTAN files to worker`);
+        }
 
         // Merge in any additional files provided by the user
         const additionalFiles = options.additionalFiles || {};
@@ -699,6 +759,7 @@ export class BusyTeXCompiler {
                             success: true,
                             pdf: pdfData,
                             pdfIsShared: result.pdfDataIsShared || false, // Pass flag to consumer
+                            syncTexData: result.syncTexData || null, // SyncTeX data for source/PDF synchronization
                             stats: result.stats,
                             log: result.log,
                         });
@@ -725,8 +786,10 @@ export class BusyTeXCompiler {
                 options: {
                     enableLazyFS: this.enableLazyFS,
                     enableCtan: this.enableCtan,
+                    useOPFSMode,  // Worker reads bundles from OPFS instead of receiving blobs
                 },
-                bundleData,
+                bundleData: useOPFSMode ? {} : bundleData,  // Empty if using OPFS
+                bundleNames: useOPFSMode ? bundleNames : [],  // Bundle names for OPFS mode
                 ctanFiles,
                 cachedFormat,
                 cachedAuxFiles: auxCache?.files || null,
@@ -835,6 +898,10 @@ export class BusyTeXCompiler {
     terminate() {
         if (this.worker) {
             this.worker.terminate();
+            // Clear global reference if this is the active worker
+            if (_globalActiveWorker === this.worker) {
+                _globalActiveWorker = null;
+            }
             this.worker = null;
             this.workerReady = false;
         }
@@ -870,3 +937,6 @@ export class BusyTeXCompiler {
         return this.worker !== null;
     }
 }
+
+// Backwards-compatible alias
+export const BusyTeXCompiler = SiglumCompiler;

@@ -1,4 +1,4 @@
-# siglum
+# siglum-engine
 
 The fastest browser-based LaTeX compiler. TeX Live 2025 running in WebAssembly, with lazy loading and on-demand package resolution.
 
@@ -10,13 +10,13 @@ The fastest browser-based LaTeX compiler. TeX Live 2025 running in WebAssembly, 
 ## Setup
 
 ```bash
-npm install siglum
+npm install siglum-engine
 ```
 
 ```javascript
-import { BusyTeXCompiler } from 'siglum';
+import { SiglumCompiler } from 'siglum-engine';
 
-const compiler = new BusyTeXCompiler();
+const compiler = new SiglumCompiler();
 await compiler.init();
 
 const result = await compiler.compile(`
@@ -43,7 +43,7 @@ On first use, siglum downloads a TeX engine and core LaTeX packages. Compilation
 ## Configuration
 
 ```javascript
-const compiler = new BusyTeXCompiler({
+const compiler = new SiglumCompiler({
     bundlesUrl: 'https://siglum-api.vtp-ips.workers.dev/bundles',
     wasmUrl: 'https://siglum-api.vtp-ips.workers.dev/wasm/busytex.wasm',
     ctanProxyUrl: 'https://siglum-api.vtp-ips.workers.dev',
@@ -120,6 +120,19 @@ When a package isn't bundled, siglum fetches it from CTAN automatically.
 | XeLaTeX | Full support, no format caching (native fonts) |
 | LuaLaTeX | Not yet available |
 
+## Compatibility shims
+
+Some packages require workarounds to function in the WebAssembly environment. These shims are injected automatically at compile time.
+
+| Shim | Packages | Description |
+|------|----------|-------------|
+| Microtype expansion | `microtype` | Disables font expansion (`expansion=false`) which is unsupported in the WASM build |
+| Kernel tagging | `tcolorbox` | Stubs TL2026 PDF tagging commands (`\NewStructureName`, etc.) as no-ops |
+
+**Microtype**: The microtype package's font expansion feature requires pdfTeX primitives that aren't fully supported. The shim disables expansion while keeping other microtype features (protrusion, tracking) functional.
+
+**Kernel tagging**: LaTeX's PDF accessibility tagging infrastructure (for screen readers) was added in TL2026. Some packages like tcolorbox now use these commands. The shim defines them as no-ops, so documents compile but without accessibility metadata. Full tagging support will come with a future TeX Live upgrade.
+
 ## Performance
 
 | Metric | Value |
@@ -143,17 +156,41 @@ We extended it with:
 - **Browser caching** — WASM modules cached in IndexedDB, bundles in OPFS
 - **Format file generation** — preamble caching for sub-second repeat compiles
 
-## Development
+## Local Development
 
-```bash
-# Start local dev server
-bun run serve-local.ts
+### Quick Start
 
-# Server runs at http://localhost:8787
-#   /bundles/*  -> ./packages/bundles/
-#   /wasm/*     -> ./busytex/build/wasm/
-#   /api/fetch/ -> CTAN proxy
-```
+1. **Get WASM files** (not included in repo due to size):
+   ```bash
+   # Option A: Download from GitHub Releases
+   curl -L -o busytex.wasm https://github.com/SiglumProject/siglum-engine/releases/latest/download/busytex.wasm
+   curl -L -o busytex.js https://github.com/SiglumProject/siglum-engine/releases/latest/download/busytex.js
+
+   # Option B: Build from source (requires emscripten)
+   cd busytex && make
+   ```
+
+2. **Start local server**:
+   ```bash
+   bun dev
+   ```
+
+3. **Open demo** at http://localhost:8787
+
+The demo page lets you edit LaTeX and compile in real-time. It uses the local server for bundles, WASM, and CTAN package fetching.
+
+### Local Server Endpoints
+
+| Endpoint | Source |
+|----------|--------|
+| `/` | `./demo.html` (interactive demo) |
+| `/bundles/*` | `./packages/bundles/` |
+| `/wasm/*` | `./busytex/build/wasm/` |
+| `/src/*` | `./src/` (ES modules) |
+| `/api/texlive/*` | `./busytex/source/texmfrepo/archive/` (TL2025) |
+| `/api/ctan-pkg/*` | CTAN API proxy |
+
+The local server uses the TL2025 archive for package fetching, so you get the same versions as production. It also sets the required `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` headers for SharedArrayBuffer support.
 
 ## Project structure
 
@@ -161,7 +198,7 @@ bun run serve-local.ts
 .
 ├── src/                    # ES module source
 │   ├── index.js            # Main exports
-│   ├── compiler.js         # BusyTeXCompiler class
+│   ├── compiler.js         # SiglumCompiler class
 │   ├── bundles.js          # Bundle loading
 │   ├── ctan.js             # CTAN package fetching
 │   ├── storage.js          # OPFS/IndexedDB caching

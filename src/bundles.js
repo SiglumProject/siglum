@@ -7,25 +7,46 @@ import {
     saveManifestToOPFS,
     getManifestVersion,
     saveManifestVersion,
+    isBundleExtracted,
+    extractBundleToOPFS,
+    getExtractedBundleMeta,
     MANIFEST_CACHE_VERSION,
 } from './storage.js';
 
+import { hashPreamble } from './hash.js';
+
+// Check if SharedArrayBuffer is available (requires COOP/COEP headers)
+const sharedArrayBufferSupported = typeof SharedArrayBuffer !== 'undefined';
+
 // Decompression using native CompressionStream
+// Returns SharedArrayBuffer when available for zero-copy sharing with workers
 async function decompress(compressed, format = 'gzip') {
     // If format is 'none', return as-is (already decompressed by browser)
+    let data;
     if (format === 'none') {
-        return compressed;
+        data = compressed;
+    } else {
+        const ds = new DecompressionStream(format);
+        const blob = new Blob([compressed]);
+        const stream = blob.stream().pipeThrough(ds);
+        data = await new Response(stream).arrayBuffer();
     }
-    const ds = new DecompressionStream(format);
-    const blob = new Blob([compressed]);
-    const stream = blob.stream().pipeThrough(ds);
-    return await new Response(stream).arrayBuffer();
+
+    // Convert to SharedArrayBuffer for zero-copy worker access
+    if (sharedArrayBufferSupported) {
+        const shared = new SharedArrayBuffer(data.byteLength);
+        new Uint8Array(shared).set(new Uint8Array(data));
+        return shared;
+    }
+
+    return data;
 }
 
 export class BundleManager {
     constructor(options = {}) {
         this.bundleBase = options.bundleBase || 'packages/bundles';
-        this.bundleCache = new Map();
+        this.bundleCache = new Map();  // Legacy: blob cache (for fallback)
+        this.extractedBundles = new Set();  // Track which bundles are extracted to OPFS
         this.fileManifest = null;
         this.packageMap = null;
         this.bundleDeps = null;
@@ -33,7 +54,33 @@ export class BundleManager {
         this.bundleRegistry = null;
         this.bytesDownloaded = 0;
         this.cacheHitCount = 0;
+        this.useOPFSExtraction = false;  // DISABLED - worker reading from OPFS on every compile is slower than blob transfer
         this.onLog = options.onLog || (() => {});
+        this.onProgress = options.onProgress || (() => {});
+    }
+
+    /**
+     * Compute a hash for bundle versioning based on manifest entries
+     * Uses the file paths and sizes to detect changes
+     */
+    getBundleHash(bundleName) {
+        if (!this.fileManifest) return null;
+
+        // Get all files in this bundle and create a version string
+        const bundleFiles = Object.entries(this.fileManifest)
+            .filter(([_, info]) => info.bundle === bundleName)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([path, info]) => `${path}:${info.size}`)
+            .join('|');
+
+        // Simple hash of the version string
+        let hash = 0;
+        for (let i = 0; i < bundleFiles.length; i++) {
+            const char = bundleFiles.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32bit integer
+        }
+        return hash.toString(16);
     }
 
     async loadManifest() {
@@ -215,13 +262,68 @@ export class BundleManager {
         return { packages: [...packages], bundles };
     }
 
+    /**
+     * Ensure a bundle is ready in OPFS for worker to read
+     * Phase 1: Saves blob to OPFS (worker reads blob)
+     * Phase 2 (future): Extract individual files (worker reads files lazily)
+     */
+    async ensureBundleExtracted(bundleName) {
+        // Already handled this session?
+        if (this.extractedBundles.has(bundleName)) {
+            return { bundleName, extracted: true, cached: true };
+        }
+
+        // Check OPFS for existing bundle blob
+        const existingBlob = await getBundleFromOPFS(bundleName);
+        if (existingBlob) {
+            this.onLog(`  OPFS ready: ${bundleName}`);
+            this.extractedBundles.add(bundleName);
+            this.cacheHitCount++;
+            return { bundleName, extracted: true, cached: true };
+        }
+
+        // Need to fetch and save to OPFS
+        this.onLog(`  Fetching for OPFS: ${bundleName}...`);
+        this.onProgress('loading', `Loading ${bundleName}...`);
+
+        // Fetch bundle blob
+        const url = `${this.bundleBase}/${bundleName}.data.gz`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`Failed to load ${bundleName}: ${response.status}`);
+
+        const compressed = await response.arrayBuffer();
+        this.bytesDownloaded += compressed.byteLength;
+
+        // Decompress
+        const contentEncoding = response.headers.get('Content-Encoding');
+        const format = contentEncoding === 'br' ? 'none' : 'gzip';
+        const decompressed = await decompress(compressed, format);
+
+        // Save to OPFS for worker to read
+        const saved = await saveBundleToOPFS(bundleName, decompressed);
+
+        this.extractedBundles.add(bundleName);
+        if (saved) {
+            this.onLog(`  Saved to storage: ${bundleName} (${(decompressed.byteLength / 1024 / 1024).toFixed(1)}MB)`);
+        } else {
+            this.onLog(`  WARNING: Failed to save ${bundleName} to storage!`);
+        }
+        return { bundleName, extracted: true, cached: false };
+
+        // Note: decompressed blob is now eligible for GC - we don't keep it in memory!
+    }
+
+    /**
+     * Load bundle blob (legacy approach - for fallback)
+     * Returns the full blob in memory
+     */
     async loadBundle(bundleName) {
         // Check memory cache
         if (this.bundleCache.has(bundleName)) {
             return this.bundleCache.get(bundleName);
         }
 
-        // Check OPFS cache
+        // Check OPFS blob cache (legacy)
         const cached = await getBundleFromOPFS(bundleName);
         if (cached) {
             this.onLog(`  From OPFS: ${bundleName}`);
@@ -250,6 +352,23 @@ export class BundleManager {
         saveBundleToOPFS(bundleName, decompressed);
 
         return decompressed;
+    }
+
+    /**
+     * Ensure multiple bundles are extracted to OPFS
+     * Returns list of bundle names that are ready
+     */
+    async ensureBundlesExtracted(bundleNames) {
+        const results = await Promise.all(
+            bundleNames.map(name => this.ensureBundleExtracted(name).catch(e => {
+                this.onLog(`Failed to extract ${name}: ${e.message}`);
+                return null;
+            }))
+        );
+
+        return results
+            .filter(r => r !== null)
+            .map(r => r.bundleName);
     }
 
     // Load combined pdflatex bundle (all required bundles in one file)
@@ -354,10 +473,19 @@ export class BundleManager {
      */
     clearCache() {
         this.bundleCache.clear();
+        this.extractedBundles.clear();
         this.onLog('Bundle memory cache cleared');
     }
 
+    /**
+     * Check if OPFS extraction is available
+     */
+    isOPFSAvailable() {
+        return typeof navigator?.storage?.getDirectory === 'function';
+    }
+
     // Preload all required bundles for an engine (call during init)
+    // Uses OPFS extraction when available, falls back to blob loading
     async preloadEngine(engine = 'pdflatex') {
         await this.loadBundleDeps();
         const engineDeps = this.bundleDeps?.engines?.[engine];
@@ -365,10 +493,15 @@ export class BundleManager {
 
         this.onLog(`Preloading ${engine} bundles...`);
 
-        // Load individual bundles in parallel (HTTP/2 multiplexing)
-        // Combined bundle disabled due to Content-Encoding browser issues
-        await this.loadBundles(engineDeps.required);
-        this.onLog(`Preload complete: ${engineDeps.required.length} bundles`);
+        if (this.useOPFSExtraction && this.isOPFSAvailable()) {
+            // New approach: extract to OPFS (no blobs in memory)
+            await this.ensureBundlesExtracted(engineDeps.required);
+            this.onLog(`Preload complete: ${engineDeps.required.length} bundles extracted to OPFS`);
+        } else {
+            // Legacy approach: load blobs into memory
+            await this.loadBundles(engineDeps.required);
+            this.onLog(`Preload complete: ${engineDeps.required.length} bundles in memory`);
+        }
     }
 }
 

@@ -566,10 +566,6 @@ let bundleRegistry = null;
 // SharedArrayBuffer support - check once at startup
 const sharedArrayBufferAvailable = typeof SharedArrayBuffer !== 'undefined';
 
-// Memory snapshot caching state
-let cachedMemorySnapshot = null;
-let memorySnapshotSaved = false;
-
 // Global Module instance - reused across compilations to avoid memory leaks
 // Each initBusyTeX call creates a 512MB WASM heap; we want only ONE
 let globalModule = null;
@@ -580,77 +576,8 @@ const pendingCtanRequests = new Map();
 const pendingBundleRequests = new Map();
 const pendingFileRangeRequests = new Map();
 
-// Global caches with size limits to prevent unbounded memory growth
-const CACHE_MAX_BUNDLE_SIZE_MB = 200;  // Max total size of cached bundles
-const CACHE_MAX_CTAN_FILES = 500;      // Max number of CTAN files to cache
-const CACHE_MAX_FETCHED_FILES = 200;   // Max number of Range-fetched files to cache
-
-const globalFetchedFilesCache = new Map();  // Persist Range-fetched files across compiles
-const globalBundleDataCache = new Map();    // Persist bundle data across compilations
-const globalCtanFilesCache = new Map();     // Persist CTAN files across compilations
-let globalBundleCacheBytes = 0;             // Track total bytes in bundle cache
-
-/**
- * Add bundle to cache with size limit enforcement.
- * Uses LRU-style eviction when cache exceeds max size.
- */
-function cacheBundleData(bundleName, data) {
-    // Skip if data is detached or invalid
-    if (!data || !data.byteLength || data.byteLength === 0) {
-        return;
-    }
-
-    // If already cached with same size, skip
-    if (globalBundleDataCache.has(bundleName)) {
-        const existing = globalBundleDataCache.get(bundleName);
-        if (existing && existing.byteLength === data.byteLength) {
-            return;
-        }
-        // Remove old entry's size
-        globalBundleCacheBytes -= existing?.byteLength || 0;
-    }
-
-    const dataBytes = data.byteLength;
-    const maxBytes = CACHE_MAX_BUNDLE_SIZE_MB * 1024 * 1024;
-
-    // Evict oldest entries if cache would exceed limit
-    while (globalBundleCacheBytes + dataBytes > maxBytes && globalBundleDataCache.size > 0) {
-        const oldestKey = globalBundleDataCache.keys().next().value;
-        const oldestData = globalBundleDataCache.get(oldestKey);
-        globalBundleCacheBytes -= oldestData?.byteLength || 0;
-        globalBundleDataCache.delete(oldestKey);
-        workerLog(`Cache evicted bundle: ${oldestKey}`);
-    }
-
-    // Store a copy to prevent detachment issues if original gets transferred
-    const dataCopy = new Uint8Array(data).slice();
-    globalBundleDataCache.set(bundleName, dataCopy);
-    globalBundleCacheBytes += dataCopy.byteLength;
-}
-
-/**
- * Add CTAN files to cache with entry limit enforcement.
- */
-function cacheCtanFile(path, content) {
-    // Evict oldest if at limit
-    while (globalCtanFilesCache.size >= CACHE_MAX_CTAN_FILES) {
-        const oldestKey = globalCtanFilesCache.keys().next().value;
-        globalCtanFilesCache.delete(oldestKey);
-    }
-    globalCtanFilesCache.set(path, content);
-}
-
-/**
- * Add fetched file to cache with entry limit enforcement.
- */
-function cacheFetchedFile(key, data) {
-    // Evict oldest if at limit
-    while (globalFetchedFilesCache.size >= CACHE_MAX_FETCHED_FILES) {
-        const oldestKey = globalFetchedFilesCache.keys().next().value;
-        globalFetchedFilesCache.delete(oldestKey);
-    }
-    globalFetchedFilesCache.set(key, data);
-}
+// Global cache for Range-fetched files (persists across compiles)
+const globalFetchedFilesCache = new Map();
 
 // Operation queue to serialize compile and format-generate operations
 // (async onmessage doesn't block new messages from being processed concurrently)
@@ -740,6 +667,31 @@ function injectMicrotypeWorkaround(source) {
     return source.slice(0, insertPos) + workaround + source.slice(insertPos);
 }
 
+// Compatibility shims for package version issues
+// These fix issues where CTAN packages expect features not in our kernel
+
+function injectKernelCompatShim(source) {
+    // TL2026 tagging commands (tcolorbox 6.4+ expects these)
+    if (!source.includes('tcolorbox')) return source;
+
+    const documentclassMatch = source.match(/\\documentclass/);
+    if (!documentclassMatch) return source;
+
+    const insertPos = documentclassMatch.index;
+    const shim = `% Siglum: TL2026 tagging shim (PDF tagging not yet supported)
+\\providecommand{\\NewStructureName}[1]{}%
+\\providecommand{\\AssignStructureRole}[2]{}%
+\\providecommand{\\NewTaggingSocket}[2]{}%
+\\providecommand{\\NewTaggingSocketPlug}[2]{}%
+\\providecommand{\\AssignTaggingSocketPlug}[2]{}%
+\\providecommand{\\UseStructureName}[1]{NonStruct}%
+\\providecommand{\\tagstructbegin}[1]{}%
+\\providecommand{\\tagstructend}{}%
+`;
+    workerLog('Injecting TL2026 tagging shim for tcolorbox');
+    return source.slice(0, insertPos) + shim + source.slice(insertPos);
+}
+
 function injectPdfMapFileCommands(source, mapFilePaths) {
     if (mapFilePaths.length === 0) return source;
     const newMaps = mapFilePaths.filter(p => !source.includes(p));
@@ -760,6 +712,12 @@ function injectPdfMapFileCommands(source, mapFilePaths) {
 // ============ Missing File Detection ============
 
 function extractMissingFile(logContent, alreadyFetched) {
+    const files = extractAllMissingFiles(logContent, alreadyFetched);
+    return files.length > 0 ? files[0] : null;
+}
+
+// Extract ALL missing files from log (for parallel fetching)
+function extractAllMissingFiles(logContent, alreadyFetched) {
     const patterns = [
         /! LaTeX Error: File `([^']+)' not found/g,
         /! I can't find file `([^']+)'/g,
@@ -770,16 +728,21 @@ function extractMissingFile(logContent, alreadyFetched) {
         /! Font ([a-z0-9-]+) at [0-9]+ not found/g,
     ];
     const fetchedSet = alreadyFetched || new Set();
+    const missingFiles = [];
+    const seenPkgs = new Set();
 
     for (const pattern of patterns) {
         let match;
         while ((match = pattern.exec(logContent)) !== null) {
             const missingFile = match[1];
             const pkgName = getPackageFromFile(missingFile);
-            if (!fetchedSet.has(pkgName)) return missingFile;
+            if (!fetchedSet.has(pkgName) && !seenPkgs.has(pkgName)) {
+                seenPkgs.add(pkgName);
+                missingFiles.push(missingFile);
+            }
         }
     }
-    return null;
+    return missingFiles;
 }
 
 function getFontPackage(fontName) {
@@ -824,10 +787,17 @@ function restoreAuxFiles(FS, auxFiles) {
 
 // ============ WASM Initialization ============
 
+// Track if busytex.js has been loaded
+let busytexScriptLoaded = false;
+
 async function initBusyTeX(wasmModule, jsUrl, memorySnapshot = null) {
-    workerLog('Initializing WASM...');
     const startTime = performance.now();
-    importScripts(jsUrl);
+
+    // Only load busytex.js once - it defines the global `busytex` function
+    if (!busytexScriptLoaded) {
+        importScripts(jsUrl);
+        busytexScriptLoaded = true;
+    }
 
     const moduleConfig = {
         thisProgram: '/bin/busytex',
@@ -835,17 +805,32 @@ async function initBusyTeX(wasmModule, jsUrl, memorySnapshot = null) {
         noExitRuntime: true,
         instantiateWasm: (imports, successCallback) => {
             WebAssembly.instantiate(wasmModule, imports).then(instance => {
-                // Restore memory from snapshot if available
+                // Restore memory from snapshot if available (skips ~3s TeX initialization)
                 if (memorySnapshot) {
                     try {
                         const memory = instance.exports.memory;
-                        const targetView = new Uint8Array(memory.buffer);
-                        // Only restore if sizes match (snapshot may be from different WASM version)
-                        if (memorySnapshot.length <= targetView.length) {
-                            targetView.set(memorySnapshot);
-                            workerLog(`Restored memory snapshot (${(memorySnapshot.length / 1024 / 1024).toFixed(1)}MB)`);
+                        const snapshotView = memorySnapshot instanceof Uint8Array
+                            ? memorySnapshot
+                            : new Uint8Array(memorySnapshot);
+                        const memoryView = new Uint8Array(memory.buffer);
+
+                        // Only restore if snapshot fits in current memory
+                        if (snapshotView.byteLength <= memoryView.byteLength) {
+                            memoryView.set(snapshotView);
+                            workerLog(`Restored memory snapshot (${(snapshotView.byteLength / 1024 / 1024).toFixed(1)}MB)`);
                         } else {
-                            workerLog('Memory snapshot size mismatch, skipping restore');
+                            // Need to grow memory to fit snapshot
+                            const currentPages = memory.buffer.byteLength / 65536;
+                            const neededPages = Math.ceil(snapshotView.byteLength / 65536);
+                            const pagesToGrow = neededPages - currentPages;
+                            if (pagesToGrow > 0) {
+                                memory.grow(pagesToGrow);
+                                const grownView = new Uint8Array(memory.buffer);
+                                grownView.set(snapshotView);
+                                workerLog(`Restored memory snapshot (${(snapshotView.byteLength / 1024 / 1024).toFixed(1)}MB) after growing memory`);
+                            } else {
+                                workerLog('Memory snapshot size mismatch, skipping restore');
+                            }
                         }
                     } catch (e) {
                         workerLog('Failed to restore memory snapshot: ' + e.message);
@@ -897,22 +882,25 @@ async function initBusyTeX(wasmModule, jsUrl, memorySnapshot = null) {
     };
 
     const elapsed = (performance.now() - startTime).toFixed(0);
-    workerLog(`WASM ready in ${elapsed}ms` + (memorySnapshot ? ' (from snapshot)' : ''));
+    workerLog(`WASM ready in ${elapsed}ms`);
     return Module;
 }
 
 /**
- * Create a fresh Module instance for each operation
+ * Create a fresh Module instance for each operation.
  *
- * Note: We previously tried reusing a globalModule to avoid memory leaks,
- * but pdfTeX has internal C globals (glyph_unicode_tree, etc.) that don't
- * reset between invocations, causing assertion failures in format generation.
- * Until we can properly reset pdfTeX state, each operation needs a fresh Module.
+ * We create fresh each time because pdfTeX has internal C globals
+ * (glyph_unicode_tree, etc.) that don't reset between invocations,
+ * causing assertion failures and memory issues.
+ *
+ * With memory snapshot, fresh Module creation is fast (~300ms vs ~3s).
  */
 async function getOrCreateModule() {
-    // Always create fresh Module - pdfTeX internal state doesn't reset properly
-    // If we have a cached memory snapshot, use it for faster init
-    return await initBusyTeX(cachedWasmModule, busytexJsUrl, cachedMemorySnapshot);
+    // NOTE: Memory snapshots are DISABLED
+    // pdfTeX has internal C globals (glyph_unicode_tree) that cause assertion failures
+    // when restored from a post-compilation snapshot. Fast recompiles come from
+    // format caching (.fmt files) instead, which properly handles TeX state.
+    return await initBusyTeX(cachedWasmModule, busytexJsUrl, null);
 }
 
 /**
@@ -959,7 +947,7 @@ function resetFS(FS) {
 // ============ Compilation ============
 
 async function handleCompile(request) {
-    const { id, source, engine, options, bundleData, ctanFiles, cachedFormat, cachedAuxFiles, deferredBundleNames } = request;
+    const { id, source, engine, options, bundleData, bundleNames, ctanFiles, cachedFormat, cachedAuxFiles, deferredBundleNames } = request;
 
     workerLog('=== Compilation Started ===');
     const totalStart = performance.now();
@@ -971,40 +959,21 @@ async function handleCompile(request) {
     if (!fileManifest) throw new Error('fileManifest not set');
 
     // Track accumulated resources across retries
-    // Start with any previously cached bundles (incremental VFS state)
-    const bundleDataMap = new Map(globalBundleDataCache);
+    const bundleDataMap = bundleData instanceof Map ? bundleData : new Map(Object.entries(bundleData || {}));
     const bundleMetaMap = new Map(); // Store bundle metadata for dynamically loaded bundles
-    const accumulatedCtanFiles = new Map(globalCtanFilesCache);
-
-    // Add bundles from current request (may be new or updated)
-    const incomingBundles = bundleData instanceof Map ? bundleData : new Map(Object.entries(bundleData));
-    let newBundlesCount = 0;
-    for (const [name, data] of incomingBundles) {
-        if (!bundleDataMap.has(name)) {
-            newBundlesCount++;
-        }
-        bundleDataMap.set(name, data);
-        cacheBundleData(name, data);  // Persist for future compilations (with size limits)
-    }
-    if (newBundlesCount > 0) {
-        workerLog(`Incremental VFS: ${bundleDataMap.size - newBundlesCount} cached + ${newBundlesCount} new bundles`);
-    } else if (globalBundleDataCache.size > 0) {
-        workerLog(`Incremental VFS: using ${bundleDataMap.size} cached bundles`);
-    }
+    const accumulatedCtanFiles = new Map();
 
     // Bundles to load on-demand (e.g., font bundles like cm-super)
     const deferredBundles = new Set(effectiveDeferredBundles);
 
-    // Add CTAN files from current request and cache for future
+    // Add CTAN files from current request
     if (ctanFiles) {
         const ctanFilesMap = ctanFiles instanceof Map ? ctanFiles : new Map(Object.entries(ctanFiles));
-        for (const [path, content] of ctanFilesMap) {
-            accumulatedCtanFiles.set(path, content);
-            cacheCtanFile(path, content);  // Persist for future compilations (with entry limits)
-        }
+        for (const [path, content] of ctanFilesMap) accumulatedCtanFiles.set(path, content);
     }
 
     let pdfData = null;
+    let syncTexData = null;  // SyncTeX data for source/PDF synchronization
     let compileSuccess = false;
     let retryCount = 0;
     const maxRetries = 10;
@@ -1092,6 +1061,9 @@ async function handleCompile(request) {
                 docSource = injectMicrotypeWorkaround(docSource);
             }
 
+            // Inject kernel compatibility shim for packages using TL2026+ tagging features
+            docSource = injectKernelCompatShim(docSource);
+
             // Font maps are now handled by VFS.processFontMaps() - no need to inject \pdfmapfile commands
 
             FS.writeFile('/document.tex', docSource);
@@ -1103,12 +1075,12 @@ async function handleCompile(request) {
             if (engine === 'pdflatex') {
                 result = Module.callMainWithRedirects([
                     'pdflatex', '--no-shell-escape', '--interaction=nonstopmode',
-                    '--halt-on-error', '--fmt=' + fmtPath, '/document.tex'
+                    '--halt-on-error', '--synctex=-1', '--fmt=' + fmtPath, '/document.tex'
                 ]);
             } else {
                 result = Module.callMainWithRedirects([
                     'xelatex', '--no-shell-escape', '--interaction=nonstopmode',
-                    '--halt-on-error', '--no-pdf',
+                    '--halt-on-error', '--synctex=-1', '--no-pdf',
                     '--fmt=/texlive/texmf-dist/texmf-var/web2c/xetex/xelatex.fmt',
                     '/document.tex'
                 ]);
@@ -1126,6 +1098,16 @@ async function handleCompile(request) {
                     pdfData = FS.readFile('/document.pdf');
                     compileSuccess = true;
                     workerLog('Compilation successful!');
+
+                    // Read SyncTeX data for source/PDF synchronization
+                    // --synctex=-1 generates uncompressed .synctex file
+                    try {
+                        const syncTexBytes = FS.readFile('/document.synctex');
+                        syncTexData = new TextDecoder().decode(syncTexBytes);
+                        workerLog(`SyncTeX data: ${(syncTexBytes.byteLength / 1024).toFixed(1)}KB`);
+                    } catch (e) {
+                        workerLog('No SyncTeX file generated');
+                    }
                 } catch (e) {
                     workerLog('Failed to read PDF: ' + e.message);
                 }
@@ -1168,7 +1150,6 @@ async function handleCompile(request) {
                             const bundleResult = await requestBundleFetch(bundleName);
                             if (bundleResult.success) {
                                 bundleDataMap.set(bundleName, bundleResult.bundleData);
-                                cacheBundleData(bundleName, bundleResult.bundleData);  // Persist (with size limits)
                                 if (bundleResult.bundleMeta) {
                                     bundleMetaMap.set(bundleName, bundleResult.bundleMeta);
                                 }
@@ -1188,52 +1169,90 @@ async function handleCompile(request) {
                 }
 
                 // Then check for missing files via log parsing (CTAN fallback)
+                workerLog(`[RETRY] enableCtan=${options.enableCtan}`);
                 if (options.enableCtan) {
                     let logContent = '';
                     try { logContent = new TextDecoder().decode(FS.readFile('/document.log')); } catch (e) {}
                     const allOutput = logContent + ' ' + (result.stdout || '') + ' ' + (result.stderr || '');
-                    const missingFile = extractMissingFile(allOutput, fetchedPackages);
 
-                    if (missingFile) {
-                        const pkgName = getPackageFromFile(missingFile);
+                    // Extract ALL missing files for parallel fetching
+                    const missingFiles = extractAllMissingFiles(allOutput, fetchedPackages);
+                    workerLog(`[RETRY] missingFiles=${missingFiles.length > 0 ? missingFiles.join(', ') : 'none'}`);
 
-                        // Try bundle first (compressed, fast)
-                        const bundleName = packageMap?.[pkgName];
-                        if (bundleName && !bundleDataMap.has(bundleName)) {
+                    if (missingFiles.length > 0) {
+                        // Categorize packages: bundles vs CTAN
+                        const bundlesToFetch = [];
+                        const ctanToFetch = [];
+
+                        for (const missingFile of missingFiles) {
+                            const pkgName = getPackageFromFile(missingFile);
+                            const bundleName = packageMap?.[pkgName];
+
+                            if (bundleName && !bundleDataMap.has(bundleName)) {
+                                bundlesToFetch.push({ missingFile, pkgName, bundleName });
+                            } else if (!bundleName) {
+                                ctanToFetch.push({ missingFile, pkgName });
+                            }
+                        }
+
+                        workerLog(`[RETRY] Fetching ${bundlesToFetch.length} bundles, ${ctanToFetch.length} CTAN packages in parallel`);
+
+                        // Fetch all bundles in parallel
+                        const bundlePromises = bundlesToFetch.map(async ({ missingFile, pkgName, bundleName }) => {
                             workerLog(`Missing: ${missingFile}, loading bundle ${bundleName}...`);
                             try {
                                 const bundleResult = await requestBundleFetch(bundleName);
                                 if (bundleResult.success) {
-                                    fetchedPackages.add(pkgName);
-                                    bundleDataMap.set(bundleName, bundleResult.bundleData);
-                                    cacheBundleData(bundleName, bundleResult.bundleData);  // Persist (with size limits)
-                                    if (bundleResult.bundleMeta) {
-                                        bundleMetaMap.set(bundleName, bundleResult.bundleMeta);
-                                    }
-                                    retryCount++;
-                                    continue;
+                                    return { type: 'bundle', pkgName, bundleName, data: bundleResult };
                                 }
                             } catch (e) {
-                                workerLog(`Bundle fetch failed: ${e.message}, trying CTAN...`);
+                                workerLog(`Bundle fetch failed for ${bundleName}: ${e.message}`);
+                            }
+                            return null;
+                        });
+
+                        // Fetch all CTAN packages in parallel
+                        const ctanPromises = ctanToFetch.map(async ({ missingFile, pkgName }) => {
+                            workerLog(`Missing: ${missingFile}, fetching ${pkgName} from CTAN...`);
+                            try {
+                                const ctanData = await requestCtanFetch(pkgName);
+                                if (ctanData.success) {
+                                    return { type: 'ctan', pkgName, data: ctanData };
+                                }
+                            } catch (e) {
+                                workerLog(`CTAN fetch failed for ${pkgName}: ${e.message}`);
+                            }
+                            return null;
+                        });
+
+                        // Wait for all fetches to complete
+                        const allResults = await Promise.all([...bundlePromises, ...ctanPromises]);
+                        let fetchedAny = false;
+
+                        for (const result of allResults) {
+                            if (!result) continue;
+                            fetchedAny = true;
+
+                            if (result.type === 'bundle') {
+                                fetchedPackages.add(result.pkgName);
+                                bundleDataMap.set(result.bundleName, result.data.bundleData);
+                                if (result.data.bundleMeta) {
+                                    bundleMetaMap.set(result.bundleName, result.data.bundleMeta);
+                                }
+                            } else if (result.type === 'ctan') {
+                                fetchedPackages.add(result.pkgName);
+                                const files = result.data.files instanceof Map
+                                    ? result.data.files
+                                    : new Map(Object.entries(result.data.files));
+                                for (const [path, content] of files) {
+                                    accumulatedCtanFiles.set(path, content);
+                                }
                             }
                         }
 
-                        // Fall back to CTAN
-                        workerLog(`Missing: ${missingFile}, fetching ${pkgName} from CTAN...`);
-                        try {
-                            const ctanData = await requestCtanFetch(pkgName);
-                            if (ctanData.success) {
-                                fetchedPackages.add(pkgName);
-                                const files = ctanData.files instanceof Map ? ctanData.files : new Map(Object.entries(ctanData.files));
-                                for (const [path, content] of files) {
-                                    accumulatedCtanFiles.set(path, content);
-                                    cacheCtanFile(path, content);  // Persist (with entry limits)
-                                }
-                                retryCount++;
-                                continue;
-                            }
-                        } catch (e) {
-                            workerLog(`CTAN fetch failed: ${e.message}`);
+                        if (fetchedAny) {
+                            retryCount++;
+                            continue;
                         }
                     }
                 }
@@ -1252,30 +1271,15 @@ async function handleCompile(request) {
     const totalTime = performance.now() - totalStart;
     workerLog(`Total time: ${totalTime.toFixed(0)}ms`);
 
-    // After first successful compile, capture and send memory snapshot for caching
-    // This allows future sessions to restore WASM heap state instantly
-    if (compileSuccess && !memorySnapshotSaved && !cachedMemorySnapshot && Module) {
-        try {
-            const memory = Module.HEAPU8;
-            if (memory && memory.buffer.byteLength > 0) {
-                // Create a copy for transfer (original stays in WASM heap)
-                const snapshot = new Uint8Array(memory.length);
-                snapshot.set(memory);
-                workerLog(`Capturing memory snapshot (${(snapshot.length / 1024 / 1024).toFixed(1)}MB) for cache`);
+    // NOTE: Memory snapshot capture is DISABLED
+    // pdfTeX's internal C globals (glyph_unicode_tree) cause assertion failures when
+    // we try to restore a post-compilation snapshot. Fast recompiles come from format
+    // caching (.fmt files with pre-compiled preambles) instead.
 
-                // Send to main thread for IndexedDB storage
-                self.postMessage({
-                    type: 'memory-snapshot',
-                    snapshot: snapshot.buffer,
-                    byteLength: snapshot.length,
-                }, [snapshot.buffer]);
-
-                memorySnapshotSaved = true;
-            }
-        } catch (e) {
-            workerLog('Failed to capture memory snapshot: ' + e.message);
-        }
-    }
+    // Help GC by clearing references we no longer need
+    // The Module/FS will be recreated on next compile anyway
+    Module = null;
+    FS = null;
 
     // Build response message once, share between paths
     const stats = { compileTimeMs: totalTime, bundlesUsed: [...bundleDataMap.keys()] };
@@ -1293,6 +1297,7 @@ async function handleCompile(request) {
             success: compileSuccess,
             pdfData: sharedBuffer,
             pdfDataIsShared: true,
+            syncTexData,
             exitCode: lastExitCode,
             auxFilesToCache: auxFiles,
             stats
@@ -1305,6 +1310,7 @@ async function handleCompile(request) {
             success: compileSuccess,
             pdfData: pdfData ? pdfData.buffer : null,
             pdfDataIsShared: false,
+            syncTexData,
             exitCode: lastExitCode,
             auxFilesToCache: auxFiles,
             stats
@@ -1340,7 +1346,6 @@ async function handleFormatGenerate(request) {
 
     while (retryCount < maxRetries) {
         try {
-            // Get or create global WASM instance (reused to avoid memory leaks)
             const Module = await getOrCreateModule();
             const FS = Module.FS;
 
@@ -1360,7 +1365,9 @@ async function handleFormatGenerate(request) {
 
             vfs.finalize();
 
-            FS.writeFile('/myformat.ini', preambleContent + '\n\\dump\n');
+            // Apply kernel compat shim for format generation too
+            const shimmedPreamble = injectKernelCompatShim(preambleContent);
+            FS.writeFile('/myformat.ini', shimmedPreamble + '\n\\dump\n');
 
             // Use the correct engine for format generation
             let formatArgs;
@@ -1389,48 +1396,84 @@ async function handleFormatGenerate(request) {
                 return;
             }
 
-            // Check for missing packages
+            // Check for missing packages - extract ALL and fetch in parallel
             let logContent = '';
             try { logContent = new TextDecoder().decode(FS.readFile('/myformat.log')); } catch (e) {}
             const allOutput = logContent + ' ' + (result.stdout || '') + ' ' + (result.stderr || '');
-            const missingFile = extractMissingFile(allOutput, fetchedPackages);
+            const missingFiles = extractAllMissingFiles(allOutput, fetchedPackages);
 
-            if (missingFile) {
-                const pkgName = getPackageFromFile(missingFile);
+            if (missingFiles.length > 0) {
+                workerLog(`[FORMAT] Missing ${missingFiles.length} packages: ${missingFiles.join(', ')}`);
 
-                // Try bundle first
-                const bundleName = packageMap?.[pkgName];
-                if (bundleName && !bundleDataMap.has(bundleName)) {
+                // Categorize packages: bundles vs CTAN
+                const bundlesToFetch = [];
+                const ctanToFetch = [];
+
+                for (const missingFile of missingFiles) {
+                    const pkgName = getPackageFromFile(missingFile);
+                    const bundleName = packageMap?.[pkgName];
+
+                    if (bundleName && !bundleDataMap.has(bundleName)) {
+                        bundlesToFetch.push({ missingFile, pkgName, bundleName });
+                    } else if (!bundleName) {
+                        ctanToFetch.push({ missingFile, pkgName });
+                    }
+                }
+
+                // Fetch all in parallel
+                const bundlePromises = bundlesToFetch.map(async ({ missingFile, pkgName, bundleName }) => {
                     workerLog(`Format missing: ${missingFile}, loading bundle ${bundleName}...`);
                     try {
                         const bundleResult = await requestBundleFetch(bundleName);
                         if (bundleResult.success) {
-                            fetchedPackages.add(pkgName);
-                            bundleDataMap.set(bundleName, bundleResult.bundleData);
-                            if (bundleResult.bundleMeta) {
-                                bundleMetaMap.set(bundleName, bundleResult.bundleMeta);
-                            }
-                            retryCount++;
-                            continue;
+                            return { type: 'bundle', pkgName, bundleName, data: bundleResult };
                         }
                     } catch (e) {
-                        workerLog(`Bundle fetch failed: ${e.message}, trying CTAN...`);
+                        workerLog(`Bundle fetch failed for ${bundleName}: ${e.message}`);
+                    }
+                    return null;
+                });
+
+                const ctanPromises = ctanToFetch.map(async ({ missingFile, pkgName }) => {
+                    workerLog(`Format missing: ${missingFile}, fetching ${pkgName} from CTAN...`);
+                    try {
+                        const ctanData = await requestCtanFetch(pkgName);
+                        if (ctanData.success) {
+                            return { type: 'ctan', pkgName, data: ctanData };
+                        }
+                    } catch (e) {
+                        workerLog(`CTAN fetch failed for ${pkgName}: ${e.message}`);
+                    }
+                    return null;
+                });
+
+                const allResults = await Promise.all([...bundlePromises, ...ctanPromises]);
+                let fetchedAny = false;
+
+                for (const result of allResults) {
+                    if (!result) continue;
+                    fetchedAny = true;
+
+                    if (result.type === 'bundle') {
+                        fetchedPackages.add(result.pkgName);
+                        bundleDataMap.set(result.bundleName, result.data.bundleData);
+                        if (result.data.bundleMeta) {
+                            bundleMetaMap.set(result.bundleName, result.data.bundleMeta);
+                        }
+                    } else if (result.type === 'ctan') {
+                        fetchedPackages.add(result.pkgName);
+                        const files = result.data.files instanceof Map
+                            ? result.data.files
+                            : new Map(Object.entries(result.data.files));
+                        for (const [path, content] of files) {
+                            accumulatedCtanFiles.set(path, content);
+                        }
                     }
                 }
 
-                // Fall back to CTAN
-                workerLog(`Format missing: ${missingFile}, fetching ${pkgName} from CTAN...`);
-                try {
-                    const ctanData = await requestCtanFetch(pkgName);
-                    if (ctanData.success) {
-                        fetchedPackages.add(pkgName);
-                        const files = ctanData.files instanceof Map ? ctanData.files : new Map(Object.entries(ctanData.files));
-                        for (const [path, content] of files) accumulatedCtanFiles.set(path, content);
-                        retryCount++;
-                        continue;
-                    }
-                } catch (e) {
-                    workerLog(`CTAN fetch failed: ${e.message}`);
+                if (fetchedAny) {
+                    retryCount++;
+                    continue;
                 }
             }
 
@@ -1457,7 +1500,6 @@ self.onmessage = async function(e) {
 
     switch (msg.type) {
         case 'init':
-            // Compile WASM directly in worker to avoid 30MB duplication via postMessage
             busytexJsUrl = msg.busytexJsUrl;
             if (msg.manifest) {
                 fileManifest = msg.manifest;
@@ -1465,15 +1507,7 @@ self.onmessage = async function(e) {
                 bundleDeps = msg.bundleDepsData;
                 bundleRegistry = new Set(msg.bundleRegistryData || []);
             }
-
             cachedWasmModule = msg.wasmModule;
-
-            // Store memory snapshot if provided (for instant restore)
-            if (msg.memorySnapshot) {
-                cachedMemorySnapshot = new Uint8Array(msg.memorySnapshot);
-                workerLog(`Received memory snapshot (${(cachedMemorySnapshot.length / 1024 / 1024).toFixed(1)}MB)`);
-            }
-
             self.postMessage({ type: 'ready' });
             break;
 

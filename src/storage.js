@@ -1,15 +1,132 @@
 // Storage module for OPFS and IndexedDB caching
-import { fileSystem } from '@siglum/filesystem';
 
 // Safari detection - Safari has issues with ArrayBuffer detachment and WebAssembly.Module serialization
 const isSafari = typeof navigator !== 'undefined' && /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+
+// Optional @siglum/filesystem - gracefully degrade when not available (e.g., direct browser ES modules)
+let fileSystem = null;
+let fileSystemLoaded = false;
+
+// Native OPFS fallback for when @siglum/filesystem isn't available
+class NativeOPFSFileSystem {
+    constructor() {
+        this._root = null;
+        this._mounts = new Map(); // path -> DirectoryHandle
+    }
+
+    async _getRoot() {
+        if (!this._root) {
+            this._root = await navigator.storage.getDirectory();
+        }
+        return this._root;
+    }
+
+    async _getDir(path, create = false) {
+        const root = await this._getRoot();
+        const parts = path.split('/').filter(p => p);
+        let current = root;
+        for (const part of parts) {
+            current = await current.getDirectoryHandle(part, { create });
+        }
+        return current;
+    }
+
+    async mountAuto(path) {
+        // Just ensure the directory exists
+        const dir = await this._getDir(path, true);
+        this._mounts.set(path, dir);
+        return true;
+    }
+
+    async mkdir(path) {
+        await this._getDir(path, true);
+    }
+
+    async readBinary(path, options = {}) {
+        const parts = path.split('/').filter(p => p);
+        const fileName = parts.pop();
+        const dirPath = '/' + parts.join('/');
+        const dir = await this._getDir(dirPath);
+        const fileHandle = await dir.getFileHandle(fileName);
+        const file = await fileHandle.getFile();
+        const buffer = await file.arrayBuffer();
+        return new Uint8Array(buffer);
+    }
+
+    async writeBinary(path, data) {
+        const parts = path.split('/').filter(p => p);
+        const fileName = parts.pop();
+        const dirPath = '/' + parts.join('/');
+        const dir = await this._getDir(dirPath, true);
+        const fileHandle = await dir.getFileHandle(fileName, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(data);
+        await writable.close();
+    }
+
+    async readFile(path) {
+        const data = await this.readBinary(path);
+        return new TextDecoder().decode(data);
+    }
+
+    async writeFile(path, content) {
+        await this.writeBinary(path, new TextEncoder().encode(content));
+    }
+
+    async rmdir(path, options = {}) {
+        try {
+            const parts = path.split('/').filter(p => p);
+            const dirName = parts.pop();
+            const parentPath = '/' + parts.join('/');
+            const parent = await this._getDir(parentPath);
+            await parent.removeEntry(dirName, { recursive: options.recursive });
+        } catch {
+            // Ignore errors (directory may not exist)
+        }
+    }
+
+    async deleteFile(path, options = {}) {
+        try {
+            const parts = path.split('/').filter(p => p);
+            const fileName = parts.pop();
+            const dirPath = '/' + parts.join('/');
+            const dir = await this._getDir(dirPath);
+            await dir.removeEntry(fileName);
+        } catch {
+            // Ignore errors
+        }
+    }
+}
+
+async function getFileSystem() {
+    if (fileSystemLoaded) return fileSystem;
+    fileSystemLoaded = true;
+    try {
+        const mod = await import('@siglum/filesystem');
+        fileSystem = mod.fileSystem;
+        console.log('[storage] Using @siglum/filesystem');
+    } catch (e) {
+        // Not available (e.g., running in browser without bundler)
+        // Fall back to native OPFS API
+        console.log('[storage] @siglum/filesystem not available:', e.message);
+        if (typeof navigator !== 'undefined' && navigator.storage?.getDirectory) {
+            fileSystem = new NativeOPFSFileSystem();
+            console.log('[storage] Using native OPFS fallback');
+        } else {
+            console.log('[storage] No OPFS available');
+        }
+    }
+    return fileSystem;
+}
 
 // Mount filesystem for WASM cache - uses OPFS when available, IndexedDB fallback
 let wasmCacheMounted = false;
 async function ensureWasmCacheMounted() {
     if (wasmCacheMounted) return true;
+    const fs = await getFileSystem();
+    if (!fs) return false;
     try {
-        await fileSystem.mountAuto('/wasm-cache');
+        await fs.mountAuto('/wasm-cache');
         wasmCacheMounted = true;
         return true;
     } catch (e) {
@@ -20,7 +137,7 @@ async function ensureWasmCacheMounted() {
 
 const IDB_NAME = 'siglum-ctan-cache';
 const IDB_STORE = 'packages';
-const CTAN_CACHE_VERSION = 7;
+const CTAN_CACHE_VERSION = 9; // Bumped to force refetch from TexLive 2025 (enumitem v3.11 fix)
 const BUNDLE_CACHE_VERSION = 4;
 const MANIFEST_CACHE_VERSION = 1;
 
@@ -179,68 +296,58 @@ export async function writeToOPFS(filePath, content) {
     }
 }
 
-// Bundle cache operations
-let bundleCacheVersionChecked = false;
+// Bundle cache operations using siglum-filesystem
+// Automatically uses OPFS when available, IndexedDB as fallback
+let bundleCacheMounted = false;
 
-export async function checkBundleCacheVersion() {
-    if (bundleCacheVersionChecked) return;
-    bundleCacheVersionChecked = true;
-
+async function ensureBundleCacheMounted() {
+    if (bundleCacheMounted) return true;
+    const fs = await getFileSystem();
+    if (!fs) return false;
     try {
-        const root = await getOPFSRoot();
-        if (!root) return;
+        await fs.mountAuto('/bundle-cache');
+        bundleCacheMounted = true;
 
-        const versionHandle = await root.getFileHandle('bundle-cache-version', { create: true });
-        const file = await versionHandle.getFile();
-        const text = await file.text();
-        const version = parseInt(text) || 0;
-
-        if (version < BUNDLE_CACHE_VERSION) {
-            // Only log on actual upgrade, not first run (version 0)
-            if (version > 0) {
-                console.log(`Bundle cache version upgrade (${version} → ${BUNDLE_CACHE_VERSION}), clearing cache...`);
-            }
-            await clearBundleCache();
-            const writable = await versionHandle.createWritable();
-            await writable.write(String(BUNDLE_CACHE_VERSION));
-            await writable.close();
-        }
-    } catch (e) {
-        // First run, create version file
+        // Check version and clear if outdated
         try {
-            const root = await getOPFSRoot();
-            if (root) {
-                const versionHandle = await root.getFileHandle('bundle-cache-version', { create: true });
-                const writable = await versionHandle.createWritable();
-                await writable.write(String(BUNDLE_CACHE_VERSION));
-                await writable.close();
+            const versionStr = await fs.readFile('/bundle-cache/version');
+            const version = parseInt(versionStr) || 0;
+            if (version < BUNDLE_CACHE_VERSION) {
+                if (version > 0) {
+                    console.log(`Bundle cache version upgrade (${version} → ${BUNDLE_CACHE_VERSION}), clearing...`);
+                }
+                await fs.rmdir('/bundle-cache', { recursive: true });
+                await fs.mountAuto('/bundle-cache');
             }
-        } catch (e2) {}
+        } catch (e) {
+            // Version file doesn't exist, will be created on first write
+        }
+
+        // Write current version
+        await fs.writeFile('/bundle-cache/version', String(BUNDLE_CACHE_VERSION));
+        return true;
+    } catch (e) {
+        console.warn('Failed to mount bundle-cache filesystem:', e);
+        return false;
     }
 }
 
 export async function clearBundleCache() {
     try {
-        const root = await getOPFSRoot();
-        if (!root) return;
-        await root.removeEntry('bundles', { recursive: true });
+        const fs = await getFileSystem();
+        if (fs && await ensureBundleCacheMounted()) {
+            await fs.rmdir('/bundle-cache/bundles', { recursive: true });
+        }
     } catch (e) {}
 }
 
 export async function getBundleFromOPFS(bundleName) {
-    await checkBundleCacheVersion();
     try {
-        const root = await getOPFSRoot();
-        if (!root) return null;
+        const fs = await getFileSystem();
+        if (!fs || !await ensureBundleCacheMounted()) return null;
 
-        const bundlesDir = await root.getDirectoryHandle('bundles');
-        const fileHandle = await bundlesDir.getFileHandle(bundleName + '.data');
-        const file = await fileHandle.getFile();
-        const buffer = await file.arrayBuffer();
-        // Create a TRUE copy to avoid Safari ArrayBuffer detachment issues
-        const copy = new Uint8Array(buffer.byteLength);
-        copy.set(new Uint8Array(buffer));
-        return copy.buffer;
+        const data = await fs.readBinary(`/bundle-cache/bundles/${bundleName}.data`);
+        return data?.buffer || null;
     } catch (e) {
         return null;
     }
@@ -248,16 +355,294 @@ export async function getBundleFromOPFS(bundleName) {
 
 export async function saveBundleToOPFS(bundleName, data) {
     try {
-        const root = await getOPFSRoot();
-        if (!root) return;
+        const fs = await getFileSystem();
+        if (!fs || !await ensureBundleCacheMounted()) return false;
 
-        const bundlesDir = await root.getDirectoryHandle('bundles', { create: true });
-        const fileHandle = await bundlesDir.getFileHandle(bundleName + '.data', { create: true });
-        const writable = await fileHandle.createWritable();
-        await writable.write(data);
-        await writable.close();
-    } catch (e) {}
+        await fs.mkdir('/bundle-cache/bundles');
+        // Convert SharedArrayBuffer to regular ArrayBuffer for IndexedDB compatibility
+        // (SharedArrayBuffer can't be serialized for storage)
+        let buffer = data;
+        if (data instanceof SharedArrayBuffer) {
+            buffer = new ArrayBuffer(data.byteLength);
+            new Uint8Array(buffer).set(new Uint8Array(data));
+        }
+        await fs.writeBinary(`/bundle-cache/bundles/${bundleName}.data`, new Uint8Array(buffer));
+        return true;
+    } catch (e) {
+        console.warn(`Failed to save bundle ${bundleName}:`, e);
+        return false;
+    }
 }
+
+// ============================================================================
+// OPFS Bundle Extraction - Extract individual files from bundles to OPFS
+// This enables lazy loading: only read files that are actually used
+// ============================================================================
+
+const EXTRACTED_BUNDLES_VERSION = 1;
+
+/**
+ * Check if a bundle has been extracted to OPFS with matching hash
+ * @param {string} bundleName - Name of the bundle
+ * @param {string} expectedHash - Expected manifest hash for version check
+ * @returns {Promise<boolean>} True if bundle is extracted and up-to-date
+ */
+export async function isBundleExtracted(bundleName, expectedHash) {
+    try {
+        const root = await getOPFSRoot();
+        if (!root) return false;
+
+        const extractedDir = await root.getDirectoryHandle('extracted-bundles');
+        const bundleDir = await extractedDir.getDirectoryHandle(bundleName);
+        const metaHandle = await bundleDir.getFileHandle('.meta.json');
+        const metaFile = await metaHandle.getFile();
+        const meta = JSON.parse(await metaFile.text());
+
+        return meta.hash === expectedHash && meta.version === EXTRACTED_BUNDLES_VERSION;
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
+ * Extract all files from a bundle to OPFS
+ * Files are stored at: /extracted-bundles/{bundleName}/{texmfPath}
+ *
+ * @param {string} bundleName - Name of the bundle
+ * @param {ArrayBuffer|SharedArrayBuffer} bundleData - Raw bundle data blob
+ * @param {Object} manifest - File manifest mapping paths to {bundle, offset, size}
+ * @param {string} hash - Manifest hash for version tracking
+ * @param {Function} onProgress - Optional progress callback (filesExtracted, totalFiles)
+ * @returns {Promise<{success: boolean, filesExtracted: number, error?: string}>}
+ */
+export async function extractBundleToOPFS(bundleName, bundleData, manifest, hash, onProgress) {
+    try {
+        const root = await getOPFSRoot();
+        if (!root) {
+            return { success: false, filesExtracted: 0, error: 'OPFS not available' };
+        }
+
+        // Create directory structure
+        const extractedDir = await root.getDirectoryHandle('extracted-bundles', { create: true });
+
+        // Remove existing bundle dir if exists (clean extraction)
+        try {
+            await extractedDir.removeEntry(bundleName, { recursive: true });
+        } catch (e) {
+            // Doesn't exist, that's fine
+        }
+
+        const bundleDir = await extractedDir.getDirectoryHandle(bundleName, { create: true });
+
+        // Get files belonging to this bundle
+        const bundleFiles = Object.entries(manifest).filter(([_, info]) => info.bundle === bundleName);
+        const totalFiles = bundleFiles.length;
+        let filesExtracted = 0;
+
+        // Create a Uint8Array view of the bundle data (no copy)
+        const dataView = new Uint8Array(bundleData);
+
+        // Cache directory handles to avoid repeated lookups (significant CPU savings)
+        const dirHandleCache = new Map();
+        dirHandleCache.set('', bundleDir);
+
+        async function getOrCreateDir(pathParts) {
+            const key = pathParts.join('/');
+            if (dirHandleCache.has(key)) {
+                return dirHandleCache.get(key);
+            }
+
+            // Build path incrementally, caching each level
+            let currentDir = bundleDir;
+            let currentPath = '';
+            for (const part of pathParts) {
+                currentPath = currentPath ? `${currentPath}/${part}` : part;
+                if (dirHandleCache.has(currentPath)) {
+                    currentDir = dirHandleCache.get(currentPath);
+                } else {
+                    currentDir = await currentDir.getDirectoryHandle(part, { create: true });
+                    dirHandleCache.set(currentPath, currentDir);
+                }
+            }
+            return currentDir;
+        }
+
+        // Extract files in batches to balance parallelism vs memory
+        // Smaller batch = less concurrent memory, larger = faster
+        const BATCH_SIZE = 20;
+        for (let i = 0; i < bundleFiles.length; i += BATCH_SIZE) {
+            const batch = bundleFiles.slice(i, i + BATCH_SIZE);
+
+            await Promise.all(batch.map(async ([texmfPath, info]) => {
+                try {
+                    // Use subarray (view) instead of slice (copy) - no memory allocation
+                    // The view is valid for the duration of the write operation
+                    const fileData = dataView.subarray(info.offset, info.offset + info.size);
+
+                    // Get/create parent directory (cached)
+                    const pathParts = texmfPath.split('/').filter(p => p);
+                    const parentDir = await getOrCreateDir(pathParts.slice(0, -1));
+
+                    // Write file directly from subarray view
+                    const fileName = pathParts[pathParts.length - 1];
+                    const fileHandle = await parentDir.getFileHandle(fileName, { create: true });
+                    const writable = await fileHandle.createWritable();
+                    await writable.write(fileData);
+                    await writable.close();
+
+                    filesExtracted++;
+                } catch (e) {
+                    console.warn(`Failed to extract ${texmfPath}:`, e.message);
+                }
+            }));
+
+            // Report progress
+            if (onProgress) {
+                onProgress(filesExtracted, totalFiles);
+            }
+        }
+
+        // Clear directory cache to free memory
+        dirHandleCache.clear();
+
+        // Write metadata
+        const metaHandle = await bundleDir.getFileHandle('.meta.json', { create: true });
+        const metaWritable = await metaHandle.createWritable();
+        await metaWritable.write(JSON.stringify({
+            hash,
+            version: EXTRACTED_BUNDLES_VERSION,
+            filesExtracted,
+            totalFiles,
+            extractedAt: Date.now(),
+        }));
+        await metaWritable.close();
+
+        console.log(`Extracted bundle ${bundleName}: ${filesExtracted}/${totalFiles} files`);
+        return { success: true, filesExtracted };
+    } catch (e) {
+        console.error(`Failed to extract bundle ${bundleName}:`, e);
+        return { success: false, filesExtracted: 0, error: e.message };
+    }
+}
+
+/**
+ * Read a single file from an extracted bundle
+ * @param {string} bundleName - Name of the bundle
+ * @param {string} texmfPath - Path within texmf (e.g., "texmf/tex/latex/base/article.cls")
+ * @returns {Promise<Uint8Array|null>} File contents or null if not found
+ */
+export async function getBundleFileFromOPFS(bundleName, texmfPath) {
+    try {
+        const root = await getOPFSRoot();
+        if (!root) return null;
+
+        const pathParts = ['extracted-bundles', bundleName, ...texmfPath.split('/').filter(p => p)];
+        let current = root;
+
+        for (let i = 0; i < pathParts.length - 1; i++) {
+            current = await current.getDirectoryHandle(pathParts[i]);
+        }
+
+        const fileName = pathParts[pathParts.length - 1];
+        const fileHandle = await current.getFileHandle(fileName);
+        const file = await fileHandle.getFile();
+        const buffer = await file.arrayBuffer();
+
+        // Safari has ArrayBuffer detachment issues - must copy
+        // Other browsers can use the buffer directly (faster)
+        if (isSafari) {
+            const copy = new Uint8Array(buffer.byteLength);
+            copy.set(new Uint8Array(buffer));
+            return copy;
+        }
+
+        return new Uint8Array(buffer);
+    } catch (e) {
+        return null;
+    }
+}
+
+/**
+ * List all extracted bundles
+ * @returns {Promise<string[]>} Array of bundle names
+ */
+export async function listExtractedBundles() {
+    try {
+        const root = await getOPFSRoot();
+        if (!root) return [];
+
+        const extractedDir = await root.getDirectoryHandle('extracted-bundles');
+        const bundles = [];
+
+        for await (const [name, handle] of extractedDir) {
+            if (handle.kind === 'directory' && !name.startsWith('.')) {
+                bundles.push(name);
+            }
+        }
+
+        return bundles;
+    } catch (e) {
+        return [];
+    }
+}
+
+/**
+ * Get metadata for an extracted bundle
+ * @param {string} bundleName - Name of the bundle
+ * @returns {Promise<Object|null>} Bundle metadata or null
+ */
+export async function getExtractedBundleMeta(bundleName) {
+    try {
+        const root = await getOPFSRoot();
+        if (!root) return null;
+
+        const extractedDir = await root.getDirectoryHandle('extracted-bundles');
+        const bundleDir = await extractedDir.getDirectoryHandle(bundleName);
+        const metaHandle = await bundleDir.getFileHandle('.meta.json');
+        const metaFile = await metaHandle.getFile();
+        return JSON.parse(await metaFile.text());
+    } catch (e) {
+        return null;
+    }
+}
+
+/**
+ * Clear all extracted bundles from OPFS
+ * @returns {Promise<boolean>} True if successful
+ */
+export async function clearExtractedBundles() {
+    try {
+        const root = await getOPFSRoot();
+        if (!root) return false;
+
+        await root.removeEntry('extracted-bundles', { recursive: true });
+        console.log('Cleared all extracted bundles from OPFS');
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
+ * Clear a specific extracted bundle from OPFS
+ * @param {string} bundleName - Name of the bundle to clear
+ * @returns {Promise<boolean>} True if successful
+ */
+export async function clearExtractedBundle(bundleName) {
+    try {
+        const root = await getOPFSRoot();
+        if (!root) return false;
+
+        const extractedDir = await root.getDirectoryHandle('extracted-bundles');
+        await extractedDir.removeEntry(bundleName, { recursive: true });
+        console.log(`Cleared extracted bundle: ${bundleName}`);
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+// ============================================================================
 
 // Manifest cache - stores file-manifest.json, registry.json, package-map.json in OPFS
 export async function getManifestFromOPFS(name) {
@@ -526,21 +911,14 @@ export async function getCompiledWasmModule() {
             request.onerror = () => resolve(null);
             request.onsuccess = async () => {
                 const result = request.result;
-                console.log('[WASM-CACHE] Checking IndexedDB cache...', { hasResult: !!result });
                 if (result?.bytes instanceof Uint8Array) {
-                    console.log('[WASM-CACHE] ✅ HIT - Found cached bytes, compiling...');
-                    const startTime = performance.now();
                     try {
                         const module = await WebAssembly.compile(result.bytes);
-                        const elapsed = (performance.now() - startTime).toFixed(0);
-                        console.log(`[WASM-CACHE] ✅ Compiled from cache in ${elapsed}ms`);
                         resolve(module);
-                    } catch (e) {
-                        console.log('[WASM-CACHE] ❌ Compile from cache failed:', e.message);
+                    } catch {
                         resolve(null);
                     }
                 } else {
-                    console.log('[WASM-CACHE] ❌ MISS - No cached bytes');
                     resolve(null);
                 }
             };
@@ -559,24 +937,16 @@ export async function saveWasmBytes(bytes) {
             const tx = db.transaction(WASM_STORE, 'readwrite');
             const store = tx.objectStore(WASM_STORE);
             const request = store.put({ key: 'busytex', bytes, timestamp: Date.now() });
-            request.onerror = () => {
-                console.warn('[WASM-CACHE] Failed to save bytes');
-                resolve(false);
-            };
-            request.onsuccess = () => {
-                console.log(`[WASM-CACHE] ✅ Saved ${(bytes.length / 1024 / 1024).toFixed(1)}MB to cache`);
-                resolve(true);
-            };
+            request.onerror = () => resolve(false);
+            request.onsuccess = () => resolve(true);
         });
-    } catch (e) {
-        console.warn('[WASM-CACHE] Failed to save bytes:', e);
+    } catch {
         return false;
     }
 }
 
 // Keep old function name for backwards compat but it's now a no-op
 export async function saveCompiledWasmModule(module) {
-    console.log('[WASM-CACHE] saveCompiledWasmModule called but ignored - use saveWasmBytes instead');
     return false;
 }
 
@@ -628,7 +998,9 @@ export async function saveWasmMemorySnapshot(memoryOrSnapshot, metadata = {}) {
         const byteLength = snapshot.byteLength;
 
         // Write snapshot binary - fileSystem handles any necessary copying internally
-        await fileSystem.writeBinary(MEMORY_SNAPSHOT_PATH, snapshot, { createParents: true, silent: true });
+        const fs = await getFileSystem();
+        if (!fs) return false;
+        await fs.writeBinary(MEMORY_SNAPSHOT_PATH, snapshot, { createParents: true, silent: true });
 
         // Write metadata as JSON (small, no optimization needed)
         const metaData = {
@@ -637,7 +1009,7 @@ export async function saveWasmMemorySnapshot(memoryOrSnapshot, metadata = {}) {
             timestamp: Date.now(),
             version: MEMORY_SNAPSHOT_VERSION,
         };
-        await fileSystem.writeFile(MEMORY_SNAPSHOT_META_PATH, JSON.stringify(metaData), { silent: true });
+        await fs.writeFile(MEMORY_SNAPSHOT_META_PATH, JSON.stringify(metaData), { silent: true });
 
         console.log(`Saved WASM memory snapshot (${(byteLength / 1024 / 1024).toFixed(1)}MB)`);
         return true;
@@ -653,14 +1025,15 @@ export async function saveWasmMemorySnapshot(memoryOrSnapshot, metadata = {}) {
 // Returns null if no valid snapshot exists
 export async function getWasmMemorySnapshot() {
     try {
-        if (!await ensureWasmCacheMounted()) {
+        const fs = await getFileSystem();
+        if (!fs || !await ensureWasmCacheMounted()) {
             return null;
         }
 
         // Read metadata first (small file, fast) to validate before loading large snapshot
         let metaJson;
         try {
-            metaJson = await fileSystem.readFile(MEMORY_SNAPSHOT_META_PATH);
+            metaJson = await fs.readFile(MEMORY_SNAPSHOT_META_PATH);
         } catch {
             // Metadata doesn't exist - no snapshot available
             return null;
@@ -678,7 +1051,7 @@ export async function getWasmMemorySnapshot() {
         // Read snapshot binary - this is the large (~500MB) operation
         let snapshot;
         try {
-            snapshot = await fileSystem.readBinary(MEMORY_SNAPSHOT_PATH);
+            snapshot = await fs.readBinary(MEMORY_SNAPSHOT_PATH);
         } catch {
             // Snapshot file missing (possibly corrupted state) - clear metadata
             clearWasmMemorySnapshot().catch(() => {});
@@ -707,14 +1080,15 @@ export async function getWasmMemorySnapshot() {
 // Clear memory snapshot (call when WASM version changes)
 export async function clearWasmMemorySnapshot() {
     try {
-        if (!await ensureWasmCacheMounted()) {
+        const fs = await getFileSystem();
+        if (!fs || !await ensureWasmCacheMounted()) {
             return false;
         }
 
         // Delete both files in parallel for efficiency
         await Promise.all([
-            fileSystem.deleteFile(MEMORY_SNAPSHOT_PATH, { silent: true }).catch(() => {}),
-            fileSystem.deleteFile(MEMORY_SNAPSHOT_META_PATH, { silent: true }).catch(() => {}),
+            fs.deleteFile(MEMORY_SNAPSHOT_PATH, { silent: true }).catch(() => {}),
+            fs.deleteFile(MEMORY_SNAPSHOT_META_PATH, { silent: true }).catch(() => {}),
         ]);
 
         console.log('Cleared WASM memory snapshot');
@@ -725,4 +1099,11 @@ export async function clearWasmMemorySnapshot() {
     }
 }
 
-export { CTAN_CACHE_VERSION, BUNDLE_CACHE_VERSION, MANIFEST_CACHE_VERSION, WASM_CACHE_VERSION, MEMORY_SNAPSHOT_VERSION };
+export {
+    CTAN_CACHE_VERSION,
+    BUNDLE_CACHE_VERSION,
+    MANIFEST_CACHE_VERSION,
+    WASM_CACHE_VERSION,
+    MEMORY_SNAPSHOT_VERSION,
+    EXTRACTED_BUNDLES_VERSION,
+};

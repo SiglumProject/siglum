@@ -4,6 +4,8 @@
 const BUNDLES_DIR = './packages/bundles';
 const DIST_DIR = './dist';
 
+let busytexJsRequestCount = 0;
+
 Bun.serve({
   port: 8787,
   hostname: '0.0.0.0', // Listen on all interfaces for network access
@@ -18,6 +20,18 @@ Bun.serve({
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Zotero-API-Key',
       'Cross-Origin-Resource-Policy': 'cross-origin',
+    };
+
+    // No-cache headers for development source files only
+    const noCacheHeaders = {
+      ...corsHeaders,
+      'Cache-Control': 'no-store',
+    };
+
+    // Cache headers for static assets (bundles, WASM) - 1 hour browser cache
+    const cacheHeaders = {
+      ...corsHeaders,
+      'Cache-Control': 'public, max-age=3600',
     };
 
     // Log all requests
@@ -70,7 +84,7 @@ Bun.serve({
             return new Response(slice, {
               status: 206,
               headers: {
-                ...corsHeaders,
+                ...cacheHeaders,
                 'Content-Type': 'application/octet-stream',
                 'Content-Range': `bytes ${start}-${sliceEnd - 1}/${decompressed.length}`,
                 'Content-Length': String(slice.length),
@@ -80,10 +94,10 @@ Bun.serve({
         }
 
         return new Response(bunFile, {
-          headers: { ...corsHeaders, 'Content-Type': contentType },
+          headers: { ...cacheHeaders, 'Content-Type': contentType },
         });
       }
-      return new Response('Not found: ' + filePath, { status: 404, headers: corsHeaders });
+      return new Response('Not found: ' + filePath, { status: 404, headers: cacheHeaders });
     }
 
     // /wasm/* - serve from busytex/build/wasm/
@@ -97,36 +111,50 @@ Bun.serve({
           : file.endsWith('.js') ? 'application/javascript'
           : 'application/octet-stream';
         return new Response(bunFile, {
-          headers: { ...corsHeaders, 'Content-Type': contentType },
+          headers: { ...cacheHeaders, 'Content-Type': contentType },
         });
       }
-      return new Response('Not found: ' + filePath, { status: 404, headers: corsHeaders });
+      return new Response('Not found: ' + filePath, { status: 404, headers: cacheHeaders });
     }
 
-    // /api/texlive/* - proxy to TexLive archive (raw .tar.xz)
+    // /api/texlive/* - serve from local TL2025 archive
     // This is preferred over CTAN because TexLive has pre-built .sty files
     if (path.startsWith('/api/texlive/')) {
       const pkg = path.slice(13);
-      const texliveUrl = `https://siglum-api.vtp-ips.workers.dev/api/texlive/${pkg}`;
+      const archiveDir = './busytex/source/texmfrepo/archive';
 
-      console.log(`Proxying TexLive request: ${pkg}`);
+      console.log(`[TEXLIVE] Serving package: ${pkg}`);
+      if (pkg === 'enumitem') {
+        console.log(`[TEXLIVE] *** ENUMITEM REQUESTED - checking archive...`);
+      }
       try {
-        const response = await fetch(texliveUrl);
-        if (!response.ok) {
+        // Find the package file (format: packagename.r12345.tar.xz)
+        const files = await Array.fromAsync(new Bun.Glob(`${pkg}.r*.tar.xz`).scan(archiveDir));
+        console.log(`[TEXLIVE] Found ${files.length} files for ${pkg}: ${files.join(', ')}`);
+        if (files.length === 0) {
+          console.log(`[TEXLIVE] 404: ${pkg} not found in archive`);
           return new Response(JSON.stringify({ error: 'Package not found in TexLive' }), {
-            status: response.status,
+            status: 404,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
-        const body = await response.arrayBuffer();
-        return new Response(body, {
-          status: response.status,
+        // Use the first match (should only be one per package)
+        const filePath = `${archiveDir}/${files[0]}`;
+        console.log(`[TEXLIVE] Serving file: ${filePath}`);
+        const file = Bun.file(filePath);
+        if (!await file.exists()) {
+          return new Response(JSON.stringify({ error: 'Package file not found' }), {
+            status: 404,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(file, {
           headers: { ...corsHeaders, 'Content-Type': 'application/x-xz' },
         });
       } catch (e: any) {
-        console.error(`TexLive proxy error: ${e.message}`);
+        console.error(`TexLive serve error: ${e.message}`);
         return new Response(JSON.stringify({ error: e.message }), {
-          status: 502,
+          status: 500,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
@@ -193,31 +221,53 @@ Bun.serve({
       });
     }
 
-    // /src/* - serve source files (for local development)
+    // /src/* - serve source files (for local development, no caching)
     if (path.startsWith('/src/')) {
       const file = path.slice(5);
       const bunFile = Bun.file(`./src/${file}`);
       if (await bunFile.exists()) {
         const contentType = file.endsWith('.js') ? 'application/javascript' : 'text/plain';
         return new Response(bunFile, {
-          headers: { ...corsHeaders, 'Content-Type': contentType },
+          headers: { ...noCacheHeaders, 'Content-Type': contentType },
         });
       }
-      return new Response('Not found: ./src/' + file, { status: 404, headers: corsHeaders });
+      return new Response('Not found: ./src/' + file, { status: 404, headers: noCacheHeaders });
     }
 
-    // /xzwasm.js - serve from dist
+    // /xzwasm.js - serve from dist/src (or node_modules fallback)
     if (path === '/xzwasm.js') {
-      const bunFile = Bun.file(`${DIST_DIR}/xzwasm.js`);
+      // Try dist/src first (built), then node_modules (development)
+      const paths = [
+        `${DIST_DIR}/src/xzwasm.js`,
+        './node_modules/xzwasm/dist/package/xzwasm.js'
+      ];
+      for (const p of paths) {
+        const bunFile = Bun.file(p);
+        if (await bunFile.exists()) {
+          return new Response(bunFile, {
+            headers: { ...cacheHeaders, 'Content-Type': 'application/javascript' },
+          });
+        }
+      }
+    }
+
+    // Demo page (with SharedArrayBuffer headers)
+    if (path === '/' || path === '/demo.html') {
+      const bunFile = Bun.file('./demo.html');
       if (await bunFile.exists()) {
         return new Response(bunFile, {
-          headers: { ...corsHeaders, 'Content-Type': 'application/javascript' },
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'text/html',
+            'Cross-Origin-Opener-Policy': 'same-origin',
+            'Cross-Origin-Embedder-Policy': 'require-corp',
+          },
         });
       }
     }
 
     // Health check
-    if (path === '/' || path === '/health') {
+    if (path === '/health') {
       return new Response(JSON.stringify({
         status: 'ok',
         service: 'siglum-local-dev',
@@ -235,7 +285,7 @@ console.log('Local dev server: http://localhost:8787');
 console.log('  /bundles/*    -> ./packages/bundles/');
 console.log('  /wasm/*       -> ./busytex/build/wasm/');
 console.log('  /src/*        -> ./src/');
-console.log('  /api/texlive/ -> TexLive archive proxy (pre-built packages)');
+console.log('  /api/texlive/ -> Local TL2025 archive (busytex/source/texmfrepo/archive/)');
 console.log('  /api/ctan-pkg/-> CTAN package info proxy');
 console.log('  /api/fetch/   -> CTAN package proxy');
 console.log('  /api/zotero/  -> Zotero API proxy');
