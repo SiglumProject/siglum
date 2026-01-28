@@ -1,5 +1,5 @@
 {
-  "name": "siglum-engine",
+  "name": "@siglum/engine",
   "version": "0.1.0",
   "description": "The fastest browser-based LaTeX compiler - TeX Live 2025 in WebAssembly with lazy loading and CTAN package resolution",
   "type": "module",
@@ -13,10 +13,7 @@
     "./incremental": "./src/incremental/index.js"
   },
   "files": [
-    "src/",
-    "busytex.js",
-    "busytex.wasm",
-    "packages/bundles/"
+    "src/"
   ],
   "scripts": {
     "dev": "bun serve-local.ts",
@@ -44,7 +41,7 @@
   },
   "homepage": "https://github.com/SiglumProject/siglum-engine#readme",
   "dependencies": {
-    "@siglum/filesystem": "file:../siglum-filesystem",
+    "@siglum/filesystem": "^0.2.0",
     "blake3-wasm": "2.1.5",
     "jszip": "^3.10.1",
     "pdf-lib": "^1.17.1",
