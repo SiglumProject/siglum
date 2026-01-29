@@ -3,7 +3,6 @@
 <head>
     <meta charset="UTF-8">
     <title>Siglum Engine Demo</title>
-    <!-- Import map for bare module specifiers -->
     <script type="importmap">
     {
       "imports": {
@@ -11,58 +10,41 @@
       }
     }
     </script>
-    <!-- Preconnect to local dev server -->
-    <link rel="preconnect" href="http://localhost:8787">
-    <!-- Note: No preload hints - OPFS caching handles subsequent loads -->
     <style>
+        :root { --text: #1d1d1f; --muted: #888; --bg: #f5f5f7; --border: #ddd; --accent: #07f; }
         * { box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 40px 20px; color: #1d1d1f; background: #fff; }
-        h1 { font-size: 28px; font-weight: 600; letter-spacing: -0.5px; margin-bottom: 8px; }
-        p { color: #86868b; margin-bottom: 24px; }
-        h3 { font-size: 13px; font-weight: 500; color: #86868b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+        body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 40px 20px; color: var(--text); }
+        h1 { font-size: 28px; font-weight: 600; margin-bottom: 8px; }
+        p { color: var(--muted); margin-bottom: 24px; }
+        h3 { font-size: 12px; font-weight: 500; color: var(--muted); text-transform: uppercase; margin-bottom: 12px; }
+        a { color: var(--accent); }
         .container { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; height: 55vh; min-height: 400px; margin-bottom: 16px; }
-        .container > div { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
-        textarea { flex: 1; width: 100%; font-family: 'SF Mono', Menlo, monospace; font-size: 13px; padding: 16px; border: 1px solid #d2d2d7; border-radius: 12px; resize: none; outline: none; transition: border-color 0.2s; }
-        textarea:focus { border-color: #0071e3; }
-        #pdfViewer { flex: 1; width: 100%; border: none; border-radius: 12px; background: #f5f5f7; }
+        .container > div { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+        textarea { flex: 1; width: 100%; font-family: ui-monospace, monospace; font-size: 13px; padding: 16px; border: 1px solid var(--border); resize: none; }
+        textarea:focus { border-color: var(--accent); outline: none; }
+        .pdf-container { flex: 1; position: relative; background: var(--bg); }
+        #pdfViewer { width: 100%; height: 100%; border: none; }
+        .pdf-placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+        .pdf-placeholder.hidden { display: none; }
         .controls { margin-bottom: 20px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-        button { padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer; background: #0071e3; color: #fff; border: none; border-radius: 8px; transition: opacity 0.2s; }
-        button:hover { opacity: 0.85; }
+        button { padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer; background: var(--accent); color: #fff; border: none; }
         button:disabled { opacity: 0.4; cursor: not-allowed; }
-        button.secondary { background: #f5f5f7; color: #1d1d1f; }
-        button.secondary:hover { background: #e8e8ed; }
-        select { padding: 8px 12px; font-size: 13px; border: 1px solid #d2d2d7; border-radius: 8px; background: #fff; outline: none; }
-        label { font-size: 13px; color: #1d1d1f; display: flex; align-items: center; gap: 6px; }
-        input[type="checkbox"] { width: 16px; height: 16px; accent-color: #0071e3; }
-        #status { margin-top: 16px; padding: 16px; background: #f5f5f7; border-radius: 12px; font-family: 'SF Mono', Menlo, monospace; font-size: 11px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; color: #1d1d1f; }
-        .stats { padding: 12px 16px; background: #f5f5f7; border-radius: 10px; font-size: 12px; margin-bottom: 16px; color: #86868b; }
-        .stats strong { color: #1d1d1f; font-weight: 500; }
-        #time { font-size: 13px; color: #86868b; font-weight: 500; }
-        .banner { background: #f5f5f7; color: #1d1d1f; padding: 10px 20px; margin: -20px -20px 24px -20px; display: flex; justify-content: space-between; align-items: center; border: 1px solid #d2d2d7; border-radius: 12px; }
-        .banner-left { display: flex; align-items: center; gap: 8px; }
-        .banner-logo { font-weight: 600; font-size: 14px; color: #1d1d1f; text-decoration: none; }
-        .banner-logo:hover { color: #0071e3; }
-        .banner-text { font-size: 13px; color: #86868b; }
-        .banner-links { display: flex; gap: 16px; }
-        .banner-links a { color: #0071e3; text-decoration: none; font-size: 13px; font-weight: 500; transition: opacity 0.2s; }
-        .banner-links a:hover { text-decoration: underline; }
+        button.secondary { background: var(--bg); color: var(--text); }
+        select { padding: 8px 12px; font-size: 13px; border: 1px solid var(--border); background: #fff; }
+        label { font-size: 13px; display: flex; align-items: center; gap: 6px; }
+        input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+        #status { margin-top: 16px; padding: 16px; background: var(--bg); font-family: ui-monospace, monospace; font-size: 11px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
+        .stats { padding: 12px 16px; background: var(--bg); font-size: 12px; margin-bottom: 16px; color: var(--muted); }
+        .stats strong { color: var(--text); }
+        #time { font-size: 13px; color: var(--muted); }
+        h1 a { color: inherit; text-decoration: none; }
+        h1 a:hover { color: var(--accent); }
+        footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
     </style>
 </head>
 <body>
-    <div class="banner">
-        <div class="banner-left">
-            <span class="banner-text">Sponsored by</span>
-            <a href="https://siglum.org" class="banner-logo">Siglum</a>
-            <span class="banner-text">&mdash; Open source in-browser LaTeX editor and compiler</span>
-        </div>
-        <div class="banner-links">
-            <a href="https://siglum.org" target="_blank">Siglum.org</a>
-            <a href="https://github.com/SiglumProject/siglum" target="_blank">GitHub</a>
-        </div>
-    </div>
-
-    <h1>Siglum Engine Demo</h1>
-    <p>Part of the <a href="https://siglum.org" style="color: #0071e3;">Siglum</a> project. In-browser LaTeX compilation with on-demand package loading.</p>
+    <h1><a href="https://github.com/SiglumProject">Siglum</a> Engine Demo</h1>
+    <p>In-browser LaTeX compilation with on-demand package loading.</p>
 
     <div class="stats" id="stats">
         <strong>Bundles:</strong> <span id="bundleCount">0</span> |
@@ -96,10 +78,6 @@
             Auto-compile
         </label>
         <label>
-            <input type="checkbox" id="enableKeyupCompile">
-            Compile on keyup
-        </label>
-        <label>
             <input type="checkbox" id="enableVerbose">
             Verbose logs
         </label>
@@ -107,8 +85,6 @@
         <button id="clearCacheBtn" class="secondary">Clear Cache</button>
         <span id="time"></span>
     </div>
-
-    <div id="missingPackages"></div>
 
     <div class="container">
         <div>
@@ -126,7 +102,10 @@ $E = mc^2$
         </div>
         <div>
             <h3>PDF Preview</h3>
-            <iframe id="pdfViewer"></iframe>
+            <div class="pdf-container">
+                <div class="pdf-placeholder" id="pdfPlaceholder">Click Compile to generate PDF</div>
+                <iframe id="pdfViewer"></iframe>
+            </div>
         </div>
     </div>
 
@@ -138,7 +117,6 @@ $E = mc^2$
         let compiler = null;
         let currentPdfUrl = null;
         let compileTimeout = null;
-        let autoCompileEnabled = false;
 
         // Use batched logging to avoid DOM thrashing during compilation
         const log = createBatchedLogger((messages) => {
@@ -196,26 +174,6 @@ $E = mc^2$
             document.getElementById('compileBtn').disabled = false;
             log('Compiler ready!');
             updateStats();
-
-            // Warm-up compile in background - preloads bundles and WASM
-            warmup();
-        }
-
-        async function warmup() {
-            log('Warming up (minimal compile)...');
-            // Minimal document - only loads core + fmt-pdflatex bundles
-            // Other bundles (amsmath, etc) will be fetched on first real compile
-            const warmupDoc = `\\documentclass{article}
-\\begin{document}
-x
-\\end{document}`;
-            try {
-                const start = performance.now();
-                await compiler.compile(warmupDoc, 'pdflatex');
-                log(`Warmup complete in ${(performance.now() - start).toFixed(0)}ms`);
-            } catch (e) {
-                log('Warmup failed (non-critical): ' + e.message);
-            }
         }
 
         async function compile() {
@@ -241,7 +199,7 @@ x
                 const result = await compiler.compile(source, { engine });
 
                 const elapsed = performance.now() - startTime;
-                document.getElementById('time').textContent = `${elapsed.toFixed(0)}ms`;
+                document.getElementById('time').textContent = `Round-trip: ${elapsed.toFixed(0)}ms`;
 
                 if (result.success) {
                     log('Compilation successful!');
@@ -257,6 +215,7 @@ x
                     const blob = new Blob([pdfCopy], { type: 'application/pdf' });
                     currentPdfUrl = URL.createObjectURL(blob);
                     document.getElementById('pdfViewer').src = currentPdfUrl;
+                    document.getElementById('pdfPlaceholder').classList.add('hidden');
                 } else {
                     log('Compilation failed: ' + (result.error || 'Unknown error'));
                     if (result.log) {
@@ -314,15 +273,8 @@ x
             }, 500);
         }
 
-        // Event listeners for auto-compile
         document.getElementById('source').addEventListener('input', () => {
             if (document.getElementById('enableAutoCompile').checked) {
-                scheduleAutoCompile();
-            }
-        });
-
-        document.getElementById('source').addEventListener('keyup', () => {
-            if (document.getElementById('enableKeyupCompile').checked) {
                 scheduleAutoCompile();
             }
         });
@@ -356,8 +308,8 @@ x
         });
     </script>
 
-    <footer style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #d2d2d7; font-size: 12px; color: #86868b;">
-        Built on <a href="https://github.com/busytex/busytex" style="color: #0071e3;">BusyTeX</a>, which compiled TeX Live to WebAssembly.
+    <footer>
+        Built on <a href="https://github.com/busytex/busytex">BusyTeX</a>, which compiled TeX Live to WebAssembly.
     </footer>
 </body>
 </html>
