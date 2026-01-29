@@ -1,10 +1,10 @@
 // Bundle loading and package resolution module
 
 import {
-    getBundleFromOPFS,
-    saveBundleToOPFS,
-    getManifestFromOPFS,
-    saveManifestToOPFS,
+    getBundleFromCache,
+    saveBundleToCache,
+    getManifestFromCache,
+    saveManifestToCache,
     getManifestVersion,
     saveManifestVersion,
     MANIFEST_CACHE_VERSION,
@@ -42,8 +42,7 @@ async function decompress(compressed, format = 'gzip') {
 export class BundleManager {
     constructor(options = {}) {
         this.bundleBase = options.bundleBase || 'packages/bundles';
-        this.bundleCache = new Map();  // Legacy: blob cache (for fallback)
-        this.extractedBundles = new Set();  // Track which bundles are extracted to OPFS
+        this.bundleCache = new Map();  // In-memory bundle cache
         this.fileManifest = null;
         this.packageMap = null;
         this.bundleDeps = null;
@@ -51,7 +50,6 @@ export class BundleManager {
         this.bundleRegistry = null;
         this.bytesDownloaded = 0;
         this.cacheHitCount = 0;
-        this.useOPFSExtraction = false;  // DISABLED - worker reading from OPFS on every compile is slower than blob transfer
         this.onLog = options.onLog || (() => {});
         this.onProgress = options.onProgress || (() => {});
     }
@@ -83,16 +81,16 @@ export class BundleManager {
     async loadManifest() {
         if (this.fileManifest) return this.fileManifest;
 
-        // Check OPFS cache first
+        // Check cache first
         const cachedVersion = await getManifestVersion();
         if (cachedVersion === MANIFEST_CACHE_VERSION) {
             const [manifest, bundlesData] = await Promise.all([
-                getManifestFromOPFS('file-manifest'),
-                getManifestFromOPFS('bundles'),
+                getManifestFromCache('file-manifest'),
+                getManifestFromCache('bundles'),
             ]);
 
             if (manifest && bundlesData) {
-                this.onLog('Manifests loaded from OPFS cache');
+                this.onLog('Manifests loaded from cache');
                 this.fileManifest = manifest;
                 this._initFromBundlesData(bundlesData);
                 return this.fileManifest;
@@ -109,16 +107,16 @@ export class BundleManager {
         const bundlesData = await bundlesRes.json();
         this._initFromBundlesData(bundlesData);
 
-        // Save to OPFS (await to ensure cache is populated)
+        // Save to cache (await to ensure cache is populated)
         try {
             await Promise.all([
-                saveManifestToOPFS('file-manifest', this.fileManifest),
-                saveManifestToOPFS('bundles', bundlesData),
+                saveManifestToCache('file-manifest', this.fileManifest),
+                saveManifestToCache('bundles', bundlesData),
                 saveManifestVersion(MANIFEST_CACHE_VERSION),
             ]);
-            this.onLog('Manifests saved to OPFS cache');
+            this.onLog('Manifests saved to cache');
         } catch (e) {
-            // OPFS save failed, continue anyway
+            // Cache save failed, continue anyway
         }
 
         return this.fileManifest;
@@ -154,7 +152,7 @@ export class BundleManager {
         if (!this.packageDeps) {
             const cachedVersion = await getManifestVersion();
             if (cachedVersion === MANIFEST_CACHE_VERSION) {
-                const packageDeps = await getManifestFromOPFS('package-deps');
+                const packageDeps = await getManifestFromCache('package-deps');
                 if (packageDeps) {
                     this.packageDeps = packageDeps;
                     return this.bundleDeps;
@@ -166,9 +164,9 @@ export class BundleManager {
                 if (packageDepsRes?.ok) {
                     this.packageDeps = await packageDepsRes.json();
                     try {
-                        await saveManifestToOPFS('package-deps', this.packageDeps);
+                        await saveManifestToCache('package-deps', this.packageDeps);
                     } catch (e) {
-                        // OPFS save failed, continue anyway
+                        // Cache save failed, continue anyway
                     }
                 }
             } catch (e) {
@@ -376,58 +374,7 @@ export class BundleManager {
     }
 
     /**
-     * Ensure a bundle is ready in OPFS for worker to read
-     * Phase 1: Saves blob to OPFS (worker reads blob)
-     * Phase 2 (future): Extract individual files (worker reads files lazily)
-     */
-    async ensureBundleExtracted(bundleName) {
-        // Already handled this session?
-        if (this.extractedBundles.has(bundleName)) {
-            return { bundleName, extracted: true, cached: true };
-        }
-
-        // Check OPFS for existing bundle blob
-        const existingBlob = await getBundleFromOPFS(bundleName);
-        if (existingBlob) {
-            this.onLog(`  OPFS ready: ${bundleName}`);
-            this.extractedBundles.add(bundleName);
-            this.cacheHitCount++;
-            return { bundleName, extracted: true, cached: true };
-        }
-
-        // Need to fetch and save to OPFS
-        this.onLog(`  Fetching for OPFS: ${bundleName}...`);
-        this.onProgress('loading', `Loading ${bundleName}...`);
-
-        // Fetch bundle blob
-        const url = `${this.bundleBase}/${bundleName}.data.gz`;
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`Failed to load ${bundleName}: ${response.status}`);
-
-        const compressed = await response.arrayBuffer();
-        this.bytesDownloaded += compressed.byteLength;
-
-        // Decompress
-        const contentEncoding = response.headers.get('Content-Encoding');
-        const format = contentEncoding === 'br' ? 'none' : 'gzip';
-        const decompressed = await decompress(compressed, format);
-
-        // Save to OPFS for worker to read
-        const saved = await saveBundleToOPFS(bundleName, decompressed);
-
-        this.extractedBundles.add(bundleName);
-        if (saved) {
-            this.onLog(`  Saved to storage: ${bundleName} (${(decompressed.byteLength / 1024 / 1024).toFixed(1)}MB)`);
-        } else {
-            this.onLog(`  WARNING: Failed to save ${bundleName} to storage!`);
-        }
-        return { bundleName, extracted: true, cached: false };
-
-        // Note: decompressed blob is now eligible for GC - we don't keep it in memory!
-    }
-
-    /**
-     * Load bundle blob (legacy approach - for fallback)
+     * Load bundle blob
      * Returns the full blob in memory
      */
     async loadBundle(bundleName) {
@@ -436,10 +383,10 @@ export class BundleManager {
             return this.bundleCache.get(bundleName);
         }
 
-        // Check OPFS blob cache (legacy)
-        const cached = await getBundleFromOPFS(bundleName);
+        // Check filesystem cache
+        const cached = await getBundleFromCache(bundleName);
         if (cached) {
-            this.onLog(`  From OPFS: ${bundleName}`);
+            this.onLog(`  From cache: ${bundleName}`);
             this.bundleCache.set(bundleName, cached);
             this.cacheHitCount++;
             return cached;
@@ -461,27 +408,10 @@ export class BundleManager {
         const decompressed = await decompress(compressed, format);
         this.bundleCache.set(bundleName, decompressed);
 
-        // Save to OPFS in background
-        saveBundleToOPFS(bundleName, decompressed);
+        // Save to cache in background
+        saveBundleToCache(bundleName, decompressed);
 
         return decompressed;
-    }
-
-    /**
-     * Ensure multiple bundles are extracted to OPFS
-     * Returns list of bundle names that are ready
-     */
-    async ensureBundlesExtracted(bundleNames) {
-        const results = await Promise.all(
-            bundleNames.map(name => this.ensureBundleExtracted(name).catch(e => {
-                this.onLog(`Failed to extract ${name}: ${e.message}`);
-                return null;
-            }))
-        );
-
-        return results
-            .filter(r => r !== null)
-            .map(r => r.bundleName);
     }
 
     async loadBundles(bundleNames) {
@@ -505,23 +435,15 @@ export class BundleManager {
     }
 
     /**
-     * Clear in-memory bundle cache to free RAM. OPFS cache is preserved.
+     * Clear in-memory bundle cache to free RAM. Filesystem cache is preserved.
      */
     clearCache() {
         this.bundleCache.clear();
-        this.extractedBundles.clear();
         this.onLog('Bundle memory cache cleared');
     }
 
-    /**
-     * Check if OPFS extraction is available
-     */
-    isOPFSAvailable() {
-        return typeof navigator?.storage?.getDirectory === 'function';
-    }
 
     // Preload all required bundles for an engine (call during init)
-    // Uses OPFS extraction when available, falls back to blob loading
     async preloadEngine(engine = 'pdflatex') {
         await this.loadBundleDeps();
         const engineDeps = this.bundleDeps?.engines?.[engine];
@@ -529,15 +451,8 @@ export class BundleManager {
 
         this.onLog(`Preloading ${engine} bundles...`);
 
-        if (this.useOPFSExtraction && this.isOPFSAvailable()) {
-            // New approach: extract to OPFS (no blobs in memory)
-            await this.ensureBundlesExtracted(engineDeps.required);
-            this.onLog(`Preload complete: ${engineDeps.required.length} bundles extracted to OPFS`);
-        } else {
-            // Legacy approach: load blobs into memory
-            await this.loadBundles(engineDeps.required);
-            this.onLog(`Preload complete: ${engineDeps.required.length} bundles in memory`);
-        }
+        await this.loadBundles(engineDeps.required);
+        this.onLog(`Preload complete: ${engineDeps.required.length} bundles loaded`);
     }
 }
 
