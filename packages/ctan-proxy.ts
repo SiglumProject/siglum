@@ -31,6 +31,16 @@ const MEMORY_CACHE_MAX_SIZE = parseInt(process.env.CTAN_PROXY_MEMORY_CACHE_SIZE 
 const INFO_CACHE_MAX_SIZE = parseInt(process.env.CTAN_PROXY_INFO_CACHE_SIZE || '500', 10);
 const ALIAS_CACHE_MAX_SIZE = parseInt(process.env.CTAN_PROXY_ALIAS_CACHE_SIZE || '1000', 10);
 
+// Supported TexLive years for version fallback (newest first)
+// Use older years when packages require kernel features not in our LaTeX build
+const SUPPORTED_TL_YEARS = [2025, 2024, 2023] as const;
+type TLYear = typeof SUPPORTED_TL_YEARS[number];
+const DEFAULT_TL_YEAR: TLYear = 2025;
+
+function getTexLiveUrl(pkgName: string, year: TLYear): string {
+  return `https://ftp.tu-chemnitz.de/pub/tug/historic/systems/texlive/${year}/tlnet-final/archive/${pkgName}.tar.xz`;
+}
+
 // Ensure cache directory exists
 if (!existsSync(CACHE_DIR)) {
   mkdirSync(CACHE_DIR, { recursive: true });
@@ -201,27 +211,31 @@ async function cachePackage(pkgName: string, data: ProcessedPackage): Promise<vo
 // Package fetching
 // ============================================================================
 
-async function fetchPackage(requestedPkg: string): Promise<Response> {
+async function fetchPackage(requestedPkg: string, tlYear: TLYear = DEFAULT_TL_YEAR): Promise<Response> {
   // Resolve aliases
   let pkgName = bootstrapAliases[requestedPkg] || aliasCache.get(requestedPkg) || requestedPkg;
 
+  // For version-specific requests, use a year-suffixed cache key
+  // This allows caching different versions of the same package
+  const cacheKey = tlYear !== DEFAULT_TL_YEAR ? `${pkgName}@tl${tlYear}` : pkgName;
+
   // Check cache (memory + disk)
-  const cached = await getCachedPackage(pkgName);
+  const cached = await getCachedPackage(cacheKey);
   if (cached) {
-    console.log(`Cache hit: ${requestedPkg}${pkgName !== requestedPkg ? ` (via ${pkgName})` : ''}`);
+    console.log(`Cache hit: ${requestedPkg}${pkgName !== requestedPkg ? ` (via ${pkgName})` : ''}${tlYear !== DEFAULT_TL_YEAR ? ` @TL${tlYear}` : ''}`);
     return jsonResponse(cached);
   }
 
-  console.log(`Fetching package: ${requestedPkg}${pkgName !== requestedPkg ? ` (via ${pkgName})` : ''}`);
+  console.log(`Fetching package: ${requestedPkg}${pkgName !== requestedPkg ? ` (via ${pkgName})` : ''} from TL${tlYear}`);
 
   // Try TexLive archive first
-  const tlUrl = `https://ftp.tu-chemnitz.de/pub/tug/historic/systems/texlive/2025/tlnet-final/archive/${pkgName}.tar.xz`;
-  console.log(`  Trying TexLive: ${tlUrl}`);
+  const tlUrl = getTexLiveUrl(pkgName, tlYear);
+  console.log(`  Trying TexLive ${tlYear}: ${tlUrl}`);
 
   const tlResponse = await fetch(tlUrl, { redirect: 'follow' });
   if (tlResponse.ok) {
     const tarData = new Uint8Array(await tlResponse.arrayBuffer());
-    return await processTexLiveTar(tarData, pkgName);
+    return await processTexLiveTar(tarData, pkgName, tlYear);
   }
 
   // Query CTAN for package info
@@ -254,20 +268,23 @@ async function fetchPackage(requestedPkg: string): Promise<Response> {
     if (pkgName !== requestedPkg) aliasCache.set(pkgName, parentPkg);
     await saveAliasCache();
 
+    // For version-specific requests, use a year-suffixed cache key
+    const parentCacheKey = tlYear !== DEFAULT_TL_YEAR ? `${parentPkg}@tl${tlYear}` : parentPkg;
+
     // Check cache for parent
-    const parentCached = await getCachedPackage(parentPkg);
+    const parentCached = await getCachedPackage(parentCacheKey);
     if (parentCached) {
-      console.log(`  Cache hit for parent: ${parentPkg}`);
+      console.log(`  Cache hit for parent: ${parentPkg}${tlYear !== DEFAULT_TL_YEAR ? ` @TL${tlYear}` : ''}`);
       return jsonResponse(parentCached);
     }
 
     // Try TexLive for parent
-    const parentTlUrl = `https://ftp.tu-chemnitz.de/pub/tug/historic/systems/texlive/2025/tlnet-final/archive/${parentPkg}.tar.xz`;
-    console.log(`  Trying TexLive for parent: ${parentTlUrl}`);
+    const parentTlUrl = getTexLiveUrl(parentPkg, tlYear);
+    console.log(`  Trying TexLive ${tlYear} for parent: ${parentTlUrl}`);
     const parentTlResponse = await fetch(parentTlUrl, { redirect: 'follow' });
     if (parentTlResponse.ok) {
       const tarData = new Uint8Array(await parentTlResponse.arrayBuffer());
-      return await processTexLiveTar(tarData, parentPkg);
+      return await processTexLiveTar(tarData, parentPkg, tlYear);
     }
 
     pkgName = parentPkg;
@@ -363,12 +380,12 @@ async function processZip(zipData: Uint8Array, pkgName: string): Promise<Respons
   return jsonResponse(result);
 }
 
-async function processTexLiveTar(tarData: Uint8Array, pkgName: string): Promise<Response> {
+async function processTexLiveTar(tarData: Uint8Array, pkgName: string, tlYear: TLYear = DEFAULT_TL_YEAR): Promise<Response> {
   const tmpDir = join(tmpdir(), `texlive-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
   try {
     await mkdir(tmpDir, { recursive: true });
-    console.log(`  Extracting TexLive tar.xz (${(tarData.length / 1024).toFixed(1)} KB)`);
+    console.log(`  Extracting TexLive ${tlYear} tar.xz (${(tarData.length / 1024).toFixed(1)} KB)`);
 
     const tarPath = join(tmpDir, `${pkgName}.tar.xz`);
     await writeFile(tarPath, tarData);
@@ -384,17 +401,19 @@ async function processTexLiveTar(tarData: Uint8Array, pkgName: string): Promise<
       return jsonResponse({ error: 'No usable files found' }, 404);
     }
 
-    console.log(`  Extracted ${extraction.fileCount} files from TexLive, deps: ${extraction.dependencies.join(', ') || 'none'}`);
+    console.log(`  Extracted ${extraction.fileCount} files from TexLive ${tlYear}, deps: ${extraction.dependencies.join(', ') || 'none'}`);
 
     const result: ProcessedPackage = {
       name: pkgName,
       files: extraction.files,
       totalFiles: extraction.fileCount,
       dependencies: extraction.dependencies,
-      source: 'texlive'
+      source: `texlive-${tlYear}`
     };
 
-    await cachePackage(pkgName, result);
+    // Use year-suffixed cache key for non-default years
+    const cacheKey = tlYear !== DEFAULT_TL_YEAR ? `${pkgName}@tl${tlYear}` : pkgName;
+    await cachePackage(cacheKey, result);
     return jsonResponse(result);
 
   } finally {
@@ -515,36 +534,51 @@ Bun.serve({
     }
 
     // /api/fetch/:name - Download and extract package
+    // Supports ?tlYear=2024 query param for version fallback
     if (path.startsWith('/api/fetch/')) {
       const pkgName = path.slice(11);
 
-      // Request deduplication - if already fetching, wait for that request
-      if (inFlightRequests.has(pkgName)) {
-        console.log(`  Deduplicating request for: ${pkgName}`);
-        return inFlightRequests.get(pkgName)!;
+      // Parse tlYear query parameter
+      const tlYearParam = url.searchParams.get('tlYear');
+      let tlYear: TLYear = DEFAULT_TL_YEAR;
+      if (tlYearParam) {
+        const year = parseInt(tlYearParam, 10);
+        if (SUPPORTED_TL_YEARS.includes(year as TLYear)) {
+          tlYear = year as TLYear;
+        } else {
+          return jsonResponse({ error: `Unsupported TexLive year: ${tlYearParam}. Supported: ${SUPPORTED_TL_YEARS.join(', ')}` }, 400);
+        }
+      }
+
+      // Request deduplication - include year in the key
+      const dedupeKey = tlYear !== DEFAULT_TL_YEAR ? `${pkgName}@tl${tlYear}` : pkgName;
+      if (inFlightRequests.has(dedupeKey)) {
+        console.log(`  Deduplicating request for: ${dedupeKey}`);
+        return inFlightRequests.get(dedupeKey)!;
       }
 
       // Create and track the fetch promise
-      const fetchPromise = fetchPackage(pkgName)
+      const fetchPromise = fetchPackage(pkgName, tlYear)
         .catch(e => {
           console.error(`Error fetching ${pkgName}:`, e);
           return jsonResponse({ error: e.message }, 500);
         })
         .finally(() => {
-          inFlightRequests.delete(pkgName);
+          inFlightRequests.delete(dedupeKey);
         });
 
-      inFlightRequests.set(pkgName, fetchPromise);
+      inFlightRequests.set(dedupeKey, fetchPromise);
       return fetchPromise;
     }
 
     return new Response(
       'CTAN Proxy Server\n\n' +
       'Endpoints:\n' +
-      '  /api/fetch/:name - Download and extract package\n' +
-      '  /api/pkg/:name   - Get CTAN package info\n' +
-      '  /api/deps/:name  - Get dependencies\n' +
-      '  /api/stats       - Cache statistics\n',
+      '  /api/fetch/:name[?tlYear=YYYY] - Download and extract package (default: TL2025)\n' +
+      '  /api/pkg/:name                 - Get CTAN package info\n' +
+      '  /api/deps/:name                - Get dependencies\n' +
+      '  /api/stats                     - Cache statistics\n' +
+      `\nSupported TexLive years: ${SUPPORTED_TL_YEARS.join(', ')}\n`,
       { headers: CORS_HEADERS }
     );
   }

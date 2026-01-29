@@ -215,36 +215,43 @@ export class CTANFetcher {
         }
     }
 
-    async fetchPackage(packageName) {
-        this.onLog(`[FETCH] ${packageName}: starting fetch`);
+    async fetchPackage(packageName, options = {}) {
+        const { tlYear } = options;
+        const yearLabel = tlYear ? ` (TL${tlYear})` : '';
+        this.onLog(`[FETCH] ${packageName}${yearLabel}: starting fetch`);
 
-        // Check cache first
-        const cached = await this.loadPackageFromCache(packageName);
-        if (cached) {
-            if (cached.notFound) {
-                // Package itself doesn't exist - but maybe the file is in a different package
-                // e.g., algorithm.sty is in the "algorithms" package
-                // Try common extensions in order of likelihood
-                const extensions = LATEX_FILE_EXTENSIONS;
-                for (const ext of extensions) {
-                    const fileName = packageName + ext;
-                    const realPkg = await this.lookupPackageForFile(fileName);
-                    if (realPkg && realPkg !== packageName) {
-                        this.onLog(`[FETCH] ${packageName}: not found, but ${fileName} is in package "${realPkg}"`);
-                        return this.fetchPackage(realPkg);
+        // Skip cache for version-specific requests - we want a different version
+        if (!tlYear) {
+            // Check cache first
+            const cached = await this.loadPackageFromCache(packageName);
+            if (cached) {
+                if (cached.notFound) {
+                    // Package itself doesn't exist - but maybe the file is in a different package
+                    // e.g., algorithm.sty is in the "algorithms" package
+                    // Try common extensions in order of likelihood
+                    const extensions = LATEX_FILE_EXTENSIONS;
+                    for (const ext of extensions) {
+                        const fileName = packageName + ext;
+                        const realPkg = await this.lookupPackageForFile(fileName);
+                        if (realPkg && realPkg !== packageName) {
+                            this.onLog(`[FETCH] ${packageName}: not found, but ${fileName} is in package "${realPkg}"`);
+                            return this.fetchPackage(realPkg, options);
+                        }
                     }
+                    this.onLog(`[FETCH] ${packageName}: marked as not found in cache`);
+                    return null;
                 }
-                this.onLog(`[FETCH] ${packageName}: marked as not found in cache`);
-                return null;
+                this.onLog(`[FETCH] ${packageName}: loaded from OPFS cache`);
+                return cached;
             }
-            this.onLog(`[FETCH] ${packageName}: loaded from OPFS cache`);
-            return cached;
+        } else {
+            this.onLog(`[FETCH] ${packageName}: skipping cache for TL${tlYear} request`);
         }
 
-        this.onLog(`[FETCH] ${packageName}: not in cache, fetching from TexLive...`);
+        this.onLog(`[FETCH] ${packageName}: not in cache, fetching from TexLive${yearLabel}...`);
         // Try TexLive first for version compatibility with our LaTeX 2022-11-01
         // (CTAN has latest versions that may require newer LaTeX)
-        return this.fetchTexLivePackage(packageName);
+        return this.fetchTexLivePackage(packageName, tlYear);
     }
 
     // Look up real TexLive archive name via CTAN API
@@ -269,8 +276,18 @@ export class CTANFetcher {
         }
     }
 
-    // Fetch from TexLive 2025 archive
-    async fetchTexLivePackage(packageName) {
+    // Fetch from TexLive archive
+    // tlYear: optional year (2025, 2024, 2023) - if specified, goes directly to CTAN proxy
+    async fetchTexLivePackage(packageName, tlYear = null) {
+        const yearLabel = tlYear ? ` (TL${tlYear})` : '';
+
+        // If specific TL year requested, go directly to CTAN proxy (skip local archive)
+        // This is used for version fallback when kernel incompatibility is detected
+        if (tlYear) {
+            this.onLog(`[TEXLIVE] Fetching ${packageName} from TL${tlYear} via CTAN proxy...`);
+            return this.fetchCtanPackage(packageName, tlYear);
+        }
+
         // Check cache first (same cache as CTAN)
         const cached = await this.loadPackageFromCache(packageName);
         if (cached) {
@@ -341,35 +358,38 @@ export class CTANFetcher {
             this.onLog(`[TEXLIVE] SUCCESS for ${packageName}, extracting XZ archive...`);
 
             // Get XZ-compressed TAR
-            const xzData = await response.arrayBuffer();
-            this.onLog(`Downloaded ${(xzData.byteLength / 1024).toFixed(1)} KB, decompressing...`);
+            let xzData = await response.arrayBuffer();
+            const downloadedSize = xzData.byteLength;
+            this.onLog(`Downloaded ${(downloadedSize / 1024).toFixed(1)} KB, decompressing...`);
 
             // Load xzwasm and decompress XZ using streaming
+            // Use Blob.stream() instead of Response(arrayBuffer).body to avoid
+            // ArrayBuffer detachment issues when multiple decompressions run in parallel
             const XzStream = await loadXzwasm();
-            const xzStream = new XzStream(new Response(xzData).body);
+            const xzStream = new XzStream(new Blob([xzData]).stream());
+            xzData = null; // Allow GC of original buffer
+
             const reader = xzStream.getReader();
             const chunks = [];
+            let totalLen = 0;
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
                 // Must copy chunk - xzwasm may reuse its internal buffer
-                chunks.push(new Uint8Array(value));
+                const chunk = new Uint8Array(value);
+                chunks.push(chunk);
+                totalLen += chunk.length;
             }
 
-            // Concatenate chunks
-            const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
+            // Concatenate chunks into final TAR buffer
             this.onLog(`Decompressed ${chunks.length} chunks, total ${totalLen} bytes`);
             const tarData = new Uint8Array(totalLen);
             let pos = 0;
-            for (const chunk of chunks) {
-                tarData.set(chunk, pos);
-                pos += chunk.length;
+            for (let i = 0; i < chunks.length; i++) {
+                tarData.set(chunks[i], pos);
+                pos += chunks[i].length;
+                chunks[i] = null; // Allow GC of chunk after copying
             }
-
-            // Debug: log first 100 bytes as hex
-            const hex = Array.from(tarData.subarray(0, 100))
-                .map(b => b.toString(16).padStart(2, '0')).join(' ');
-            this.onLog(`First 100 bytes: ${hex}`);
 
             // Parse TAR
             const tarFiles = parseTar(tarData);
@@ -468,9 +488,12 @@ export class CTANFetcher {
     }
 
     // Fetch from CTAN proxy (fallback when TexLive doesn't have the package)
-    async fetchCtanPackage(packageName) {
-        this.onLog(`[CTAN-FALLBACK] Fetching ${packageName} from CTAN proxy (WARNING: may have older version)...`);
-        if (packageName === 'enumitem') {
+    async fetchCtanPackage(packageName, tlYear = null) {
+        const yearSuffix = tlYear ? `?tlYear=${tlYear}` : '';
+        const yearLabel = tlYear ? ` (TL${tlYear})` : '';
+        this.onLog(`[CTAN-FALLBACK] Fetching ${packageName}${yearLabel} from CTAN proxy...`);
+
+        if (packageName === 'enumitem' && !tlYear) {
             this.onLog(`[CTAN-FALLBACK] *** WARNING: enumitem from CTAN may be v3.10 which has known bugs! ***`);
             this.onLog(`[CTAN-FALLBACK] *** TexLive 2025 should be used for enumitem v3.11 ***`);
         }
@@ -480,7 +503,7 @@ export class CTANFetcher {
 
         // Try direct package name first
         try {
-            response = await fetch(`${this.proxyUrl}/api/fetch/${packageName}`);
+            response = await fetch(`${this.proxyUrl}/api/fetch/${packageName}${yearSuffix}`);
         } catch (e) {
             response = null;
         }
@@ -492,10 +515,10 @@ export class CTANFetcher {
                 const fileName = packageName + ext;
                 const realPkg = await this.lookupPackageForFile(fileName);
                 if (realPkg && realPkg !== packageName) {
-                    this.onLog(`${fileName} is in package "${realPkg}", fetching from CTAN...`);
+                    this.onLog(`${fileName} is in package "${realPkg}", fetching from CTAN${yearLabel}...`);
                     ctanPkg = realPkg;
                     try {
-                        response = await fetch(`${this.proxyUrl}/api/fetch/${ctanPkg}`);
+                        response = await fetch(`${this.proxyUrl}/api/fetch/${ctanPkg}${yearSuffix}`);
                         if (response?.ok) break;
                     } catch (e) {
                         response = null;
@@ -598,6 +621,75 @@ export class CTANFetcher {
         }
 
         return allFiles;
+    }
+
+    /**
+     * Batch fetch multiple packages in parallel.
+     * Used for pre-fetching detected CTAN packages before compilation.
+     * @param {string[]} packageNames - Package names to fetch
+     * @param {Object} options
+     * @param {number} options.concurrency - Max parallel fetches (default: 1, see note below)
+     * @returns {Promise<{fetched: string[], failed: string[], skipped: string[]}>}
+     */
+    async batchFetchPackages(packageNames, options = {}) {
+        // Concurrency limited to 1 because xzwasm's WASM module has shared internal state
+        // that causes "detached ArrayBuffer" errors when multiple decompressions run in parallel.
+        // HTTP fetches are still fast, and decompression is CPU-bound anyway, so serialization
+        // doesn't significantly impact total time (~200ms for 10 packages).
+        const { concurrency = 1 } = options;
+
+        const fetched = [];
+        const failed = [];
+        const skipped = [];
+
+        // Deduplicate
+        const uniquePackages = [...new Set(packageNames)];
+        const toFetch = [];
+
+        // Check cache first
+        for (const pkgName of uniquePackages) {
+            const cached = await this.loadPackageFromCache(pkgName);
+            if (cached && cached.files && !cached.notFound) {
+                // Already cached and has files - populate memory cache
+                for (const [path, content] of cached.files) {
+                    this.fileCache.set(path, content);
+                }
+                skipped.push(pkgName);
+            } else {
+                toFetch.push(pkgName);
+            }
+        }
+
+        if (toFetch.length === 0) {
+            return { fetched, failed, skipped };
+        }
+
+        this.onLog(`[PRE-FETCH] Batch fetching ${toFetch.length} packages...`);
+
+        // Fetch in chunks with concurrency limit
+        for (let i = 0; i < toFetch.length; i += concurrency) {
+            const chunk = toFetch.slice(i, i + concurrency);
+            const results = await Promise.allSettled(
+                chunk.map(async (pkgName) => {
+                    const result = await this.fetchPackage(pkgName);
+                    return { pkgName, result };
+                })
+            );
+
+            for (const res of results) {
+                if (res.status === 'fulfilled' && res.value.result) {
+                    fetched.push(res.value.pkgName);
+                } else {
+                    const pkgName = res.status === 'fulfilled'
+                        ? res.value.pkgName
+                        : 'unknown';
+                    failed.push(pkgName);
+                }
+            }
+        }
+
+        this.onLog(`[PRE-FETCH] Done: ${fetched.length} fetched, ${failed.length} failed, ${skipped.length} cached`);
+        return { fetched, failed, skipped };
     }
 
     getMountedFiles() {

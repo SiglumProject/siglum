@@ -990,7 +990,6 @@
       "luacode"
     ],
     "pgf": [
-      "pgfbasedecorations",
       "pgfbasematrix",
       "pgfbasesnakes",
       "pgfcomp-version-0-65",

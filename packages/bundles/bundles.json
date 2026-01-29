@@ -7,7 +7,7 @@
     },
     "amsmath": {
       "files": 30,
-      "size": 537401,
+      "size": 537526,
       "requires": [
         "fonts-cm",
         "fonts-cmextra",
@@ -32,7 +32,7 @@
     },
     "boxes": {
       "files": 90,
-      "size": 9668061,
+      "size": 9661868,
       "requires": [
         "graphics",
         "pgf-tikz"
@@ -40,7 +40,7 @@
     },
     "core": {
       "files": 480,
-      "size": 3887320
+      "size": 4144343
     },
     "dvips": {
       "files": 55,
@@ -143,7 +143,7 @@
     },
     "l3": {
       "files": 38,
-      "size": 1838864,
+      "size": 1857157,
       "requires": [
         "utils"
       ]
@@ -680,6 +680,7 @@
     "ligtype": "tex-lualatex",
     "linebreaker": "tex-lualatex",
     "linsys": "tex-latex-misc",
+    "lm": "fonts-lm-type1",
     "lmodern": "tex-latex-misc",
     "longtable": "tables",
     "longtable-2020-01-07": "core",

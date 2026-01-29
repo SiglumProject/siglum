@@ -144,13 +144,13 @@ export class BundleManager {
     }
 
     async loadBundleDeps() {
-        // bundleDeps is now loaded as part of loadManifest from bundles.json
-        if (this.bundleDeps) return this.bundleDeps;
-
-        // If not loaded yet, trigger manifest load
-        await this.loadManifest();
+        // Ensure manifest is loaded first (sets bundleDeps)
+        if (!this.bundleDeps) {
+            await this.loadManifest();
+        }
 
         // Load optional package-deps.json for package-level dependencies
+        // This must run even if bundleDeps is already loaded!
         if (!this.packageDeps) {
             const cachedVersion = await getManifestVersion();
             if (cachedVersion === MANIFEST_CACHE_VERSION) {
@@ -163,7 +163,7 @@ export class BundleManager {
 
             try {
                 const packageDepsRes = await fetch(`${this.bundleBase}/package-deps.json`).catch(() => null);
-                if (packageDepsRes) {
+                if (packageDepsRes?.ok) {
                     this.packageDeps = await packageDepsRes.json();
                     try {
                         await saveManifestToOPFS('package-deps', this.packageDeps);
@@ -263,6 +263,116 @@ export class BundleManager {
 
         const bundles = this.resolveBundles([...packages], engine);
         return { packages: [...packages], bundles };
+    }
+
+    /**
+     * Pre-scan source to identify packages needing CTAN fetch.
+     * Expands detected packages with known dependencies from packageDeps.
+     * Scans additionalFiles for multi-file documents.
+     *
+     * @param {string} source - Main LaTeX source
+     * @param {string} engine - Engine (pdflatex, xelatex, etc.)
+     * @param {Object} additionalFiles - Optional map of filename → content
+     * @returns {{ bundledPackages: string[], ctanPackages: string[] }}
+     */
+    prescanForCtanPackages(source, engine = 'pdflatex', additionalFiles = {}) {
+        const packages = new Set();
+
+        // Helper to extract package names from a match
+        const extractPackages = (content) => {
+            return content.split(',').map(p => p.trim()).filter(p => p);
+        };
+
+        // Helper to scan source for package commands
+        const scanSource = (text) => {
+            // \usepackage[options]{pkg1,pkg2}
+            const usePackageRegex = /\\usepackage(?:\[[^\]]*\])?\{([^}]+)\}/g;
+            let match;
+            while ((match = usePackageRegex.exec(text)) !== null) {
+                for (const pkg of extractPackages(match[1])) packages.add(pkg);
+            }
+
+            // \RequirePackage[options]{pkg} and \RequirePackageWithOptions{pkg}
+            const requireRegex = /\\RequirePackage(?:WithOptions)?(?:\[[^\]]*\])?\{([^}]+)\}/g;
+            while ((match = requireRegex.exec(text)) !== null) {
+                for (const pkg of extractPackages(match[1])) packages.add(pkg);
+            }
+
+            // \documentclass[options]{class}
+            const docclassMatch = text.match(/\\documentclass(?:\[[^\]]*\])?\{([^}]+)\}/);
+            if (docclassMatch) {
+                packages.add(docclassMatch[1]);
+            }
+
+            // \LoadClass[options]{class} and \LoadClassWithOptions{class}
+            const loadClassRegex = /\\LoadClass(?:WithOptions)?(?:\[[^\]]*\])?\{([^}]+)\}/g;
+            while ((match = loadClassRegex.exec(text)) !== null) {
+                packages.add(match[1]);
+            }
+        };
+
+        // Scan main source
+        scanSource(source);
+
+        // Scan additional files (for multi-file documents)
+        const texFiles = Object.entries(additionalFiles).filter(([f]) => f.endsWith('.tex'));
+        if (texFiles.length > 0) {
+            const decoder = new TextDecoder(); // Reuse for all files
+            for (const [, content] of texFiles) {
+                const text = typeof content === 'string' ? content : decoder.decode(content);
+                scanSource(text);
+            }
+        }
+
+        // Expand with known dependencies from packageDeps
+        const expanded = new Set(packages);
+        const visited = new Set();
+
+        const expandDeps = (pkg) => {
+            if (visited.has(pkg)) return;
+            visited.add(pkg);
+
+            const deps = this.packageDeps?.packages?.[pkg] || [];
+            for (const dep of deps) {
+                // Skip obviously invalid entries (LaTeX syntax that leaked into deps)
+                if (!dep || dep.startsWith('#') || dep.startsWith('\\')) continue;
+                expanded.add(dep);
+                expandDeps(dep); // Recursive
+            }
+        };
+
+        for (const pkg of packages) {
+            expandDeps(pkg);
+        }
+
+        // Get bundles that will be loaded based on direct packages (not deps)
+        const directBundles = new Set(this.resolveBundles([...packages], engine));
+
+        // Categorize expanded packages:
+        // - bundled: in a bundle that will be loaded
+        // - additionalBundles: in a bundle that exists but won't be loaded (dependency-only)
+        // - ctanPackages: not in any bundle, need CTAN fetch
+        const bundledPackages = [];
+        const ctanPackages = [];
+        const additionalBundles = new Set();
+
+        for (const pkg of expanded) {
+            const bundleName = this.packageMap?.[pkg];
+            if (bundleName && this.bundleExists(bundleName)) {
+                if (directBundles.has(bundleName)) {
+                    // Bundle will be loaded from direct packages
+                    bundledPackages.push(pkg);
+                } else {
+                    // Bundle exists but not in direct list - it's a dependency bundle
+                    bundledPackages.push(pkg);
+                    additionalBundles.add(bundleName);
+                }
+            } else {
+                ctanPackages.push(pkg);
+            }
+        }
+
+        return { bundledPackages, ctanPackages, additionalBundles: [...additionalBundles] };
     }
 
     /**
@@ -374,84 +484,7 @@ export class BundleManager {
             .map(r => r.bundleName);
     }
 
-    // Load combined pdflatex bundle (all required bundles in one file)
-    async loadCombinedBundle(engine = 'pdflatex') {
-        const combinedName = `${engine}-all`;
-
-        // Check memory cache
-        if (this.combinedBundleLoaded) {
-            return true;
-        }
-
-        let combinedData;
-        let combinedMeta;
-
-        // Check OPFS cache for combined bundle
-        const cached = await getBundleFromOPFS(combinedName);
-
-        if (cached) {
-            this.onLog(`  From OPFS: ${combinedName}`);
-            combinedData = cached;
-            this.cacheHitCount++;
-            // Still need metadata
-            const metaResponse = await fetch(`${this.bundleBase}/${combinedName}.meta.json`);
-            if (!metaResponse.ok) return false;
-            combinedMeta = await metaResponse.json();
-        } else {
-            // Fetch combined bundle (server may return Brotli-compressed with Content-Encoding)
-            this.onLog(`  Fetching: ${combinedName} (combined bundle)`);
-
-            const [dataResponse, metaResponse] = await Promise.all([
-                fetch(`${this.bundleBase}/${combinedName}.data.gz`),
-                fetch(`${this.bundleBase}/${combinedName}.meta.json`),
-            ]);
-
-            if (!dataResponse.ok || !metaResponse.ok) {
-                this.onLog(`  Combined bundle not available, falling back to individual bundles`);
-                return false;
-            }
-
-            // Check if server sent Brotli (browser auto-decompresses via Content-Encoding)
-            const contentEncoding = dataResponse.headers.get('Content-Encoding');
-            const rawData = await dataResponse.arrayBuffer();
-            this.bytesDownloaded += rawData.byteLength;
-
-            // If Content-Encoding was set, browser already decompressed
-            // Otherwise we need to decompress gzip ourselves
-            if (contentEncoding === 'br') {
-                combinedData = rawData; // Already decompressed by browser
-            } else {
-                combinedData = await decompress(rawData, 'gzip');
-            }
-            combinedMeta = await metaResponse.json();
-
-            // Save decompressed to OPFS
-            saveBundleToOPFS(combinedName, combinedData);
-        }
-
-        // Store the combined data under each constituent bundle name
-        for (const bundleName of combinedMeta.bundles) {
-            this.bundleCache.set(bundleName, combinedData);
-        }
-
-        // Store metadata for file extraction
-        this.combinedMeta = combinedMeta;
-        this.combinedBundleLoaded = true;
-
-        this.onLog(`  Loaded combined bundle: ${combinedMeta.bundles.length} bundles, ${combinedMeta.files.length} files`);
-        return true;
-    }
-
     async loadBundles(bundleNames) {
-        // If combined bundle is loaded, all data is already cached
-        if (this.combinedBundleLoaded) {
-            const bundleData = {};
-            for (const name of bundleNames) {
-                bundleData[name] = this.bundleCache.get(name);
-            }
-            return bundleData;
-        }
-
         const bundleData = {};
         await Promise.all(bundleNames.map(async (name) => {
             try {

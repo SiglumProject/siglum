@@ -390,23 +390,31 @@ Bun.serve({
     }
 
     // /api/fetch/* - fetch and extract package
+    // Supports ?tlYear=YYYY for version fallback (2025, 2024, 2023)
     // Tries ctan-proxy first (disk cache), falls back to local extraction (memory cache)
     if (path.startsWith('/api/fetch/')) {
       const pkg = path.slice(11);
+      const tlYear = url.searchParams.get('tlYear');
+
+      // Include year in deduplication key
+      const dedupeKey = tlYear ? `${pkg}@tl${tlYear}` : pkg;
 
       // Request deduplication
-      if (inFlightRequests.has(pkg)) {
-        console.log(`[CTAN] Deduplicating request: ${pkg}`);
-        return inFlightRequests.get(pkg)!;
+      if (inFlightRequests.has(dedupeKey)) {
+        console.log(`[CTAN] Deduplicating request: ${dedupeKey}`);
+        return inFlightRequests.get(dedupeKey)!;
       }
 
       // Try local ctan-proxy first (has disk caching)
       try {
-        const response = await fetch(`http://localhost:8081/api/fetch/${pkg}`);
+        const proxyUrl = tlYear
+          ? `http://localhost:8081/api/fetch/${pkg}?tlYear=${tlYear}`
+          : `http://localhost:8081/api/fetch/${pkg}`;
+        const response = await fetch(proxyUrl);
         if (response.ok) {
-          console.log(`[CTAN] fetch via ctan-proxy: ${pkg}`);
+          console.log(`[CTAN] fetch via ctan-proxy: ${dedupeKey}`);
           const data = await response.json();
-          packageCache.set(pkg, data); // Also cache locally
+          packageCache.set(dedupeKey, data); // Also cache locally
           return jsonResponse(data);
         }
       } catch {
@@ -414,16 +422,17 @@ Bun.serve({
       }
 
       // Fetch and extract locally (memory cache only)
+      // Note: local fallback doesn't support tlYear - always uses local TL2025 archive
       const fetchPromise = fetchAndExtractPackage(pkg)
         .catch(e => {
           console.error(`[CTAN] Error fetching ${pkg}:`, e);
           return jsonResponse({ error: e.message }, 500);
         })
         .finally(() => {
-          inFlightRequests.delete(pkg);
+          inFlightRequests.delete(dedupeKey);
         });
 
-      inFlightRequests.set(pkg, fetchPromise);
+      inFlightRequests.set(dedupeKey, fetchPromise);
       return fetchPromise;
     }
 

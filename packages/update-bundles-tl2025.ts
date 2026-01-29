@@ -3,9 +3,10 @@
  * Update bundles with TL2025 content from texmfrepo archive
  *
  * This script:
- * 1. Extracts existing bundles
- * 2. Overlays TL2025 package content from texmfrepo/archive
- * 3. Repacks the bundles
+ * 1. Reads file-manifest.json to get file offsets
+ * 2. Extracts bundle data using those offsets
+ * 3. Overlays TL2025 package content from texmfrepo/archive
+ * 4. Repacks the bundles and updates file-manifest.json
  */
 
 import * as fs from 'fs';
@@ -27,29 +28,31 @@ const PACKAGE_UPDATES: Record<string, string[]> = {
     'amsmath': ['amsmath'],  // tex/latex/amsmath/*
     'amscls': ['amsmath'],   // tex/latex/amscls/*
     'amsfonts': ['amsmath'], // tex/latex/amsfonts/*
+    'tcolorbox': ['boxes'],  // tex/latex/tcolorbox/* - downgrade to avoid tagging commands
 };
 
-// Map package paths to bundle paths (prefix matching)
-const PATH_MAPPINGS: Record<string, string> = {
-    'tex/latex/base': '/texlive/texmf-dist/tex/latex/base',
-    'tex/latex/tools': '/texlive/texmf-dist/tex/latex/tools',
-    'tex/latex/l3kernel': '/texlive/texmf-dist/tex/latex/l3kernel',
-    'tex/latex/l3backend': '/texlive/texmf-dist/tex/latex/l3backend',
-    'tex/latex/l3packages': '/texlive/texmf-dist/tex/latex/l3packages',
-    'makeindex/latex': '/texlive/texmf-dist/makeindex/latex',
-};
-
-interface FileEntry {
-    path: string;
-    name: string;
+// File manifest entry format
+interface ManifestEntry {
+    bundle: string;
     start: number;
     end: number;
 }
 
-interface BundleMeta {
-    name: string;
-    files: FileEntry[];
-    totalSize: number;
+type FileManifest = Record<string, ManifestEntry>;
+
+// Bundles.json format
+interface BundleInfo {
+    files: number;
+    size: number;
+    requires?: string[];
+}
+
+interface BundlesJson {
+    version: number;
+    bundles: Record<string, BundleInfo>;
+    engines: Record<string, { required: string[] }>;
+    packages: Record<string, string>;
+    deferred: string[];
 }
 
 async function findPackageArchive(pkgName: string): Promise<string | null> {
@@ -63,9 +66,8 @@ async function findPackageArchive(pkgName: string): Promise<string | null> {
     return path.join(TEXMFREPO, matches[0]);
 }
 
-async function extractBundle(bundleName: string): Promise<Map<string, Buffer>> {
+async function extractBundle(bundleName: string, manifest: FileManifest): Promise<Map<string, Buffer>> {
     const dataPath = path.join(BUNDLES_DIR, `${bundleName}.data.gz`);
-    const metaPath = path.join(BUNDLES_DIR, `${bundleName}.meta.json`);
 
     if (!fs.existsSync(dataPath)) {
         throw new Error(`Bundle not found: ${bundleName}`);
@@ -73,13 +75,14 @@ async function extractBundle(bundleName: string): Promise<Map<string, Buffer>> {
 
     const compressedData = fs.readFileSync(dataPath);
     const data = zlib.gunzipSync(compressedData);
-    const meta: BundleMeta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
 
+    // Get files for this bundle from manifest
     const files = new Map<string, Buffer>();
-    for (const file of meta.files) {
-        const fullPath = path.posix.join(file.path, file.name);
-        const content = data.subarray(file.start, file.end);
-        files.set(fullPath, Buffer.from(content));
+    for (const [filePath, entry] of Object.entries(manifest)) {
+        if (entry.bundle === bundleName) {
+            const content = data.subarray(entry.start, entry.end);
+            files.set(filePath, Buffer.from(content));
+        }
     }
 
     console.log(`Extracted ${bundleName}: ${files.size} files`);
@@ -116,8 +119,12 @@ async function extractPackage(archivePath: string): Promise<Map<string, Buffer>>
     }
 }
 
-async function repackBundle(bundleName: string, files: Map<string, Buffer>): Promise<void> {
-    const entries: FileEntry[] = [];
+async function repackBundle(
+    bundleName: string,
+    files: Map<string, Buffer>,
+    manifest: FileManifest,
+    bundlesJson: BundlesJson
+): Promise<void> {
     const chunks: Buffer[] = [];
     let offset = 0;
 
@@ -126,15 +133,13 @@ async function repackBundle(bundleName: string, files: Map<string, Buffer>): Pro
 
     for (const fullPath of sortedPaths) {
         const content = files.get(fullPath)!;
-        const dir = path.posix.dirname(fullPath);
-        const name = path.posix.basename(fullPath);
 
-        entries.push({
-            path: dir,
-            name: name,
+        // Update manifest entry
+        manifest[fullPath] = {
+            bundle: bundleName,
             start: offset,
             end: offset + content.length
-        });
+        };
 
         chunks.push(content);
         offset += content.length;
@@ -143,65 +148,73 @@ async function repackBundle(bundleName: string, files: Map<string, Buffer>): Pro
     const bundleData = Buffer.concat(chunks);
     const compressedData = zlib.gzipSync(bundleData, { level: 9 });
 
-    const meta: BundleMeta = {
-        name: bundleName,
-        files: entries,
-        totalSize: bundleData.length
+    const dataPath = path.join(BUNDLES_DIR, `${bundleName}.data.gz`);
+    fs.writeFileSync(dataPath, compressedData);
+
+    // Update bundles.json entry
+    bundlesJson.bundles[bundleName] = {
+        ...bundlesJson.bundles[bundleName],
+        files: files.size,
+        size: bundleData.length
     };
 
-    const dataPath = path.join(BUNDLES_DIR, `${bundleName}.data.gz`);
-    const metaPath = path.join(BUNDLES_DIR, `${bundleName}.meta.json`);
-
-    fs.writeFileSync(dataPath, compressedData);
-    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
-
-    console.log(`Repacked ${bundleName}: ${entries.length} files, ${(compressedData.length / 1024 / 1024).toFixed(2)}MB`);
+    console.log(`Repacked ${bundleName}: ${files.size} files, ${(compressedData.length / 1024 / 1024).toFixed(2)}MB`);
 }
 
-async function updateBundle(bundleName: string, packageFiles: Map<string, Buffer>): Promise<number> {
+async function updateBundle(
+    bundleName: string,
+    packageFiles: Map<string, Buffer>,
+    manifest: FileManifest,
+    bundlesJson: BundlesJson
+): Promise<number> {
     // Extract existing bundle
-    const bundleFiles = await extractBundle(bundleName);
+    const bundleFiles = await extractBundle(bundleName, manifest);
 
     let updatedCount = 0;
 
     // Update files from package
     for (const [pkgPath, content] of packageFiles) {
         // Try direct mapping: tex/... -> /texlive/texmf-dist/tex/...
-        if (pkgPath.startsWith('tex/')) {
+        if (pkgPath.startsWith('tex/') || pkgPath.startsWith('fonts/') || pkgPath.startsWith('makeindex/')) {
             const bundlePath = `/texlive/texmf-dist/${pkgPath}`;
             if (bundleFiles.has(bundlePath)) {
                 const oldSize = bundleFiles.get(bundlePath)!.length;
                 bundleFiles.set(bundlePath, content);
                 console.log(`  Updated: ${bundlePath} (${oldSize} -> ${content.length})`);
                 updatedCount++;
-                continue;
-            }
-        }
-
-        // Try other mappings
-        for (const [srcPrefix, destPrefix] of Object.entries(PATH_MAPPINGS)) {
-            if (pkgPath.startsWith(srcPrefix + '/')) {
-                const relativePath = pkgPath.slice(srcPrefix.length + 1);
-                const bundlePath = `${destPrefix}/${relativePath}`;
-
-                if (bundleFiles.has(bundlePath)) {
-                    const oldSize = bundleFiles.get(bundlePath)!.length;
-                    bundleFiles.set(bundlePath, content);
-                    console.log(`  Updated: ${bundlePath} (${oldSize} -> ${content.length})`);
-                    updatedCount++;
-                }
             }
         }
     }
 
-    // Repack the bundle
-    await repackBundle(bundleName, bundleFiles);
+    // Repack the bundle (updates manifest in place)
+    await repackBundle(bundleName, bundleFiles, manifest, bundlesJson);
 
     return updatedCount;
 }
 
 async function main() {
     console.log('=== Updating bundles with TL2025 content ===\n');
+
+    // Load manifest and bundles.json
+    const manifestPath = path.join(BUNDLES_DIR, 'file-manifest.json');
+    const bundlesJsonPath = path.join(BUNDLES_DIR, 'bundles.json');
+
+    if (!fs.existsSync(manifestPath)) {
+        throw new Error(`Manifest not found: ${manifestPath}`);
+    }
+    if (!fs.existsSync(bundlesJsonPath)) {
+        throw new Error(`Bundles.json not found: ${bundlesJsonPath}`);
+    }
+
+    const manifest: FileManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const bundlesJson: BundlesJson = JSON.parse(fs.readFileSync(bundlesJsonPath, 'utf8'));
+
+    console.log(`Loaded manifest with ${Object.keys(manifest).length} files`);
+    console.log(`Loaded bundles.json with ${Object.keys(bundlesJson.bundles).length} bundles\n`);
+
+    // Track which bundles need updating
+    const bundlesToUpdate = new Set<string>();
+    const bundlePackageFiles = new Map<string, Map<string, Buffer>>();
 
     // Process each package
     for (const [pkgName, affectedBundles] of Object.entries(PACKAGE_UPDATES)) {
@@ -211,20 +224,39 @@ async function main() {
             continue;
         }
 
-        console.log(`\nProcessing package: ${pkgName}`);
+        console.log(`Processing package: ${pkgName}`);
         console.log(`Archive: ${path.basename(archivePath)}`);
 
         const packageFiles = await extractPackage(archivePath);
-        console.log(`Extracted ${packageFiles.size} files from package`);
+        console.log(`Extracted ${packageFiles.size} files from package\n`);
 
+        // Merge package files into bundle-specific maps
         for (const bundleName of affectedBundles) {
-            console.log(`\nUpdating bundle: ${bundleName}`);
-            const count = await updateBundle(bundleName, packageFiles);
-            console.log(`Updated ${count} files in ${bundleName}`);
+            bundlesToUpdate.add(bundleName);
+            if (!bundlePackageFiles.has(bundleName)) {
+                bundlePackageFiles.set(bundleName, new Map());
+            }
+            const bundlePkgFiles = bundlePackageFiles.get(bundleName)!;
+            for (const [path, content] of packageFiles) {
+                bundlePkgFiles.set(path, content);
+            }
         }
     }
 
-    console.log('\n=== Done ===');
+    // Update each affected bundle
+    for (const bundleName of bundlesToUpdate) {
+        console.log(`\n=== Updating bundle: ${bundleName} ===`);
+        const packageFiles = bundlePackageFiles.get(bundleName)!;
+        const count = await updateBundle(bundleName, packageFiles, manifest, bundlesJson);
+        console.log(`Updated ${count} files in ${bundleName}`);
+    }
+
+    // Save updated manifest and bundles.json
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    fs.writeFileSync(bundlesJsonPath, JSON.stringify(bundlesJson, null, 2));
+
+    console.log('\n=== Updated manifest and bundles.json ===');
+    console.log('Done!');
 }
 
 main().catch(console.error);

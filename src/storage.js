@@ -94,22 +94,6 @@ export async function listAllCachedPackages() {
     }
 }
 
-// Mount for extracted bundles
-let extractedBundlesMounted = false;
-async function ensureExtractedBundlesMounted() {
-    if (extractedBundlesMounted) return true;
-    const fs = await getFileSystem();
-    if (!fs) return false;
-    try {
-        await fs.mountAuto('/extracted-bundles');
-        extractedBundlesMounted = true;
-        return true;
-    } catch (e) {
-        console.warn('Failed to mount extracted-bundles filesystem:', e);
-        return false;
-    }
-}
-
 // Mount for manifests
 let manifestsMounted = false;
 async function ensureManifestsMounted() {
@@ -208,15 +192,6 @@ async function ensureBundleCacheMounted() {
     }
 }
 
-export async function clearBundleCache() {
-    try {
-        const fs = await getFileSystem();
-        if (fs && await ensureBundleCacheMounted()) {
-            await fs.rmdir('/bundle-cache/bundles', { recursive: true });
-        }
-    } catch (e) {}
-}
-
 export async function getBundleFromOPFS(bundleName) {
     try {
         const fs = await getFileSystem();
@@ -249,168 +224,6 @@ export async function saveBundleToOPFS(bundleName, data) {
         return false;
     }
 }
-
-// ============================================================================
-// Bundle Extraction - Extract individual files from bundles for lazy loading
-// ============================================================================
-
-const EXTRACTED_BUNDLES_VERSION = 1;
-
-/**
- * Check if a bundle has been extracted with matching hash
- */
-export async function isBundleExtracted(bundleName, expectedHash) {
-    try {
-        const fs = await getFileSystem();
-        if (!fs || !await ensureExtractedBundlesMounted()) return false;
-
-        const metaJson = await fs.readFile(`/extracted-bundles/${bundleName}/.meta.json`);
-        const meta = JSON.parse(metaJson);
-        return meta.hash === expectedHash && meta.version === EXTRACTED_BUNDLES_VERSION;
-    } catch (e) {
-        return false;
-    }
-}
-
-/**
- * Extract all files from a bundle using writeBinaryBatch
- */
-export async function extractBundleToOPFS(bundleName, bundleData, manifest, hash, onProgress) {
-    try {
-        const fs = await getFileSystem();
-        if (!fs || !await ensureExtractedBundlesMounted()) {
-            return { success: false, filesExtracted: 0, error: 'Filesystem not available' };
-        }
-
-        const bundleDir = `/extracted-bundles/${bundleName}`;
-
-        // Remove existing bundle dir if exists (clean extraction)
-        try {
-            await fs.rmdir(bundleDir, { recursive: true });
-        } catch (e) {
-            // Doesn't exist, that's fine
-        }
-
-        // Get files belonging to this bundle
-        const bundleFiles = Object.entries(manifest).filter(([_, info]) => info.bundle === bundleName);
-        const totalFiles = bundleFiles.length;
-
-        // Create a Uint8Array view of the bundle data (no copy)
-        const dataView = new Uint8Array(bundleData);
-
-        // Prepare entries for batch write
-        const entries = bundleFiles.map(([texmfPath, info]) => ({
-            path: `${bundleDir}/${texmfPath}`,
-            content: dataView.subarray(info.offset, info.offset + info.size)
-        }));
-
-        let filesExtracted = 0;
-        await fs.writeBinaryBatch(entries, {
-            createParents: true,
-            silent: true,
-            onProgress: (completed, total) => {
-                filesExtracted = completed;
-                if (onProgress) onProgress(completed, total);
-            }
-        });
-
-        // Write metadata
-        await fs.writeFile(`${bundleDir}/.meta.json`, JSON.stringify({
-            hash,
-            version: EXTRACTED_BUNDLES_VERSION,
-            filesExtracted: entries.length,
-            totalFiles,
-            extractedAt: Date.now(),
-        }), { createParents: true });
-
-        console.log(`Extracted bundle ${bundleName}: ${entries.length}/${totalFiles} files`);
-        return { success: true, filesExtracted: entries.length };
-    } catch (e) {
-        console.error(`Failed to extract bundle ${bundleName}:`, e);
-        return { success: false, filesExtracted: 0, error: e.message };
-    }
-}
-
-/**
- * Read a single file from an extracted bundle
- */
-export async function getBundleFileFromOPFS(bundleName, texmfPath) {
-    try {
-        const fs = await getFileSystem();
-        if (!fs || !await ensureExtractedBundlesMounted()) return null;
-
-        return await fs.readBinary(`/extracted-bundles/${bundleName}/${texmfPath}`);
-    } catch (e) {
-        return null;
-    }
-}
-
-/**
- * List all extracted bundles
- */
-export async function listExtractedBundles() {
-    try {
-        const fs = await getFileSystem();
-        if (!fs || !await ensureExtractedBundlesMounted()) return [];
-
-        const entries = await fs.readdir('/extracted-bundles');
-        return entries
-            .filter(e => e.isDirectory && !e.name.startsWith('.'))
-            .map(e => e.name);
-    } catch (e) {
-        return [];
-    }
-}
-
-/**
- * Get metadata for an extracted bundle
- */
-export async function getExtractedBundleMeta(bundleName) {
-    try {
-        const fs = await getFileSystem();
-        if (!fs || !await ensureExtractedBundlesMounted()) return null;
-
-        const metaJson = await fs.readFile(`/extracted-bundles/${bundleName}/.meta.json`);
-        return JSON.parse(metaJson);
-    } catch (e) {
-        return null;
-    }
-}
-
-/**
- * Clear all extracted bundles
- */
-export async function clearExtractedBundles() {
-    try {
-        const fs = await getFileSystem();
-        if (!fs || !await ensureExtractedBundlesMounted()) return false;
-
-        await fs.rmdir('/extracted-bundles', { recursive: true });
-        extractedBundlesMounted = false; // Force remount next time
-        console.log('Cleared all extracted bundles');
-        return true;
-    } catch (e) {
-        return false;
-    }
-}
-
-/**
- * Clear a specific extracted bundle
- */
-export async function clearExtractedBundle(bundleName) {
-    try {
-        const fs = await getFileSystem();
-        if (!fs || !await ensureExtractedBundlesMounted()) return false;
-
-        await fs.rmdir(`/extracted-bundles/${bundleName}`, { recursive: true });
-        console.log(`Cleared extracted bundle: ${bundleName}`);
-        return true;
-    } catch (e) {
-        return false;
-    }
-}
-
-// ============================================================================
 
 // Manifest cache
 export async function getManifestFromOPFS(name) {
@@ -472,7 +285,6 @@ export async function clearManifestCache() {
 }
 
 // Aux file cache
-const AUX_CACHE_VERSION = 1;
 const AUX_STORE = 'aux-cache';
 let auxCacheDb = null;
 const auxMemoryCache = new Map();
@@ -529,7 +341,6 @@ export async function saveAuxCache(preambleHash, auxFiles) {
 }
 
 // Document cache for compiled PDFs
-const DOC_CACHE_VERSION = 1;
 const DOC_STORE = 'doc-cache';
 let docCacheDb = null;
 const docMemoryCache = new Map();
@@ -605,21 +416,6 @@ export function getFmtPath(fmtKey) {
     return `fmt-cache/${fmtKey}.fmt`;
 }
 
-// Mount for CTAN packages
-let ctanPackagesMounted = false;
-async function ensureCtanPackagesMounted() {
-    if (ctanPackagesMounted) return true;
-    const fs = await getFileSystem();
-    if (!fs) return false;
-    try {
-        await fs.mountAuto('/ctan-packages');
-        ctanPackagesMounted = true;
-        return true;
-    } catch (e) {
-        return false;
-    }
-}
-
 // Clear all CTAN cache
 export async function clearCTANCache() {
     try {
@@ -628,15 +424,6 @@ export async function clearCTANCache() {
         const store = tx.objectStore(IDB_STORE);
         store.clear();
         await new Promise(r => tx.oncomplete = r);
-
-        const fs = await getFileSystem();
-        if (fs && await ensureCtanPackagesMounted()) {
-            try {
-                await fs.rmdir('/ctan-packages', { recursive: true });
-                ctanPackagesMounted = false; // Force remount next time
-            } catch (e) {}
-        }
-
         return true;
     } catch (e) {
         return false;
@@ -715,15 +502,6 @@ export async function saveWasmBytes(bytes) {
         return false;
     }
 }
-
-// Keep old function name for backwards compat but it's now a no-op
-export async function saveCompiledWasmModule(module) {
-    return false;
-}
-
-// Legacy stubs - use getCompiledWasmModule/saveWasmBytes instead
-export async function getWasmFromOPFS() { return null; }
-export async function saveWasmToOPFS(wasmBytes) { return false; }
 
 // WASM Memory Snapshot Cache - stores initialized WASM heap for instant restore
 // This caches the WASM linear memory after first successful initialization
@@ -868,5 +646,4 @@ export {
     MANIFEST_CACHE_VERSION,
     WASM_CACHE_VERSION,
     MEMORY_SNAPSHOT_VERSION,
-    EXTRACTED_BUNDLES_VERSION,
 };

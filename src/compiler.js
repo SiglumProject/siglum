@@ -1,7 +1,7 @@
 // Main SiglumCompiler class - orchestrates compilation
 
 import { BundleManager, detectEngine, extractPreamble, hashPreamble } from './bundles.js';
-import { CTANFetcher, getPackageFromFile } from './ctan.js';
+import { CTANFetcher } from './ctan.js';
 
 // Module-level tracking to prevent multiple workers across all instances
 let _globalActiveWorker = null;
@@ -18,9 +18,7 @@ import {
     clearCTANCache,
     getCompiledWasmModule,
     saveWasmBytes,
-    getWasmMemorySnapshot,
     saveWasmMemorySnapshot,
-    clearWasmMemorySnapshot,
 } from './storage.js';
 
 export class SiglumCompiler {
@@ -44,9 +42,9 @@ export class SiglumCompiler {
 
         this.worker = null;
         this.workerReady = false;
+        this.wasmModule = null;
         this._initWorkerPromise = null;
         this.pendingCompile = null;
-        this.formatCache = new Map();
         this.formatGenerationPromise = null;
 
         this.onLog = options.onLog || (() => {});
@@ -56,6 +54,13 @@ export class SiglumCompiler {
         this.enableCtan = options.enableCtan !== false;
         this.enableLazyFS = options.enableLazyFS !== false;
         this.enableDocCache = options.enableDocCache !== false;
+        this.maxRetries = options.maxRetries ?? 15;  // Max CTAN/bundle fetch retries per compile
+        this.verbose = options.verbose ?? false;  // Log TeX stdout (adds ~4000 postMessage calls)
+
+        // Eager bundle loading - bundles to load immediately instead of deferring
+        // Can be an array (applies to all engines) or object keyed by engine
+        // Example: ['cm-super'] or { pdflatex: ['cm-super'], xelatex: [] }
+        this.eagerBundles = options.eagerBundles || {};
 
         // Range request coalescing - batch nearby requests to reduce HTTP overhead
         this._pendingRangeRequests = new Map(); // bundleName -> [{requestId, start, end}]
@@ -66,6 +71,65 @@ export class SiglumCompiler {
 
     _log(msg) {
         this.onLog(msg);
+    }
+
+    /**
+     * Get eager bundles for a specific engine.
+     * Eager bundles are loaded immediately instead of being deferred.
+     * @param {string} engine - The engine (pdflatex, xelatex, lualatex)
+     * @returns {string[]} List of bundle names to load eagerly
+     */
+    getEagerBundles(engine) {
+        if (Array.isArray(this.eagerBundles)) {
+            // Global list applies to all engines
+            return this.eagerBundles;
+        }
+        // Per-engine configuration
+        return this.eagerBundles[engine] || [];
+    }
+
+    /**
+     * Preload bundles into memory cache.
+     * Call this to eagerly load bundles before compilation.
+     * Useful for loading large deferred bundles (like cm-super) in advance.
+     *
+     * @example
+     * // Preload cm-super before first compile
+     * await compiler.preloadBundles(['cm-super']);
+     *
+     * @param {string[]} bundleNames - Bundles to preload
+     * @returns {Promise<{loaded: string[], failed: string[]}>}
+     */
+    async preloadBundles(bundleNames) {
+        await this.bundleManager.loadManifest();
+
+        const loaded = [];
+        const failed = [];
+
+        // Load bundles in parallel
+        const promises = bundleNames.map(async (bundleName) => {
+            try {
+                if (!this.bundleManager.bundleExists(bundleName)) {
+                    this._log(`Preload: bundle ${bundleName} does not exist`);
+                    failed.push(bundleName);
+                    return;
+                }
+
+                const data = await this.bundleManager.loadBundle(bundleName);
+                if (data) {
+                    this._log(`Preloaded bundle: ${bundleName} (${(data.byteLength / 1024 / 1024).toFixed(1)}MB)`);
+                    loaded.push(bundleName);
+                } else {
+                    failed.push(bundleName);
+                }
+            } catch (e) {
+                this._log(`Preload failed for ${bundleName}: ${e.message}`);
+                failed.push(bundleName);
+            }
+        });
+
+        await Promise.all(promises);
+        return { loaded, failed };
     }
 
     /**
@@ -241,6 +305,7 @@ export class SiglumCompiler {
                 packageMapData: this.bundleManager.packageMap,
                 bundleDepsData: this.bundleManager.bundleDeps,
                 bundleRegistryData: this.bundleManager.bundleRegistry ? [...this.bundleManager.bundleRegistry] : [],
+                verbose: this.verbose,
             };
 
             // Include memory snapshot if available (transfer for efficiency)
@@ -325,14 +390,25 @@ export class SiglumCompiler {
     }
 
     async _handleCtanFetchRequest(msg) {
-        const { requestId, packageName } = msg;
+        const { requestId, packageName, fileName, tlYear } = msg;
 
         try {
-            this._log(`[CTAN-REQ] Worker requested package: ${packageName}`);
+            // Look up the correct package for this file (e.g., bbm.sty → bbm-macros)
+            let actualPackage = packageName;
+            if (fileName) {
+                const mappedPackage = await this.ctanFetcher.lookupPackageForFile(fileName);
+                if (mappedPackage && mappedPackage !== packageName) {
+                    this._log(`[CTAN-REQ] ${fileName} maps to package "${mappedPackage}" (not "${packageName}")`);
+                    actualPackage = mappedPackage;
+                }
+            }
+
+            const yearLabel = tlYear ? ` (TL${tlYear})` : '';
+            this._log(`[CTAN-REQ] Worker requested package: ${actualPackage}${yearLabel}`);
             // Only fetch this specific package, not dependencies
             // Dependencies are resolved by the worker's retry loop - if a dependency
             // is missing, the worker will request it specifically
-            const result = await this.ctanFetcher.fetchPackage(packageName);
+            const result = await this.ctanFetcher.fetchPackage(actualPackage, { tlYear });
             if (result) {
                 this._log(`[CTAN-REQ] ${packageName}: got ${result.files?.size || 0} files`);
             }
@@ -614,9 +690,48 @@ export class SiglumCompiler {
             await this._initWorker();
         }
 
-        // Determine required bundles
+        // Determine required bundles from direct \usepackage commands
         const { bundles } = this.bundleManager.checkPackages(source, engine);
-        this._log('Required bundles: ' + bundles.join(', '));
+
+        // Add eager bundles for this engine (these get loaded immediately instead of deferred)
+        const eagerBundles = this.getEagerBundles(engine);
+
+        // Pre-scan for CTAN packages and dependency bundles - batch fetch before compilation
+        let depBundles = [];
+        if (this.enableCtan) {
+            const additionalFilesMap = options.additionalFiles || {};
+            const { ctanPackages, additionalBundles } = this.bundleManager.prescanForCtanPackages(source, engine, additionalFilesMap);
+
+            // Add bundles needed for package dependencies (not detected from direct \usepackage)
+            if (additionalBundles && additionalBundles.length > 0) {
+                depBundles = additionalBundles;
+            }
+
+            if (ctanPackages.length > 0) {
+                this._log(`Pre-scan: ${ctanPackages.length} potential CTAN packages`);
+                const prescanStart = performance.now();
+
+                const { fetched, failed, skipped } = await this.ctanFetcher.batchFetchPackages(ctanPackages);
+
+                const elapsed = (performance.now() - prescanStart).toFixed(0);
+                if (fetched.length > 0 || skipped.length > 0) {
+                    this._log(`Pre-fetch: ${fetched.length} new, ${skipped.length} cached, ${failed.length} not found (${elapsed}ms)`);
+                }
+            }
+        }
+
+        // Combine all bundles: direct packages + eager + dependency bundles
+        const allBundles = [...new Set([...bundles, ...eagerBundles, ...depBundles])];
+
+        // Log required bundles with optional extras
+        const extras = [];
+        if (eagerBundles.length > 0) extras.push('eager: ' + eagerBundles.join(', '));
+        if (depBundles.length > 0) extras.push('deps: ' + depBundles.join(', '));
+        if (extras.length > 0) {
+            this._log('Required bundles: ' + bundles.join(', ') + ' (+ ' + extras.join(', ') + ')');
+        } else {
+            this._log('Required bundles: ' + bundles.join(', '));
+        }
 
         // Prepare bundle data for worker
         // Two modes:
@@ -631,12 +746,12 @@ export class SiglumCompiler {
 
         if (this.bundleManager.useOPFSExtraction && this.bundleManager.isOPFSAvailable()) {
             // OPFS mode: extract bundles to OPFS, send only names
-            bundleNames = await this.bundleManager.ensureBundlesExtracted(bundles);
+            bundleNames = await this.bundleManager.ensureBundlesExtracted(allBundles);
             useOPFSMode = true;
             this._log(`OPFS mode: ${bundleNames.length} bundles ready (zero memory transfer)`);
         } else {
             // Legacy mode: load bundle blobs
-            const loadedBundles = await this.bundleManager.loadBundles(bundles);
+            const loadedBundles = await this.bundleManager.loadBundles(allBundles);
             let totalBytes = 0;
             let usingSharedArrayBuffer = false;
 
@@ -745,7 +860,8 @@ export class SiglumCompiler {
 
                         // Auto-generate format cache if no cached format was used
                         // Do this in background to not block the compile result
-                        if (!cachedFormat && preamble) {
+                        // Skip for xelatex - XeTeX can't dump formats with native fonts
+                        if (!cachedFormat && preamble && engine !== 'xelatex') {
                             this.generateFormat(source, { engine }).then(async () => {
                                 // Populate memory cache from the newly generated format
                                 const data = await readFromOPFS(getFmtPath(fmtKey));
@@ -785,19 +901,30 @@ export class SiglumCompiler {
                     enableLazyFS: this.enableLazyFS,
                     enableCtan: this.enableCtan,
                     useOPFSMode,  // Worker reads bundles from OPFS instead of receiving blobs
+                    maxRetries: this.maxRetries,
+                    verbose: this.verbose,
                 },
                 bundleData: useOPFSMode ? {} : bundleData,  // Empty if using OPFS
                 bundleNames: useOPFSMode ? bundleNames : [],  // Bundle names for OPFS mode
                 ctanFiles,
                 cachedFormat,
                 cachedAuxFiles: auxCache?.files || null,
-                deferredBundleNames: this.bundleManager.bundleDeps?.deferred || [],
+                // Deferred bundles minus any that are eagerly loaded
+                deferredBundleNames: (this.bundleManager.bundleDeps?.deferred || [])
+                    .filter(b => !eagerBundles.includes(b)),
             }, transferList);
         });
     }
 
     async generateFormat(source, options = {}) {
         const engine = options.engine || 'pdflatex';
+
+        // XeTeX can't dump formats with native fonts (fontspec)
+        if (engine === 'xelatex') {
+            this._log('Format caching not supported for XeLaTeX (native fonts)');
+            return null;
+        }
+
         const preamble = extractPreamble(source);
 
         if (!preamble) {
@@ -819,9 +946,20 @@ export class SiglumCompiler {
             await this._initWorker();
         }
 
-        // Determine required bundles
+        // Determine required bundles (same logic as compile)
         const { bundles } = this.bundleManager.checkPackages(source, engine);
-        const bundleData = await this.bundleManager.loadBundles(bundles);
+
+        // Get dependency bundles from prescan (e.g., utils for environ)
+        let depBundles = [];
+        if (this.enableCtan) {
+            const { additionalBundles } = this.bundleManager.prescanForCtanPackages(source, engine, {});
+            if (additionalBundles && additionalBundles.length > 0) {
+                depBundles = additionalBundles;
+            }
+        }
+
+        const allBundles = [...new Set([...bundles, ...depBundles])];
+        const bundleData = await this.bundleManager.loadBundles(allBundles);
 
         // Get CTAN files from memory cache
         const ctanFiles = this.ctanFetcher.getCachedFiles();
@@ -871,6 +1009,7 @@ export class SiglumCompiler {
                 bundleRegistryData: [...this.bundleManager.bundleRegistry],
                 bundleData,
                 ctanFiles,
+                maxRetries: this.maxRetries,
             });
         }).finally(() => {
             this.formatGenerationPromise = null;
@@ -918,12 +1057,6 @@ export class SiglumCompiler {
         // Clear main thread caches
         this.bundleManager.clearCache();
         this.ctanFetcher.clearMountedFiles();
-
-        // Clear format cache
-        this.formatCache.clear();
-
-        // Reset init state so next compile will reinitialize
-        this.initPromise = null;
 
         this._log('Compiler unloaded');
     }

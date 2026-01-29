@@ -6,7 +6,7 @@ On initialization, the engine downloads:
 - **WASM binary** (~29MB):  the TeX engine
 - **Core bundles** (~16MB for pdfLaTeX): format files, fonts, base packages
 
-Missing packages are fetched from CTAN automatically during compilation. Everything is cached in the browser (OPFS/IndexedDB) for offline use.
+Missing packages are fetched from the TexLive archvie and CTAN automatically during compilation. Everything is cached in the browser (OPFS/IndexedDB) for offline use.
 
 ## Quick Start
 
@@ -88,15 +88,78 @@ if (result.success) {
 
 ```javascript
 const compiler = new SiglumCompiler({
+    // URLs
     bundlesUrl: '/bundles',           // URL to bundle files
     wasmUrl: '/wasm/busytex.wasm',    // URL to WASM binary
     ctanProxyUrl: null,               // CTAN proxy for missing packages (optional)
+    workerUrl: null,                  // Custom worker URL (uses embedded worker if null)
+
+    // Feature flags
     enableCtan: true,                 // Fetch missing packages from CTAN
     enableLazyFS: true,               // Load files on-demand (faster startup)
+    enableDocCache: true,             // Cache compiled documents by preamble hash
+
+    // Performance tuning
+    maxRetries: 15,                   // Max retries for CTAN/bundle fetches per compile
+    eagerBundles: {},                 // Bundles to load immediately (see below)
+    verbose: false,                   // Log TeX stdout (disable for performance)
+
+    // Callbacks
     onLog: (msg) => {},               // Log callback
     onProgress: (stage, detail) => {},  // Progress callback
 });
 ```
+
+#### `eagerBundles`
+
+By default, large bundles like `cm-super` (fonts) are loaded on-demand when TeX requests them. This saves bandwidth but adds latency on first use. To pre-load specific bundles:
+
+```javascript
+// Load cm-super fonts eagerly for all engines
+const compiler = new SiglumCompiler({
+    eagerBundles: ['cm-super'],
+});
+
+// Or per-engine configuration
+const compiler = new SiglumCompiler({
+    eagerBundles: {
+        pdflatex: ['cm-super'],
+        xelatex: [],  // XeLaTeX uses system fonts
+    },
+});
+```
+
+#### `maxRetries`
+
+Controls how many times the compiler retries when a package or bundle fetch fails. With pre-scanning (which batch-fetches most packages before compilation), retries are rare. Lower values fail faster if something is broken:
+
+```javascript
+const compiler = new SiglumCompiler({
+    maxRetries: 5,  // Fail fast (default: 15)
+});
+```
+
+#### `verbose`
+
+Controls whether TeX stdout is sent to the `onLog` callback. Disabled by default for performance—a typical compilation generates ~4,000 log lines, each requiring a `postMessage` call from the worker.
+
+```javascript
+const compiler = new SiglumCompiler({
+    verbose: true,  // Enable TeX stdout logging (default: false)
+    onLog: (msg) => console.log(msg),
+});
+
+// Can also be changed after instantiation
+compiler.verbose = true;   // Enable for next compile
+await compiler.compile(source);
+compiler.verbose = false;  // Disable again
+```
+
+When `verbose: false`:
+- TeX stdout (`[TeX] ...`) is suppressed
+- TeX errors (`[TeX ERR] ...`) are always logged
+- Worker status messages are always logged
+- Error detection still works (stdout is captured internally)
 
 ### `compiler.compile(source, options?)`
 
@@ -166,7 +229,6 @@ await compiler.compile(source); // Already warmed up
 |--------|--------|
 | pdfLaTeX | Full support, format caching |
 | XeLaTeX | Full support, custom fonts via fontspec |
-| LuaLaTeX | Not yet available |
 
 Use `engine: 'auto'` to auto-detect based on document content.
 
@@ -211,7 +273,7 @@ The CTAN proxy fetches missing LaTeX packages on-demand and caches them to disk:
 bun packages/ctan-proxy.ts
 ```
 
-Packages are cached permanently—CTAN is only contacted once per package. The proxy tries TexLive archives first, then falls back to CTAN mirrors.
+Packages are cached permanently, CTAN is only contacted once per package. The proxy tries TexLive archives first, then falls back to CTAN mirrors.
 
 For configuration and deployment options, see **[docs/CTAN_PROXY.md](docs/CTAN_PROXY.md)**.
 
@@ -229,11 +291,11 @@ const compiler = new SiglumCompiler({
 
 - Modern browser with WebAssembly support
 - SharedArrayBuffer (requires COOP/COEP headers)
-- ~500MB RAM for compilation
+- ~512MB RAM for compilation (max heap size)
 
 ## Acknowledgments
 
-Built on [BusyTeX](https://github.com/AsciiHuang/busytex) with TeX Live 2025.
+Built on [BusyTeX](https://github.com/AsciiHuang/busytex).
 
 ## License
 

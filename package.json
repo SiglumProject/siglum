@@ -9,8 +9,7 @@
     "./compiler": "./src/compiler.js",
     "./bundles": "./src/bundles.js",
     "./ctan": "./src/ctan.js",
-    "./storage": "./src/storage.js",
-    "./incremental": "./src/incremental/index.js"
+    "./storage": "./src/storage.js"
   },
   "files": [
     "src/"
@@ -41,11 +40,12 @@
   },
   "homepage": "https://github.com/SiglumProject/siglum-engine#readme",
   "dependencies": {
-    "@siglum/filesystem": "^0.2.0",
+    "@siglum/filesystem": "^0.2.1",
     "blake3-wasm": "2.1.5",
-    "fflate": "^0.8.2",
-    "jszip": "^3.10.1",
-    "pdf-lib": "^1.17.1",
     "xzwasm": "^0.1.2"
+  },
+  "devDependencies": {
+    "fflate": "^0.8.2",
+    "jszip": "^3.10.1"
   }
 }

@@ -99,6 +99,10 @@
             <input type="checkbox" id="enableKeyupCompile">
             Compile on keyup
         </label>
+        <label>
+            <input type="checkbox" id="enableVerbose">
+            Verbose logs
+        </label>
         <button id="formatBtn" class="secondary">Generate Format</button>
         <button id="clearCacheBtn" class="secondary">Clear Cache</button>
         <span id="time"></span>
@@ -176,6 +180,11 @@ $E = mc^2$
                 enableCtan: document.getElementById('enableCtan').checked,
                 enableLazyFS: document.getElementById('enableLazyFS').checked,
                 enableDocCache: document.getElementById('enableDocCache').checked,
+                verbose: document.getElementById('enableVerbose').checked,
+                // Eagerly load cm-super bundle for pdflatex (avoids deferred loading delay)
+                eagerBundles: {
+                    pdflatex: ['cm-super'],
+                },
                 onLog: log,
                 onProgress: (stage, detail) => {
                     updateStatus(`${stage}: ${detail || ''}`);
@@ -220,6 +229,7 @@ x
             compiler.enableCtan = document.getElementById('enableCtan').checked;
             compiler.enableLazyFS = document.getElementById('enableLazyFS').checked;
             compiler.enableDocCache = document.getElementById('enableDocCache').checked;
+            compiler.verbose = document.getElementById('enableVerbose').checked;
 
             document.getElementById('compileBtn').disabled = true;
             document.getElementById('status').textContent = '';
