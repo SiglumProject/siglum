@@ -30,7 +30,7 @@ const MANIFEST_CACHE_VERSION = 5; // Bumped: consolidated metadata into bundles.
 let idbCache = null;
 
 // IndexedDB operations
-export async function openIDBCache() {
+async function openIDBCache() {
     if (idbCache) return idbCache;
     return new Promise((resolve, reject) => {
         const request = indexedDB.open(IDB_NAME, 1);
@@ -264,7 +264,7 @@ const AUX_STORE = 'aux-cache';
 let auxCacheDb = null;
 const auxMemoryCache = new Map();
 
-export async function openAuxCacheDb() {
+async function openAuxCacheDb() {
     if (auxCacheDb) return auxCacheDb;
     return new Promise((resolve, reject) => {
         const request = indexedDB.open('siglum-aux-cache', 1);
@@ -321,7 +321,7 @@ let docCacheDb = null;
 const docMemoryCache = new Map();
 const MAX_DOC_CACHE_SIZE = 10;
 
-export async function openDocCacheDb() {
+async function openDocCacheDb() {
     if (docCacheDb) return docCacheDb;
     return new Promise((resolve, reject) => {
         const request = indexedDB.open('siglum-doc-cache', 1);
