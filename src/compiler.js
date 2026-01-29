@@ -374,32 +374,29 @@ export class SiglumCompiler {
         try {
             this._log('Worker requested bundle: ' + bundleName);
 
-            // Load bundle data and metadata in parallel
-            const [bundleData, metaResponse] = await Promise.all([
-                this.bundleManager.loadBundle(bundleName),
-                fetch(`${this.bundlesUrl}/${bundleName}.meta.json`).catch(() => null),
-            ]);
+            const bundleData = await this.bundleManager.loadBundle(bundleName);
 
-            // Parse metadata if available
-            let bundleMeta = null;
-            if (metaResponse?.ok) {
-                try {
-                    bundleMeta = await metaResponse.json();
-                } catch (e) {
-                    this._log('Failed to parse bundle metadata: ' + e.message);
-                }
+            // SharedArrayBuffer: send directly (automatically shared, no transfer list)
+            // ArrayBuffer: copy before transfer so original stays valid in cache
+            const isShared = typeof SharedArrayBuffer !== 'undefined' && bundleData instanceof SharedArrayBuffer;
+            if (isShared) {
+                this.worker.postMessage({
+                    type: 'bundle-fetch-response',
+                    requestId,
+                    bundleName,
+                    success: true,
+                    bundleData,
+                });
+            } else {
+                const copy = bundleData.slice(0);
+                this.worker.postMessage({
+                    type: 'bundle-fetch-response',
+                    requestId,
+                    bundleName,
+                    success: true,
+                    bundleData: copy,
+                }, [copy]);
             }
-
-            // Copy bundleData before transfer so original stays valid in cache
-            const bundleDataCopy = bundleData.slice(0);
-            this.worker.postMessage({
-                type: 'bundle-fetch-response',
-                requestId,
-                bundleName,
-                success: true,
-                bundleData: bundleDataCopy,
-                bundleMeta,
-            }, [bundleDataCopy]);
         } catch (e) {
             this._log('Bundle fetch error: ' + e.message);
             this.worker.postMessage({
@@ -646,7 +643,8 @@ export class SiglumCompiler {
             for (const [name, data] of Object.entries(loadedBundles)) {
                 if (data) {
                     // Check if data is SharedArrayBuffer (zero-copy) or regular ArrayBuffer (needs transfer)
-                    if (data instanceof SharedArrayBuffer) {
+                    const isShared = typeof SharedArrayBuffer !== 'undefined' && data instanceof SharedArrayBuffer;
+                    if (isShared) {
                         // SharedArrayBuffer: no copy needed, worker reads same memory
                         bundleData[name] = data;
                         usingSharedArrayBuffer = true;

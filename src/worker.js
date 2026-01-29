@@ -983,6 +983,10 @@ async function handleCompile(request) {
     let Module = null;
     let FS = null;
 
+    // Auto-rerun tracking for cross-references/TOC
+    let rerunPass = 0;
+    const maxRerunPasses = 3;  // Max additional passes for cross-refs
+
     while (!compileSuccess && retryCount < maxRetries) {
         if (retryCount > 0) {
             workerLog(`Retry #${retryCount}...`);
@@ -1107,6 +1111,145 @@ async function handleCompile(request) {
                         workerLog(`SyncTeX data: ${(syncTexBytes.byteLength / 1024).toFixed(1)}KB`);
                     } catch (e) {
                         workerLog('No SyncTeX file generated');
+                    }
+
+                    // Auto-rerun loop for cross-references/TOC
+                    // LaTeX needs multiple passes to resolve forward references
+                    // Regex for rerun detection (single pass through log, case-insensitive)
+                    const rerunPattern = /Rerun to get|Label\(s\) may have changed|There were undefined references|Rerun LaTeX/i;
+
+                    // Track aux files to detect actual changes (not just "Rerun" warnings)
+                    let prevAuxFiles = cachedAuxFiles || {};
+
+                    while (rerunPass < maxRerunPasses) {
+                        // Check if log suggests rerun is needed
+                        let logSaysRerun = false;
+                        try {
+                            const logContent = FS.readFile('/document.log', { encoding: 'utf8' });
+                            logSaysRerun = rerunPattern.test(logContent);
+                        } catch (e) {}
+
+                        if (!logSaysRerun) break;
+
+                        // Collect current aux files and compare with previous pass
+                        // If aux files are identical, the "Rerun" warning is a false positive
+                        const currentAuxFiles = collectAuxFiles(FS);
+                        let auxFilesChanged = false;
+
+                        // Check if any aux file content differs (includes new files since
+                        // prevAuxFiles[ext] would be undefined, making comparison true)
+                        for (const ext of Object.keys(currentAuxFiles)) {
+                            if (currentAuxFiles[ext] !== prevAuxFiles[ext]) {
+                                auxFilesChanged = true;
+                                break;
+                            }
+                        }
+
+                        if (!auxFilesChanged) {
+                            workerLog('Aux files unchanged, skipping unnecessary rerun');
+                            break;
+                        }
+
+                        prevAuxFiles = currentAuxFiles;
+
+                        rerunPass++;
+                        workerLog(`Auto-rerun pass ${rerunPass}/${maxRerunPasses}: resolving cross-references...`);
+                        workerProgress('compile', `Rerun ${rerunPass}/${maxRerunPasses}...`);
+
+                        // IMPORTANT: pdfTeX has internal C globals (glyph_unicode_tree, etc.) that
+                        // don't reset between invocations, causing assertion failures. We MUST
+                        // create a fresh WASM module for each rerun pass.
+
+                        // Use aux files we already collected for comparison
+                        const rerunAuxFiles = prevAuxFiles;
+
+                        // Create fresh WASM module
+                        Module = await getOrCreateModule();
+                        FS = Module.FS;
+                        resetFS(FS);
+
+                        // Recreate VFS with same configuration
+                        const rerunVfs = new VirtualFileSystem(FS, {
+                            onLog: workerLog,
+                            lazyEnabled: options.enableLazyFS,
+                            fetchedFilesCache: globalFetchedFilesCache
+                        });
+
+                        if (options.enableLazyFS && !Module._lazyPatchApplied) {
+                            rerunVfs.patchForLazyLoading();
+                            Module._lazyPatchApplied = true;
+                        }
+
+                        // Remount all bundles
+                        for (const [bundleName, data] of bundleDataMap) {
+                            const meta = bundleMetaMap.get(bundleName) || null;
+                            rerunVfs.mountBundle(bundleName, data, fileManifest, meta);
+                        }
+
+                        // Remount deferred bundles
+                        for (const bundleName of deferredBundles) {
+                            if (!bundleDataMap.has(bundleName)) {
+                                rerunVfs.mountDeferredBundle(bundleName, fileManifest, null);
+                            }
+                        }
+
+                        // Remount CTAN files
+                        if (accumulatedCtanFiles.size > 0) {
+                            rerunVfs.mountCtanFiles(accumulatedCtanFiles);
+                        }
+
+                        // Restore aux files from previous pass (critical for TOC/refs)
+                        restoreAuxFiles(FS, rerunAuxFiles);
+
+                        // Finalize VFS
+                        rerunVfs.finalize();
+
+                        // Rewrite document source
+                        FS.writeFile('/document.tex', docSource);
+
+                        // Mount custom format if used
+                        if (fmtPath === '/custom.fmt' && cachedFormat?.fmtData?.buffer?.byteLength > 0) {
+                            FS.writeFile('/custom.fmt', cachedFormat.fmtData);
+                        }
+
+                        // Run compilation (use same format path as initial compilation)
+                        let rerunResult;
+                        if (engine === 'pdflatex') {
+                            rerunResult = Module.callMainWithRedirects([
+                                'pdflatex', '--no-shell-escape', '--interaction=nonstopmode',
+                                '--halt-on-error', '--synctex=-1', '--fmt=' + fmtPath, '/document.tex'
+                            ]);
+                        } else {
+                            // XeLaTeX: two-step process (xelatex -> xdvipdfmx)
+                            rerunResult = Module.callMainWithRedirects([
+                                'xelatex', '--no-shell-escape', '--interaction=nonstopmode',
+                                '--halt-on-error', '--synctex=-1', '--no-pdf',
+                                '--fmt=' + fmtPath, '/document.tex'
+                            ]);
+                            if (rerunResult.exit_code === 0) {
+                                rerunResult = Module.callMainWithRedirects([
+                                    'xdvipdfmx', '-o', '/document.pdf', '/document.xdv'
+                                ]);
+                            }
+                        }
+
+                        if (rerunResult.exit_code === 0) {
+                            pdfData = FS.readFile('/document.pdf');
+                            workerLog(`Rerun ${rerunPass} successful`);
+                            // Update SyncTeX data
+                            try {
+                                const syncTexBytes = FS.readFile('/document.synctex');
+                                syncTexData = new TextDecoder().decode(syncTexBytes);
+                            } catch (e) {}
+                        } else {
+                            workerLog(`Rerun ${rerunPass} failed, keeping previous PDF`);
+                            break;
+                        }
+                    }
+
+                    // Log summary if reruns occurred
+                    if (rerunPass > 0) {
+                        workerLog(`Completed ${rerunPass + 1} passes (1 initial + ${rerunPass} reruns)`);
                     }
                 } catch (e) {
                     workerLog('Failed to read PDF: ' + e.message);

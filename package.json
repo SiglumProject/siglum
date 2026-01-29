@@ -43,6 +43,7 @@
   "dependencies": {
     "@siglum/filesystem": "^0.2.0",
     "blake3-wasm": "2.1.5",
+    "fflate": "^0.8.2",
     "jszip": "^3.10.1",
     "pdf-lib": "^1.17.1",
     "xzwasm": "^0.1.2"

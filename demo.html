@@ -3,6 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <title>Siglum Engine Demo</title>
+    <!-- Import map for bare module specifiers -->
+    <script type="importmap">
+    {
+      "imports": {
+        "@siglum/filesystem": "/node_modules/@siglum/filesystem/dist/index.js"
+      }
+    }
+    </script>
     <!-- Preconnect to local dev server -->
     <link rel="preconnect" href="http://localhost:8787">
     <!-- Note: No preload hints - OPFS caching handles subsequent loads -->
@@ -121,18 +129,19 @@ $E = mc^2$
     <div id="status">Ready. Click "Compile" to start.</div>
 
     <script type="module">
-        import { SiglumCompiler, detectEngine } from './src/index.js';
+        import { SiglumCompiler, detectEngine, createBatchedLogger } from './src/index.js';
 
         let compiler = null;
         let currentPdfUrl = null;
         let compileTimeout = null;
         let autoCompileEnabled = false;
 
-        function log(msg) {
+        // Use batched logging to avoid DOM thrashing during compilation
+        const log = createBatchedLogger((messages) => {
             const status = document.getElementById('status');
-            status.textContent += msg + '\n';
+            status.textContent += messages.join('\n') + '\n';
             status.scrollTop = status.scrollHeight;
-        }
+        });
 
         function updateStatus(text) {
             document.getElementById('compilerStatus').textContent = text;

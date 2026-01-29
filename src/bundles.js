@@ -7,9 +7,6 @@ import {
     saveManifestToOPFS,
     getManifestVersion,
     saveManifestVersion,
-    isBundleExtracted,
-    extractBundleToOPFS,
-    getExtractedBundleMeta,
     MANIFEST_CACHE_VERSION,
 } from './storage.js';
 
@@ -89,39 +86,34 @@ export class BundleManager {
         // Check OPFS cache first
         const cachedVersion = await getManifestVersion();
         if (cachedVersion === MANIFEST_CACHE_VERSION) {
-            const [manifest, registry, packageMap] = await Promise.all([
+            const [manifest, bundlesData] = await Promise.all([
                 getManifestFromOPFS('file-manifest'),
-                getManifestFromOPFS('registry'),
-                getManifestFromOPFS('package-map'),
+                getManifestFromOPFS('bundles'),
             ]);
 
-            if (manifest && registry && packageMap) {
+            if (manifest && bundlesData) {
                 this.onLog('Manifests loaded from OPFS cache');
                 this.fileManifest = manifest;
-                this.bundleRegistry = new Set(registry.map(b => typeof b === 'string' ? b : b.name));
-                this.packageMap = packageMap;
+                this._initFromBundlesData(bundlesData);
                 return this.fileManifest;
             }
         }
 
         // Fetch fresh manifests
-        const [manifestRes, registryRes, packageMapRes] = await Promise.all([
+        const [manifestRes, bundlesRes] = await Promise.all([
             fetch(`${this.bundleBase}/file-manifest.json`),
-            fetch(`${this.bundleBase}/registry.json`),
-            fetch(`${this.bundleBase}/package-map.json`),
+            fetch(`${this.bundleBase}/bundles.json`),
         ]);
 
         this.fileManifest = await manifestRes.json();
-        const registryData = await registryRes.json();
-        this.bundleRegistry = new Set(registryData.map(b => typeof b === 'string' ? b : b.name));
-        this.packageMap = await packageMapRes.json();
+        const bundlesData = await bundlesRes.json();
+        this._initFromBundlesData(bundlesData);
 
         // Save to OPFS (await to ensure cache is populated)
         try {
             await Promise.all([
                 saveManifestToOPFS('file-manifest', this.fileManifest),
-                saveManifestToOPFS('registry', registryData),
-                saveManifestToOPFS('package-map', this.packageMap),
+                saveManifestToOPFS('bundles', bundlesData),
                 saveManifestVersion(MANIFEST_CACHE_VERSION),
             ]);
             this.onLog('Manifests saved to OPFS cache');
@@ -132,45 +124,56 @@ export class BundleManager {
         return this.fileManifest;
     }
 
-    async loadBundleDeps() {
-        if (this.bundleDeps) return this.bundleDeps;
-
-        // Check OPFS cache first (same version as manifests)
-        const cachedVersion = await getManifestVersion();
-        if (cachedVersion === MANIFEST_CACHE_VERSION) {
-            const [bundleDeps, packageDeps] = await Promise.all([
-                getManifestFromOPFS('bundle-deps'),
-                getManifestFromOPFS('package-deps'),
-            ]);
-
-            if (bundleDeps) {
-                this.bundleDeps = bundleDeps;
-                if (packageDeps) this.packageDeps = packageDeps;
-                return this.bundleDeps;
+    _initFromBundlesData(bundlesData) {
+        // Extract bundle registry (set of bundle names)
+        this.bundleRegistry = new Set(Object.keys(bundlesData.bundles || {}));
+        // Extract package map
+        this.packageMap = bundlesData.packages || {};
+        // Extract bundle deps (engines, bundle requires, deferred)
+        this.bundleDeps = {
+            engines: bundlesData.engines || {},
+            bundles: {},
+            deferred: bundlesData.deferred || [],
+        };
+        // Build bundle dependency map from bundlesData.bundles
+        for (const [name, info] of Object.entries(bundlesData.bundles || {})) {
+            if (info.requires && info.requires.length > 0) {
+                this.bundleDeps.bundles[name] = { requires: info.requires };
             }
         }
+    }
 
-        try {
-            const [bundleDepsRes, packageDepsRes] = await Promise.all([
-                fetch(`${this.bundleBase}/bundle-deps.json`),
-                fetch(`${this.bundleBase}/package-deps.json`).catch(() => null),
-            ]);
-            this.bundleDeps = await bundleDepsRes.json();
-            const packageDepsData = packageDepsRes ? await packageDepsRes.json() : null;
-            if (packageDepsData) {
-                this.packageDeps = packageDepsData;
+    async loadBundleDeps() {
+        // bundleDeps is now loaded as part of loadManifest from bundles.json
+        if (this.bundleDeps) return this.bundleDeps;
+
+        // If not loaded yet, trigger manifest load
+        await this.loadManifest();
+
+        // Load optional package-deps.json for package-level dependencies
+        if (!this.packageDeps) {
+            const cachedVersion = await getManifestVersion();
+            if (cachedVersion === MANIFEST_CACHE_VERSION) {
+                const packageDeps = await getManifestFromOPFS('package-deps');
+                if (packageDeps) {
+                    this.packageDeps = packageDeps;
+                    return this.bundleDeps;
+                }
             }
 
-            // Save to OPFS (await to ensure cache is populated)
             try {
-                const saves = [saveManifestToOPFS('bundle-deps', this.bundleDeps)];
-                if (packageDepsData) saves.push(saveManifestToOPFS('package-deps', packageDepsData));
-                await Promise.all(saves);
+                const packageDepsRes = await fetch(`${this.bundleBase}/package-deps.json`).catch(() => null);
+                if (packageDepsRes) {
+                    this.packageDeps = await packageDepsRes.json();
+                    try {
+                        await saveManifestToOPFS('package-deps', this.packageDeps);
+                    } catch (e) {
+                        // OPFS save failed, continue anyway
+                    }
+                }
             } catch (e) {
-                // OPFS save failed, continue anyway
+                // package-deps is optional
             }
-        } catch (e) {
-            this.bundleDeps = {};
         }
 
         return this.bundleDeps;

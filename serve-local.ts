@@ -1,10 +1,228 @@
 // Simple local dev server for siglum-engine
-// Serves bundles, WASM, and proxies CTAN requests
+// Serves bundles, WASM, and handles CTAN package fetching
+// For production, use ctan-proxy.ts for shared disk caching
+
+import { promisify } from 'util';
+import { exec } from 'child_process';
+import { readFile, rm, readdir, mkdir } from 'fs/promises';
+import { join } from 'path';
+import { tmpdir } from 'os';
+
+import {
+  LRUCache,
+  processZipData,
+  processRawFileData,
+  processExtractedFiles,
+  type ProcessedPackage,
+} from './packages/ctan-core.ts';
+
+const execAsync = promisify(exec);
 
 const BUNDLES_DIR = './packages/bundles';
 const DIST_DIR = './dist';
+const TEXLIVE_ARCHIVE_DIR = './busytex/source/texmfrepo/archive';
 
-let busytexJsRequestCount = 0;
+// Memory-only cache for packages (no disk persistence)
+const packageCache = new LRUCache<ProcessedPackage>(50);
+
+// Request deduplication
+const inFlightRequests = new Map<string, Promise<Response>>();
+
+// CORS headers for all responses
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+  'Cross-Origin-Resource-Policy': 'cross-origin',
+};
+
+function jsonResponse(data: any, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  });
+}
+
+// ============================================================================
+// TexLive tar.xz extraction
+// ============================================================================
+
+async function walkDirectory(baseDir: string, currentDir: string, files: Record<string, Uint8Array>): Promise<void> {
+  // Use withFileTypes to avoid separate stat() calls - significant perf improvement
+  const entries = await readdir(currentDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = join(currentDir, entry.name);
+    if (entry.isDirectory()) {
+      await walkDirectory(baseDir, fullPath, files);
+    } else {
+      const relPath = fullPath.replace(baseDir + '/', '');
+      files[relPath] = new Uint8Array(await readFile(fullPath));
+    }
+  }
+}
+
+async function tryTexLiveArchive(pkgName: string): Promise<ProcessedPackage | null> {
+  try {
+    // Find the package file (format: packagename.r12345.tar.xz)
+    const files = await Array.fromAsync(new Bun.Glob(`${pkgName}.r*.tar.xz`).scan(TEXLIVE_ARCHIVE_DIR));
+    if (files.length === 0) return null;
+
+    const filePath = join(TEXLIVE_ARCHIVE_DIR, files[0]);
+    console.log(`[TEXLIVE] Extracting: ${filePath}`);
+
+    const tmpDir = join(tmpdir(), `texlive-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    try {
+      await mkdir(tmpDir, { recursive: true });
+      await execAsync(`tar xJf "${filePath}" -C "${tmpDir}"`);
+
+      const extractedFiles: Record<string, Uint8Array> = {};
+      await walkDirectory(tmpDir, tmpDir, extractedFiles);
+
+      const extraction = processExtractedFiles(extractedFiles, pkgName);
+      if (extraction.fileCount === 0) return null;
+
+      console.log(`[TEXLIVE] Extracted ${extraction.fileCount} files, deps: ${extraction.dependencies.join(', ') || 'none'}`);
+
+      return {
+        name: pkgName,
+        files: extraction.files,
+        totalFiles: extraction.fileCount,
+        dependencies: extraction.dependencies,
+        source: 'texlive'
+      };
+    } finally {
+      try { await rm(tmpDir, { recursive: true }); } catch {}
+    }
+  } catch (e) {
+    return null;
+  }
+}
+
+// ============================================================================
+// Package fetching (when ctan-proxy isn't running)
+// ============================================================================
+
+async function fetchAndExtractPackage(pkg: string): Promise<Response> {
+  // Check memory cache first
+  if (packageCache.has(pkg)) {
+    console.log(`[CACHE] Cache hit: ${pkg}`);
+    return jsonResponse(packageCache.get(pkg));
+  }
+
+  console.log(`[FETCH] Fetching package: ${pkg}`);
+
+  // Try local TexLive archive first (has pre-built .sty files)
+  const texliveResult = await tryTexLiveArchive(pkg);
+  if (texliveResult) {
+    packageCache.set(pkg, texliveResult);
+    return jsonResponse(texliveResult);
+  }
+
+  // Query CTAN for package info
+  const infoResponse = await fetch(`https://ctan.org/json/2.0/pkg/${pkg}`);
+  const info = await infoResponse.json();
+
+  if (info.errors) {
+    console.log(`[CTAN] Package not found: ${pkg}`);
+    return jsonResponse({ error: 'Package not found' }, 404);
+  }
+
+  // Handle parent package redirect
+  let pkgName = pkg;
+  const parentPkg = info.miktex || info.texlive;
+  if (parentPkg && parentPkg !== pkg) {
+    console.log(`[CTAN] ${pkg} is part of ${parentPkg}`);
+
+    // Try TexLive for parent package
+    const parentTexlive = await tryTexLiveArchive(parentPkg);
+    if (parentTexlive) {
+      packageCache.set(pkg, parentTexlive);
+      packageCache.set(parentPkg, parentTexlive);
+      return jsonResponse(parentTexlive);
+    }
+
+    // Check if parent is cached
+    if (packageCache.has(parentPkg)) {
+      const cached = packageCache.get(parentPkg)!;
+      packageCache.set(pkg, cached); // Cache under both names
+      return jsonResponse(cached);
+    }
+    pkgName = parentPkg;
+  }
+
+  // Single file package - fetch raw
+  // Only treat as single file if path has an extension (CTAN sometimes returns file:true for directories)
+  const pathHasExt = info.ctan?.path && /\.[a-z]{2,4}$/i.test(info.ctan.path);
+  if (info.ctan?.file === true && pathHasExt) {
+    console.log(`[CTAN] Single file: ${info.ctan.path}`);
+    const rawResponse = await fetch(`https://mirrors.ctan.org${info.ctan.path}`, { redirect: 'follow' });
+    if (rawResponse.ok) {
+      const content = await rawResponse.text();
+      const result = processRawFileData(info.ctan.path, content, pkgName);
+      packageCache.set(pkg, result);
+      if (pkgName !== pkg) packageCache.set(pkgName, result);
+      return jsonResponse(result);
+    }
+  }
+
+  // Build list of URLs to try (in order of preference)
+  const urlsToTry: string[] = [];
+  let ctanPath = info.ctan?.path || '';
+  // Only strip filename if path has an actual file extension (CTAN sometimes returns file:true for directories)
+  if (info.ctan?.file === true && /\.[a-z]{2,4}$/i.test(ctanPath)) {
+    ctanPath = ctanPath.substring(0, ctanPath.lastIndexOf('/'));
+  }
+
+  if (info.install) {
+    urlsToTry.push(`https://mirrors.ctan.org/install${info.install}`);
+  }
+  if (ctanPath) {
+    urlsToTry.push(`https://mirrors.ctan.org${ctanPath}.zip`);
+    urlsToTry.push(`https://mirrors.ctan.org${ctanPath}/${pkgName}.zip`);
+    urlsToTry.push(`https://mirrors.ctan.org${ctanPath}.tds.zip`);
+  }
+
+  if (urlsToTry.length === 0) {
+    return jsonResponse({ error: 'No download URL available' }, 404);
+  }
+
+  // Try each URL until we get usable files
+  let result: ProcessedPackage | { error: string } = { error: 'No URLs to try' };
+
+  for (const downloadUrl of urlsToTry) {
+    console.log(`[CTAN] Trying: ${downloadUrl}`);
+    const zipResponse = await fetch(downloadUrl, { redirect: 'follow' });
+
+    if (!zipResponse.ok) continue;
+
+    const zipData = new Uint8Array(await zipResponse.arrayBuffer());
+    console.log(`[CTAN] Extracting ZIP (${(zipData.length / 1024).toFixed(1)} KB)`);
+
+    result = await processZipData(zipData, pkgName);
+
+    // If we got usable files, we're done
+    if (!('error' in result) && result.totalFiles > 0) {
+      break;
+    }
+    console.log(`[CTAN] No usable files, trying next URL...`);
+  }
+
+  if ('error' in result) {
+    return jsonResponse(result, 404);
+  }
+
+  console.log(`[CTAN] Extracted ${result.totalFiles} files, deps: ${result.dependencies.join(', ') || 'none'}`);
+
+  // Cache under both requested name and resolved name
+  packageCache.set(pkg, result);
+  if (pkgName !== pkg) packageCache.set(pkgName, result);
+
+  return jsonResponse(result);
+}
+
+// ============================================================================
+// Server
+// ============================================================================
 
 Bun.serve({
   port: 8787,
@@ -12,15 +230,6 @@ Bun.serve({
   async fetch(req) {
     const url = new URL(req.url);
     const path = url.pathname;
-
-    // CORS headers for all responses
-    // Cross-Origin-Resource-Policy: cross-origin is needed for COEP on the main page
-    const corsHeaders = {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Zotero-API-Key',
-      'Cross-Origin-Resource-Policy': 'cross-origin',
-    };
 
     // No-cache headers for development source files only
     const noCacheHeaders = {
@@ -124,101 +333,98 @@ Bun.serve({
       const archiveDir = './busytex/source/texmfrepo/archive';
 
       console.log(`[TEXLIVE] Serving package: ${pkg}`);
-      if (pkg === 'enumitem') {
-        console.log(`[TEXLIVE] *** ENUMITEM REQUESTED - checking archive...`);
-      }
       try {
         // Find the package file (format: packagename.r12345.tar.xz)
         const files = await Array.fromAsync(new Bun.Glob(`${pkg}.r*.tar.xz`).scan(archiveDir));
-        console.log(`[TEXLIVE] Found ${files.length} files for ${pkg}: ${files.join(', ')}`);
         if (files.length === 0) {
           console.log(`[TEXLIVE] 404: ${pkg} not found in archive`);
-          return new Response(JSON.stringify({ error: 'Package not found in TexLive' }), {
-            status: 404,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
+          return jsonResponse({ error: 'Package not found in TexLive' }, 404);
         }
         // Use the first match (should only be one per package)
         const filePath = `${archiveDir}/${files[0]}`;
         console.log(`[TEXLIVE] Serving file: ${filePath}`);
         const file = Bun.file(filePath);
         if (!await file.exists()) {
-          return new Response(JSON.stringify({ error: 'Package file not found' }), {
-            status: 404,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
+          return jsonResponse({ error: 'Package file not found' }, 404);
         }
         return new Response(file, {
           headers: { ...corsHeaders, 'Content-Type': 'application/x-xz' },
         });
       } catch (e: any) {
         console.error(`TexLive serve error: ${e.message}`);
-        return new Response(JSON.stringify({ error: e.message }), {
-          status: 500,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
+        return jsonResponse({ error: e.message }, 500);
       }
     }
 
-    // /api/ctan-pkg/* - proxy to CTAN package info API
+    // /api/ctan-pkg/* - proxy to ctan-proxy or fall back to direct CTAN
     if (path.startsWith('/api/ctan-pkg/')) {
       const pkg = path.slice(14);
-      const ctanPkgUrl = `https://siglum-api.vtp-ips.workers.dev/api/ctan-pkg/${pkg}`;
 
-      console.log(`Proxying CTAN pkg info request: ${pkg}`);
-      const response = await fetch(ctanPkgUrl);
-      const body = await response.text();
+      // Try local ctan-proxy first (has caching)
+      try {
+        const response = await fetch(`http://localhost:8081/api/pkg/${pkg}`);
+        if (response.ok) {
+          console.log(`[CTAN] pkg info via ctan-proxy: ${pkg}`);
+          const body = await response.text();
+          return new Response(body, {
+            status: response.status,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+      } catch {
+        // ctan-proxy not running, fall back to direct
+      }
 
-      return new Response(body, {
-        status: response.status,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      // Fall back to direct CTAN
+      console.log(`[CTAN] pkg info direct: ${pkg}`);
+      try {
+        const response = await fetch(`https://ctan.org/json/2.0/pkg/${pkg}`);
+        const body = await response.text();
+        return new Response(body, {
+          status: response.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      } catch (e: any) {
+        return jsonResponse({ error: e.message }, 502);
+      }
     }
 
-    // /api/fetch/* - proxy to CTAN (or use cached)
+    // /api/fetch/* - fetch and extract package
+    // Tries ctan-proxy first (disk cache), falls back to local extraction (memory cache)
     if (path.startsWith('/api/fetch/')) {
       const pkg = path.slice(11);
-      const ctanUrl = `https://siglum-api.vtp-ips.workers.dev/api/fetch/${pkg}`;
 
-      console.log(`Proxying CTAN request: ${pkg}`);
-      const response = await fetch(ctanUrl);
-      const body = await response.text();
-
-      return new Response(body, {
-        status: response.status,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
-    // /api/zotero/* - proxy to Zotero API (CORS workaround)
-    if (path.startsWith('/api/zotero/')) {
-      const zoteroPath = path.slice(12);
-      const zoteroUrl = `https://api.zotero.org/${zoteroPath}${url.search}`;
-
-      // Forward the API key from request headers
-      const apiKey = req.headers.get('Zotero-API-Key');
-      const headers: Record<string, string> = {
-        'Zotero-API-Version': '3',
-      };
-      if (apiKey) {
-        headers['Zotero-API-Key'] = apiKey;
+      // Request deduplication
+      if (inFlightRequests.has(pkg)) {
+        console.log(`[CTAN] Deduplicating request: ${pkg}`);
+        return inFlightRequests.get(pkg)!;
       }
 
-      console.log(`Proxying Zotero request: ${zoteroPath}`);
-      const response = await fetch(zoteroUrl, { headers });
-      const body = await response.text();
-
-      // Forward relevant headers from Zotero
-      const responseHeaders = { ...corsHeaders, 'Content-Type': 'application/json' };
-      const totalResults = response.headers.get('Total-Results');
-      if (totalResults) {
-        responseHeaders['Total-Results'] = totalResults;
+      // Try local ctan-proxy first (has disk caching)
+      try {
+        const response = await fetch(`http://localhost:8081/api/fetch/${pkg}`);
+        if (response.ok) {
+          console.log(`[CTAN] fetch via ctan-proxy: ${pkg}`);
+          const data = await response.json();
+          packageCache.set(pkg, data); // Also cache locally
+          return jsonResponse(data);
+        }
+      } catch {
+        // ctan-proxy not running, handle locally
       }
 
-      return new Response(body, {
-        status: response.status,
-        headers: responseHeaders,
-      });
+      // Fetch and extract locally (memory cache only)
+      const fetchPromise = fetchAndExtractPackage(pkg)
+        .catch(e => {
+          console.error(`[CTAN] Error fetching ${pkg}:`, e);
+          return jsonResponse({ error: e.message }, 500);
+        })
+        .finally(() => {
+          inFlightRequests.delete(pkg);
+        });
+
+      inFlightRequests.set(pkg, fetchPromise);
+      return fetchPromise;
     }
 
     // /src/* - serve source files (for local development, no caching)
@@ -232,6 +438,21 @@ Bun.serve({
         });
       }
       return new Response('Not found: ./src/' + file, { status: 404, headers: noCacheHeaders });
+    }
+
+    // Serve node_modules for import map resolution
+    if (path.startsWith('/node_modules/')) {
+      const file = path.slice(14);
+      const bunFile = Bun.file(`./node_modules/${file}`);
+      if (await bunFile.exists()) {
+        const contentType = file.endsWith('.js') ? 'application/javascript'
+          : file.endsWith('.json') ? 'application/json'
+          : 'application/octet-stream';
+        return new Response(bunFile, {
+          headers: { ...noCacheHeaders, 'Content-Type': contentType },
+        });
+      }
+      return new Response('Not found: ./node_modules/' + file, { status: 404, headers: noCacheHeaders });
     }
 
     // /xzwasm.js - serve from dist/src (or node_modules fallback)
@@ -268,12 +489,11 @@ Bun.serve({
 
     // Health check
     if (path === '/health') {
-      return new Response(JSON.stringify({
+      return jsonResponse({
         status: 'ok',
         service: 'siglum-local-dev',
+        packageCache: packageCache.size,
         dirs: { bundles: BUNDLES_DIR, dist: DIST_DIR }
-      }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
@@ -285,7 +505,8 @@ console.log('Local dev server: http://localhost:8787');
 console.log('  /bundles/*    -> ./packages/bundles/');
 console.log('  /wasm/*       -> ./busytex/build/wasm/');
 console.log('  /src/*        -> ./src/');
-console.log('  /api/texlive/ -> Local TL2025 archive (busytex/source/texmfrepo/archive/)');
-console.log('  /api/ctan-pkg/-> CTAN package info proxy');
-console.log('  /api/fetch/   -> CTAN package proxy');
-console.log('  /api/zotero/  -> Zotero API proxy');
+console.log('  /api/texlive/ -> Local TL2025 archive');
+console.log('  /api/fetch/   -> ctan-proxy (if running) or direct CTAN with extraction');
+console.log('');
+console.log('Package fetching works without ctan-proxy (memory cache only).');
+console.log('For disk caching, run: bun packages/ctan-proxy.ts');
