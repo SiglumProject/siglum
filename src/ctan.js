@@ -1,10 +1,10 @@
 // CTAN package fetching module
 
+import { fileSystem } from '@siglum/filesystem';
 import {
     getPackageMeta,
     savePackageMeta,
-    readFromOPFS,
-    writeToOPFS,
+    ensureTexliveMounted,
     CTAN_CACHE_VERSION
 } from './storage.js';
 
@@ -175,7 +175,7 @@ export class CTANFetcher {
             // Check if it's a "not found" marker
             if (meta.notFound) return { notFound: true };
 
-            // Check memory cache first, then OPFS
+            // Check memory cache first, then filesystem
             const files = new Map();
             if (meta.files && meta.files.length > 0) {
                 const filesToLoad = [];
@@ -188,12 +188,13 @@ export class CTANFetcher {
                     }
                 }
 
-                // Load any missing files from OPFS
+                // Load any missing files from filesystem cache
                 if (filesToLoad.length > 0) {
+                    await ensureTexliveMounted();
                     const results = await Promise.all(
                         filesToLoad.map(async (filePath) => {
-                            const content = await readFromOPFS(filePath);
-                            return content ? [filePath, content] : null;
+                            const content = await fileSystem.readBinary(filePath).catch(() => null);
+                            return content ? [filePath, new Uint8Array(content)] : null;
                         })
                     );
                     for (const result of results) {
@@ -241,7 +242,7 @@ export class CTANFetcher {
                     this.onLog(`[FETCH] ${packageName}: marked as not found in cache`);
                     return null;
                 }
-                this.onLog(`[FETCH] ${packageName}: loaded from OPFS cache`);
+                this.onLog(`[FETCH] ${packageName}: loaded from cache`);
                 return cached;
             }
         } else {
@@ -411,7 +412,9 @@ export class CTANFetcher {
             const texExtensions = ['.sty', '.cls', '.def', '.cfg', '.tex', '.fd', '.clo', '.ltx'];
             const fontExtensions = ['.pfb', '.pfm', '.afm', '.tfm', '.vf', '.map', '.enc'];
             const files = new Map();
-            const opfsWrites = [];
+            const cacheWrites = [];
+
+            await ensureTexliveMounted();
 
             for (const [tarPath, content] of tarFiles) {
                 // Skip docs and source
@@ -443,12 +446,12 @@ export class CTANFetcher {
                     files.set(targetPath, fileData);
                     this.mountedFiles.add(targetPath);
                     this.fileCache.set(targetPath, fileData);
-                    opfsWrites.push(writeToOPFS(targetPath, content));
+                    cacheWrites.push(fileSystem.writeBinary(targetPath, fileData, { createParents: true }).catch(() => {}));
                 }
             }
 
-            // Parallel OPFS writes
-            await Promise.all(opfsWrites);
+            // Parallel filesystem cache writes
+            await Promise.all(cacheWrites);
 
             this.onLog(`Processed ${files.size} TeX/font files from ${packageName}`);
 
@@ -549,7 +552,8 @@ export class CTANFetcher {
 
             // Process and cache files
             const files = new Map();
-            const opfsWrites = [];
+            const cacheWrites = [];
+            await ensureTexliveMounted();
             for (const [path, info] of Object.entries(data.files)) {
                 let content;
                 if (info.encoding === 'base64') {
@@ -566,11 +570,11 @@ export class CTANFetcher {
                 files.set(path, content);
                 this.mountedFiles.add(path);
                 this.fileCache.set(path, content);
-                opfsWrites.push(writeToOPFS(path, content));
+                cacheWrites.push(fileSystem.writeBinary(path, content, { createParents: true }).catch(() => {}));
             }
 
-            // Parallel OPFS writes
-            await Promise.all(opfsWrites);
+            // Parallel filesystem cache writes
+            await Promise.all(cacheWrites);
 
             // Cache metadata under the requested package name
             const cacheEntry = {

@@ -126,33 +126,18 @@ async function ensureFmtCacheMounted() {
     }
 }
 
-// Backwards-compatible file operations using @siglum/filesystem
-export async function readFromOPFS(filePath) {
+// Mount for texlive/CTAN cache
+let texliveMounted = false;
+export async function ensureTexliveMounted() {
+    if (texliveMounted) return true;
+    const fs = await getFileSystem();
+    if (!fs) return false;
     try {
-        const fs = await getFileSystem();
-        if (!fs) return null;
-        // Ensure the appropriate mount exists based on path
-        if (filePath.startsWith('/fmt-cache') || filePath.startsWith('fmt-cache')) {
-            if (!await ensureFmtCacheMounted()) return null;
-        }
-        return await fs.readBinary(filePath.startsWith('/') ? filePath : '/' + filePath);
-    } catch (e) {
-        return null;
-    }
-}
-
-export async function writeToOPFS(filePath, content) {
-    try {
-        const fs = await getFileSystem();
-        if (!fs) return false;
-        // Ensure the appropriate mount exists based on path
-        if (filePath.startsWith('/fmt-cache') || filePath.startsWith('fmt-cache')) {
-            if (!await ensureFmtCacheMounted()) return false;
-        }
-        const normalizedPath = filePath.startsWith('/') ? filePath : '/' + filePath;
-        await fs.writeBinary(normalizedPath, content, { createParents: true });
+        await fs.mountAuto('/texlive');
+        texliveMounted = true;
         return true;
     } catch (e) {
+        console.warn('Failed to mount texlive filesystem:', e);
         return false;
     }
 }
@@ -192,7 +177,7 @@ async function ensureBundleCacheMounted() {
     }
 }
 
-export async function getBundleFromOPFS(bundleName) {
+export async function getBundleFromCache(bundleName) {
     try {
         const fs = await getFileSystem();
         if (!fs || !await ensureBundleCacheMounted()) return null;
@@ -204,7 +189,7 @@ export async function getBundleFromOPFS(bundleName) {
     }
 }
 
-export async function saveBundleToOPFS(bundleName, data) {
+export async function saveBundleToCache(bundleName, data) {
     try {
         const fs = await getFileSystem();
         if (!fs || !await ensureBundleCacheMounted()) return false;
@@ -226,7 +211,7 @@ export async function saveBundleToOPFS(bundleName, data) {
 }
 
 // Manifest cache
-export async function getManifestFromOPFS(name) {
+export async function getManifestFromCache(name) {
     try {
         const fs = await getFileSystem();
         if (!fs || !await ensureManifestsMounted()) return null;
@@ -238,7 +223,7 @@ export async function getManifestFromOPFS(name) {
     }
 }
 
-export async function saveManifestToOPFS(name, data) {
+export async function saveManifestToCache(name, data) {
     try {
         const fs = await getFileSystem();
         if (!fs || !await ensureManifestsMounted()) return false;
@@ -272,16 +257,6 @@ export async function saveManifestVersion(version) {
     } catch (e) {
         return false;
     }
-}
-
-export async function clearManifestCache() {
-    try {
-        const fs = await getFileSystem();
-        if (!fs) return;
-
-        await fs.rmdir('/manifests', { recursive: true });
-        manifestsMounted = false; // Force remount next time
-    } catch (e) {}
 }
 
 // Aux file cache
@@ -562,88 +537,7 @@ export async function saveWasmMemorySnapshot(memoryOrSnapshot, metadata = {}) {
     }
 }
 
-// Restore WASM memory from cached snapshot
-// Returns null if no valid snapshot exists
-export async function getWasmMemorySnapshot() {
-    try {
-        const fs = await getFileSystem();
-        if (!fs || !await ensureWasmCacheMounted()) {
-            return null;
-        }
-
-        // Read metadata first (small file, fast) to validate before loading large snapshot
-        let metaJson;
-        try {
-            metaJson = await fs.readFile(MEMORY_SNAPSHOT_META_PATH);
-        } catch {
-            // Metadata doesn't exist - no snapshot available
-            return null;
-        }
-
-        const meta = JSON.parse(metaJson);
-
-        if (meta.version !== MEMORY_SNAPSHOT_VERSION) {
-            console.log('Memory snapshot version mismatch, clearing...');
-            // Clear asynchronously - don't block the return
-            clearWasmMemorySnapshot().catch(() => {});
-            return null;
-        }
-
-        // Read snapshot binary - this is the large (~500MB) operation
-        let snapshot;
-        try {
-            snapshot = await fs.readBinary(MEMORY_SNAPSHOT_PATH);
-        } catch {
-            // Snapshot file missing (possibly corrupted state) - clear metadata
-            clearWasmMemorySnapshot().catch(() => {});
-            return null;
-        }
-
-        // Validate snapshot size matches metadata
-        if (snapshot.byteLength !== meta.byteLength) {
-            console.warn('Memory snapshot size mismatch, clearing...');
-            clearWasmMemorySnapshot().catch(() => {});
-            return null;
-        }
-
-        console.log(`Loaded WASM memory snapshot (${(meta.byteLength / 1024 / 1024).toFixed(1)}MB)`);
-        return {
-            snapshot,
-            byteLength: meta.byteLength,
-            metadata: meta.metadata || {},
-        };
-    } catch (e) {
-        console.warn('Failed to get memory snapshot:', e);
-        return null;
-    }
-}
-
-// Clear memory snapshot (call when WASM version changes)
-export async function clearWasmMemorySnapshot() {
-    try {
-        const fs = await getFileSystem();
-        if (!fs || !await ensureWasmCacheMounted()) {
-            return false;
-        }
-
-        // Delete both files in parallel for efficiency
-        await Promise.all([
-            fs.deleteFile(MEMORY_SNAPSHOT_PATH, { silent: true }).catch(() => {}),
-            fs.deleteFile(MEMORY_SNAPSHOT_META_PATH, { silent: true }).catch(() => {}),
-        ]);
-
-        console.log('Cleared WASM memory snapshot');
-        return true;
-    } catch (e) {
-        console.warn('Failed to clear memory snapshot:', e);
-        return false;
-    }
-}
-
 export {
     CTAN_CACHE_VERSION,
-    BUNDLE_CACHE_VERSION,
     MANIFEST_CACHE_VERSION,
-    WASM_CACHE_VERSION,
-    MEMORY_SNAPSHOT_VERSION,
 };

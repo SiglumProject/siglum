@@ -6,6 +6,7 @@ import { CTANFetcher } from './ctan.js';
 // Module-level tracking to prevent multiple workers across all instances
 let _globalActiveWorker = null;
 let _globalWorkerId = 0;
+import { fileSystem } from '@siglum/filesystem';
 import {
     getAuxCache,
     saveAuxCache,
@@ -13,13 +14,25 @@ import {
     saveCachedPdf,
     hashDocument,
     getFmtPath,
-    readFromOPFS,
-    writeToOPFS,
     clearCTANCache,
     getCompiledWasmModule,
     saveWasmBytes,
     saveWasmMemorySnapshot,
 } from './storage.js';
+
+// Ensure fmt-cache mount exists
+let fmtCacheMounted = false;
+async function ensureFmtCacheMount() {
+    if (fmtCacheMounted) return true;
+    try {
+        await fileSystem.mountAuto('/fmt-cache');
+        fmtCacheMounted = true;
+        return true;
+    } catch (e) {
+        console.warn('Failed to mount fmt-cache:', e);
+        return false;
+    }
+}
 
 export class SiglumCompiler {
     constructor(options = {}) {
@@ -662,7 +675,7 @@ export class SiglumCompiler {
 
     async compile(source, options = {}) {
         // Wait for any pending format generation to complete before checking cache
-        // This ensures the format is available in OPFS for the current compile
+        // This ensures the format is available in cache for the current compile
         if (this.formatGenerationPromise) {
             this._log('Waiting for format generation to complete...');
             await this.formatGenerationPromise.catch(() => {});
@@ -733,50 +746,38 @@ export class SiglumCompiler {
             this._log('Required bundles: ' + bundles.join(', '));
         }
 
-        // Prepare bundle data for worker
-        // Two modes:
-        // 1. OPFS mode: bundles extracted to OPFS, worker reads directly (no memory transfer)
-        // 2. Legacy mode: bundle blobs transferred to worker (SharedArrayBuffer or copy)
+        // Prepare bundle data for worker (SharedArrayBuffer for zero-copy, or regular ArrayBuffer with transfer)
         this.onProgress('loading', 'Loading bundles...');
 
         let bundleData = {};
-        let bundleNames = [];
         let transferList = [];
-        let useOPFSMode = false;
 
-        if (this.bundleManager.useOPFSExtraction && this.bundleManager.isOPFSAvailable()) {
-            // OPFS mode: extract bundles to OPFS, send only names
-            bundleNames = await this.bundleManager.ensureBundlesExtracted(allBundles);
-            useOPFSMode = true;
-            this._log(`OPFS mode: ${bundleNames.length} bundles ready (zero memory transfer)`);
-        } else {
-            // Legacy mode: load bundle blobs
-            const loadedBundles = await this.bundleManager.loadBundles(allBundles);
-            let totalBytes = 0;
-            let usingSharedArrayBuffer = false;
+        // Load bundle blobs
+        const loadedBundles = await this.bundleManager.loadBundles(allBundles);
+        let totalBytes = 0;
+        let usingSharedArrayBuffer = false;
 
-            for (const [name, data] of Object.entries(loadedBundles)) {
-                if (data) {
-                    // Check if data is SharedArrayBuffer (zero-copy) or regular ArrayBuffer (needs transfer)
-                    const isShared = typeof SharedArrayBuffer !== 'undefined' && data instanceof SharedArrayBuffer;
-                    if (isShared) {
-                        // SharedArrayBuffer: no copy needed, worker reads same memory
-                        bundleData[name] = data;
-                        usingSharedArrayBuffer = true;
-                    } else {
-                        // Regular ArrayBuffer: copy for transfer (original stays in cache)
-                        const copy = data.slice(0);
-                        bundleData[name] = copy;
-                        transferList.push(copy);
-                    }
-                    totalBytes += data.byteLength;
+        for (const [name, data] of Object.entries(loadedBundles)) {
+            if (data) {
+                // Check if data is SharedArrayBuffer (zero-copy) or regular ArrayBuffer (needs transfer)
+                const isShared = typeof SharedArrayBuffer !== 'undefined' && data instanceof SharedArrayBuffer;
+                if (isShared) {
+                    // SharedArrayBuffer: no copy needed, worker reads same memory
+                    bundleData[name] = data;
+                    usingSharedArrayBuffer = true;
+                } else {
+                    // Regular ArrayBuffer: copy for transfer (original stays in cache)
+                    const copy = data.slice(0);
+                    bundleData[name] = copy;
+                    transferList.push(copy);
                 }
+                totalBytes += data.byteLength;
             }
-            if (usingSharedArrayBuffer) {
-                this._log(`Sharing ${Object.keys(bundleData).length} bundles via SharedArrayBuffer (${(totalBytes/1024/1024).toFixed(1)}MB, zero-copy)`);
-            } else {
-                this._log(`Transferring ${Object.keys(bundleData).length} bundles (${(totalBytes/1024/1024).toFixed(1)}MB)`);
-            }
+        }
+        if (usingSharedArrayBuffer) {
+            this._log(`Sharing ${Object.keys(bundleData).length} bundles via SharedArrayBuffer (${(totalBytes/1024/1024).toFixed(1)}MB, zero-copy)`);
+        } else {
+            this._log(`Transferring ${Object.keys(bundleData).length} bundles (${(totalBytes/1024/1024).toFixed(1)}MB)`);
         }
 
         // Get CTAN files from memory cache (populated by previous fetches)
@@ -797,7 +798,7 @@ export class SiglumCompiler {
             ctanFiles['/' + filename] = data;
         }
 
-        // Check for cached format (in-memory first, then OPFS)
+        // Check for cached format (in-memory first, then filesystem)
         let cachedFormat = null;
         const preamble = extractPreamble(source);
         const preambleHash = hashPreamble(preamble);
@@ -808,14 +809,15 @@ export class SiglumCompiler {
             cachedFormat = { fmtName: fmtKey, fmtData: this._fmtMemCache.data };
             this._log('Using cached format (memory)');
         } else {
-            // Fall back to OPFS - path is deterministic from fmtKey
-            const fmtPath = getFmtPath(fmtKey);
-            const fmtData = await readFromOPFS(fmtPath);
-            if (fmtData && fmtData.buffer.byteLength > 0) {
+            // Fall back to filesystem cache - path is deterministic from fmtKey
+            const fmtPath = '/' + getFmtPath(fmtKey);
+            await ensureFmtCacheMount();
+            const fmtData = await fileSystem.readBinary(fmtPath).catch(() => null);
+            if (fmtData && fmtData.byteLength > 0) {
                 // Cache in memory for subsequent compiles
                 this._fmtMemCache = { key: fmtKey, data: fmtData.slice() };
                 cachedFormat = { fmtName: fmtKey, fmtData: this._fmtMemCache.data };
-                this._log('Using cached format (OPFS)');
+                this._log('Using cached format (filesystem)');
             }
         }
 
@@ -864,8 +866,9 @@ export class SiglumCompiler {
                         if (!cachedFormat && preamble && engine !== 'xelatex') {
                             this.generateFormat(source, { engine }).then(async () => {
                                 // Populate memory cache from the newly generated format
-                                const data = await readFromOPFS(getFmtPath(fmtKey));
-                                if (data) this._fmtMemCache = { key: fmtKey, data: data.slice() };
+                                await ensureFmtCacheMount();
+                                const data = await fileSystem.readBinary('/' + getFmtPath(fmtKey)).catch(() => null);
+                                if (data) this._fmtMemCache = { key: fmtKey, data: new Uint8Array(data) };
                             }).catch(() => {}); // Silent fail for background task
                         }
 
@@ -900,12 +903,10 @@ export class SiglumCompiler {
                 options: {
                     enableLazyFS: this.enableLazyFS,
                     enableCtan: this.enableCtan,
-                    useOPFSMode,  // Worker reads bundles from OPFS instead of receiving blobs
                     maxRetries: this.maxRetries,
                     verbose: this.verbose,
                 },
-                bundleData: useOPFSMode ? {} : bundleData,  // Empty if using OPFS
-                bundleNames: useOPFSMode ? bundleNames : [],  // Bundle names for OPFS mode
+                bundleData,
                 ctanFiles,
                 cachedFormat,
                 cachedAuxFiles: auxCache?.files || null,
@@ -934,9 +935,10 @@ export class SiglumCompiler {
         // Check cache - path is deterministic from fmtKey
         const preambleHash = hashPreamble(preamble);
         const fmtKey = preambleHash + '_' + engine;
-        const fmtPath = getFmtPath(fmtKey);
-        const existingFmt = await readFromOPFS(fmtPath);
-        if (existingFmt && existingFmt.buffer.byteLength > 0) {
+        const fmtPath = '/' + getFmtPath(fmtKey);
+        await ensureFmtCacheMount();
+        const existingFmt = await fileSystem.readBinary(fmtPath).catch(() => null);
+        if (existingFmt && existingFmt.byteLength > 0) {
             this._log('Format already cached');
             return new Uint8Array(existingFmt);
         }
@@ -977,17 +979,23 @@ export class SiglumCompiler {
             }, 300000); // 5 minute timeout
 
             this.pendingFormat = {
-                resolve: async (result) => {
+                resolve: (result) => {
                     clearTimeout(timeout);
 
                     if (result.success) {
                         const fmtData = new Uint8Array(result.formatData);
 
-                        // Cache to OPFS - path is deterministic, no metadata needed
-                        await writeToOPFS(fmtPath, fmtData);
-
-                        this._log('Format generated and cached');
-                        resolve(fmtData);
+                        // Cache to filesystem, then resolve
+                        ensureFmtCacheMount().then(() => {
+                            return fileSystem.writeBinary(fmtPath, fmtData, { createParents: true });
+                        }).then(() => {
+                            this._log('Format generated and cached');
+                            resolve(fmtData);
+                        }).catch(e => {
+                            // Cache failed but format is still valid
+                            this._log('Warning: Failed to cache format: ' + e.message);
+                            resolve(fmtData);
+                        });
                     } else {
                         reject(new Error(result.error || 'Format generation failed'));
                     }
