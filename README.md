@@ -1,22 +1,72 @@
-# siglum
+# Siglum Engine
 
-The fastest browser-based LaTeX compiler. TeX Live 2025 running in WebAssembly, with lazy loading and on-demand package resolution.
+A browser-based LaTeX compiler. TeX Live 2025 running in WebAssembly, with lazy bundle loading and on-demand package fetching.
 
-- **~800KB initial download** — not 30MB like other solutions
-- **~150ms cached compiles** — faster than server round-trips
-- **Works offline** — after first load, no network needed
-- **Any CTAN package** — fetched automatically when your document needs it
+On initialization, the engine downloads:
+- **WASM binary** (~29MB):  the TeX engine
+- **Core bundles** (~16MB for pdfLaTeX): format files, fonts, base packages
 
-## Setup
+Missing packages are fetched from the TexLive archvie and CTAN automatically during compilation. Everything is cached in the browser (OPFS/IndexedDB) for offline use.
+
+## Quick Start
 
 ```bash
-npm install siglum
+git clone git@github.com:SiglumProject/siglum-engine.git
+cd siglum-engine
+bun install
+
+# Download WASM files
+mkdir -p busytex/build/wasm
+curl -L -o busytex/build/wasm/busytex.wasm <release-url>/busytex.wasm
+curl -L -o busytex/build/wasm/busytex.js <release-url>/busytex.js
+
+# Download bundle files
+curl -L -o bundles.tar.gz <release-url>/bundles.tar.gz
+tar -xzf bundles.tar.gz -C packages/
+rm bundles.tar.gz
+
+# Start dev server
+bun serve-local.ts
 ```
 
-```javascript
-import { BusyTeXCompiler } from 'siglum';
+Open http://localhost:8787 to try the demo.
 
-const compiler = new BusyTeXCompiler();
+The dev server caches packages in memory. For disk persistence across restarts, run the CTAN proxy in a separate terminal:
+
+```bash
+bun packages/ctan-proxy.ts
+```
+
+The dev server automatically uses it when available.
+
+Replace `<release-url>` with the URL from [GitHub Releases](https://github.com/SiglumProject/siglum-engine/releases).
+
+## Installation
+
+```bash
+npm install @siglum/engine
+```
+
+Download WASM and bundle files from [GitHub Releases](https://github.com/SiglumProject/siglum-engine/releases) and place them in your public directory:
+
+```bash
+# Download and extract to your public directory
+curl -L -o wasm.tar.gz <release-url>/wasm.tar.gz
+curl -L -o bundles.tar.gz <release-url>/bundles.tar.gz
+tar -xzf wasm.tar.gz -C public/
+tar -xzf bundles.tar.gz -C public/
+```
+
+## Usage
+
+```javascript
+import { SiglumCompiler } from '@siglum/engine';
+
+const compiler = new SiglumCompiler({
+    bundlesUrl: '/bundles',
+    wasmUrl: '/wasm/busytex.wasm',
+});
+
 await compiler.init();
 
 const result = await compiler.compile(`
@@ -32,146 +82,221 @@ if (result.success) {
 }
 ```
 
-## How it works
+## API
 
-On first use, siglum downloads a TeX engine and core LaTeX packages. Compilation runs in a Web Worker. After the engine and packages are cached, it works offline.
-
-- Supported engines: pdfLaTeX and XeLaTeX.
-- Common packages are bundled; others load from CTAN as needed.
-- Custom fonts via fontspec (with XeLaTeX).
-
-## Configuration
+### `new SiglumCompiler(options)`
 
 ```javascript
-const compiler = new BusyTeXCompiler({
-    bundlesUrl: 'https://siglum-api.vtp-ips.workers.dev/bundles',
-    wasmUrl: 'https://siglum-api.vtp-ips.workers.dev/wasm/busytex.wasm',
-    ctanProxyUrl: 'https://siglum-api.vtp-ips.workers.dev',
-    enableCtan: true,
-    enableLazyFS: true,
-    onLog: (msg) => console.log(msg),
-    onProgress: (stage, detail) => console.log(`${stage}: ${detail}`),
+const compiler = new SiglumCompiler({
+    // URLs
+    bundlesUrl: '/bundles',           // URL to bundle files
+    wasmUrl: '/wasm/busytex.wasm',    // URL to WASM binary
+    ctanProxyUrl: null,               // CTAN proxy for missing packages (optional)
+    workerUrl: null,                  // Custom worker URL (uses embedded worker if null)
+
+    // Feature flags
+    enableCtan: true,                 // Fetch missing packages from CTAN
+    enableLazyFS: true,               // Load files on-demand (faster startup)
+    enableDocCache: true,             // Cache compiled documents by preamble hash
+
+    // Performance tuning
+    maxRetries: 15,                   // Max retries for CTAN/bundle fetches per compile
+    eagerBundles: {},                 // Bundles to load immediately (see below)
+    verbose: false,                   // Log TeX stdout (disable for performance)
+
+    // Callbacks
+    onLog: (msg) => {},               // Log callback
+    onProgress: (stage, detail) => {},  // Progress callback
 });
 ```
 
-## Compilation
+#### `eagerBundles`
+
+By default, large bundles like `cm-super` (fonts) are loaded on-demand when TeX requests them. This saves bandwidth but adds latency on first use. To pre-load specific bundles:
+
+```javascript
+// Load cm-super fonts eagerly for all engines
+const compiler = new SiglumCompiler({
+    eagerBundles: ['cm-super'],
+});
+
+// Or per-engine configuration
+const compiler = new SiglumCompiler({
+    eagerBundles: {
+        pdflatex: ['cm-super'],
+        xelatex: [],  // XeLaTeX uses system fonts
+    },
+});
+```
+
+#### `maxRetries`
+
+Controls how many times the compiler retries when a package or bundle fetch fails. With pre-scanning (which batch-fetches most packages before compilation), retries are rare. Lower values fail faster if something is broken:
+
+```javascript
+const compiler = new SiglumCompiler({
+    maxRetries: 5,  // Fail fast (default: 15)
+});
+```
+
+#### `verbose`
+
+Controls whether TeX stdout is sent to the `onLog` callback. Disabled by default for performance—a typical compilation generates ~4,000 log lines, each requiring a `postMessage` call from the worker.
+
+```javascript
+const compiler = new SiglumCompiler({
+    verbose: true,  // Enable TeX stdout logging (default: false)
+    onLog: (msg) => console.log(msg),
+});
+
+// Can also be changed after instantiation
+compiler.verbose = true;   // Enable for next compile
+await compiler.compile(source);
+compiler.verbose = false;  // Disable again
+```
+
+When `verbose: false`:
+- TeX stdout (`[TeX] ...`) is suppressed
+- TeX errors (`[TeX ERR] ...`) are always logged
+- Worker status messages are always logged
+- Error detection still works (stdout is captured internally)
+
+### `compiler.compile(source, options?)`
 
 ```javascript
 const result = await compiler.compile(source, {
     engine: 'pdflatex',  // 'pdflatex' | 'xelatex' | 'auto'
+    additionalFiles: {   // Include custom files
+        'mypackage.sty': '\\ProvidesPackage{mypackage}...',
+        'image.png': uint8Array,
+    },
 });
 
-// result.success - boolean
-// result.pdf     - Uint8Array (if successful)
-// result.log     - LaTeX log output
-// result.error   - error message (if failed)
+// result.success  — boolean
+// result.pdf      — Uint8Array (if successful)
+// result.log      — TeX log output
+// result.error    — error message (if failed)
 ```
 
-## Custom files
+### `compiler.clearCache()`
 
-Include `.sty`, `.cls`, `.bib`, images, or fonts:
+Clear all cached packages and compiled PDFs.
+
+### `compiler.unload()`
+
+Free memory by unloading the WASM module. Call `init()` again to reload.
+
+### `createBatchedLogger(onFlush)`
+
+Helper to batch log messages and avoid DOM thrashing. The TeX compiler emits hundreds of log lines during compilation and updating the DOM on each message can cause significant slowdowns.
 
 ```javascript
-const additionalFiles = {
-    'custom.sty': new TextEncoder().encode(`
-        \\ProvidesPackage{custom}
-        \\newcommand{\\hello}{Hello!}
-    `),
-};
+import { SiglumCompiler, createBatchedLogger } from '@siglum/engine';
 
-const result = await compiler.compile(source, { additionalFiles });
+const compiler = new SiglumCompiler({
+    bundlesUrl: '/bundles',
+    wasmUrl: '/wasm/busytex.wasm',
+    onLog: createBatchedLogger((messages) => {
+        // Called once per animation frame with all buffered messages
+        logDiv.textContent += messages.join('\n') + '\n';
+        logDiv.scrollTop = logDiv.scrollHeight;
+    }),
+});
 ```
 
-## Custom fonts (XeLaTeX)
+## Performance Tips
 
-```latex
-\documentclass{article}
-\usepackage{fontspec}
-\setmainfont[Path=./]{MyFont.otf}
-\begin{document}
-Hello with my custom font!
-\end{document}
+### Batch log updates
+
+If you're displaying compiler logs in the UI, always use `createBatchedLogger` or implement your own batching. Unbatched DOM updates can add 2-3 seconds to compilation time.
+
+### Pre-warm the compiler
+
+Call `compiler.init()` early (e.g., on page load) so bundles are ready when the user compiles:
+
+```javascript
+// On page load
+const compiler = new SiglumCompiler(options);
+compiler.init(); // Fire and forget — bundles download in background
+
+// Later, when user clicks compile
+await compiler.compile(source); // Already warmed up
 ```
 
-Upload the font file via `additionalFiles`, then reference it with `Path=./`.
-
-## Bundle system
-
-Bundles are pre-packaged collections of TeX files that load on demand:
-
-| Bundle | Contents | Size |
-|--------|----------|------|
-| `core` | LaTeX kernel, base classes | ~750KB |
-| `fmt-pdflatex` | pdflatex format file | ~1.7MB |
-| `fmt-xelatex` | xelatex format file | ~4.6MB |
-| `l3` | LaTeX3 packages | ~280KB |
-| `amsmath` | AMS math packages | ~120KB |
-| `fonts-lm` | Latin Modern fonts | ~2MB |
-| `graphics` | graphicx, xcolor | ~300KB |
-| `tikz` | TikZ/PGF graphics | ~5MB |
-
-When a package isn't bundled, siglum fetches it from CTAN automatically.
-
-## Engine support
+## Engines
 
 | Engine | Status |
 |--------|--------|
 | pdfLaTeX | Full support, format caching |
-| XeLaTeX | Full support, no format caching (native fonts) |
-| LuaLaTeX | Not yet available |
+| XeLaTeX | Full support, custom fonts via fontspec |
 
-## Performance
+Use `engine: 'auto'` to auto-detect based on document content.
 
-| Metric | Value |
-|--------|-------|
-| Initial download | ~800KB |
-| First compile (cold) | ~2s |
-| Cached compile | ~150ms |
-| Full bundle cache | ~15MB |
+## Hosting / Production
+
+To self-host, you need:
+
+1. **Static assets** (WASM + bundles) served with COOP/COEP headers
+2. **CTAN proxy** for on-demand package fetching
+
+### Static Assets
+
+Serve the release assets with these headers (required for SharedArrayBuffer):
+
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+Access-Control-Allow-Origin: *
+Cross-Origin-Resource-Policy: cross-origin
+```
+
+Expected structure:
+
+```
+your-server.com/
+├── wasm/
+│   ├── busytex.wasm
+│   └── busytex.js
+└── bundles/
+    ├── bundles.json
+    ├── file-manifest.json
+    ├── core.data.gz
+    ├── fmt-pdflatex.data.gz
+    └── ...
+```
+
+### CTAN Proxy
+
+The CTAN proxy fetches missing LaTeX packages on-demand and caches them to disk:
+
+```bash
+bun packages/ctan-proxy.ts
+```
+
+Packages are cached permanently, CTAN is only contacted once per package. The proxy tries TexLive archives first, then falls back to CTAN mirrors.
+
+For configuration and deployment options, see **[docs/CTAN_PROXY.md](docs/CTAN_PROXY.md)**.
+
+### Configuration
+
+```javascript
+const compiler = new SiglumCompiler({
+    bundlesUrl: 'https://your-server.com/bundles',
+    wasmUrl: 'https://your-server.com/wasm/busytex.wasm',
+    ctanProxyUrl: 'https://your-ctan-proxy.com',  // Your CTAN proxy URL
+});
+```
+
+## Browser Requirements
+
+- Modern browser with WebAssembly support
+- SharedArrayBuffer (requires COOP/COEP headers)
+- ~512MB RAM for compilation (max heap size)
 
 ## Acknowledgments
 
-siglum builds on [BusyTeX](https://github.com/busytex/busytex), which first compiled TeX Live to WebAssembly.
-
-We extended it with:
-
-- **TeX Live 2025** — updated from TL2022 to the latest release
-- **Lazy bundle system** — packages grouped into small bundles that load on demand
-- **Deferred file loading** — individual files within bundles load only when TeX requests them
-- **CTAN resolution** — packages not in bundles are fetched from CTAN automatically
-- **Multi-engine builds** — unified WASM binary supporting pdfTeX and XeTeX
-- **Browser caching** — WASM modules cached in IndexedDB, bundles in OPFS
-- **Format file generation** — preamble caching for sub-second repeat compiles
-
-## Development
-
-```bash
-# Start local dev server
-bun run serve-local.ts
-
-# Server runs at http://localhost:8787
-#   /bundles/*  -> ./packages/bundles/
-#   /wasm/*     -> ./busytex/build/wasm/
-#   /api/fetch/ -> CTAN proxy
-```
-
-## Project structure
-
-```
-.
-├── src/                    # ES module source
-│   ├── index.js            # Main exports
-│   ├── compiler.js         # BusyTeXCompiler class
-│   ├── bundles.js          # Bundle loading
-│   ├── ctan.js             # CTAN package fetching
-│   ├── storage.js          # OPFS/IndexedDB caching
-│   └── worker.js           # Web Worker
-├── busytex/                # Build toolchain (submodule)
-├── packages/
-│   └── bundles/            # Pre-built TeX bundles
-└── serve-local.ts          # Local dev server
-```
+Built on [BusyTeX](https://github.com/AsciiHuang/busytex).
 
 ## License
 
-MIT. TeX Live components use LPPL, GPL, and public-domain licenses.
+MIT

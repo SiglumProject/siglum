@@ -1,26 +1,32 @@
-// Main BusyTeXCompiler class - orchestrates compilation
+// Main SiglumCompiler class - orchestrates compilation
 
 import { BundleManager, detectEngine, extractPreamble, hashPreamble } from './bundles.js';
-import { CTANFetcher, getPackageFromFile } from './ctan.js';
+import { CTANFetcher } from './ctan.js';
+
+// Module-level tracking to prevent multiple workers across all instances
+let _globalActiveWorker = null;
+let _globalWorkerId = 0;
 import {
     getAuxCache,
     saveAuxCache,
     getCachedPdf,
     saveCachedPdf,
     hashDocument,
-    getFmtMeta,
-    saveFmtMeta,
+    getFmtPath,
     readFromOPFS,
     writeToOPFS,
     clearCTANCache,
+    getCompiledWasmModule,
+    saveWasmBytes,
+    saveWasmMemorySnapshot,
 } from './storage.js';
 
-export class BusyTeXCompiler {
+export class SiglumCompiler {
     constructor(options = {}) {
         this.bundlesUrl = options.bundlesUrl || 'packages/bundles';
         this.wasmUrl = options.wasmUrl || 'busytex.wasm';
         this.workerUrl = options.workerUrl || null; // Will use embedded worker if not provided
-        this.ctanProxyUrl = options.ctanProxyUrl || 'http://localhost:8081';
+        this.ctanProxyUrl = options.ctanProxyUrl || 'http://localhost:8787';
         this.xzwasmUrl = options.xzwasmUrl || './src/xzwasm.js';
 
         this.bundleManager = new BundleManager({
@@ -36,8 +42,9 @@ export class BusyTeXCompiler {
 
         this.worker = null;
         this.workerReady = false;
+        this.wasmModule = null;
+        this._initWorkerPromise = null;
         this.pendingCompile = null;
-        this.formatCache = new Map();
         this.formatGenerationPromise = null;
 
         this.onLog = options.onLog || (() => {});
@@ -47,14 +54,125 @@ export class BusyTeXCompiler {
         this.enableCtan = options.enableCtan !== false;
         this.enableLazyFS = options.enableLazyFS !== false;
         this.enableDocCache = options.enableDocCache !== false;
+        this.maxRetries = options.maxRetries ?? 15;  // Max CTAN/bundle fetch retries per compile
+        this.verbose = options.verbose ?? false;  // Log TeX stdout (adds ~4000 postMessage calls)
+
+        // Eager bundle loading - bundles to load immediately instead of deferring
+        // Can be an array (applies to all engines) or object keyed by engine
+        // Example: ['cm-super'] or { pdflatex: ['cm-super'], xelatex: [] }
+        this.eagerBundles = options.eagerBundles || {};
+
+        // Range request coalescing - batch nearby requests to reduce HTTP overhead
+        this._pendingRangeRequests = new Map(); // bundleName -> [{requestId, start, end}]
+        this._rangeRequestTimer = null;
+        this._rangeRequestDebounceMs = 10; // Wait 10ms to batch requests
+        this._rangeCoalesceGapBytes = 64 * 1024; // Coalesce ranges within 64KB of each other
     }
 
     _log(msg) {
         this.onLog(msg);
     }
 
+    /**
+     * Get eager bundles for a specific engine.
+     * Eager bundles are loaded immediately instead of being deferred.
+     * @param {string} engine - The engine (pdflatex, xelatex, lualatex)
+     * @returns {string[]} List of bundle names to load eagerly
+     */
+    getEagerBundles(engine) {
+        if (Array.isArray(this.eagerBundles)) {
+            // Global list applies to all engines
+            return this.eagerBundles;
+        }
+        // Per-engine configuration
+        return this.eagerBundles[engine] || [];
+    }
+
+    /**
+     * Preload bundles into memory cache.
+     * Call this to eagerly load bundles before compilation.
+     * Useful for loading large deferred bundles (like cm-super) in advance.
+     *
+     * @example
+     * // Preload cm-super before first compile
+     * await compiler.preloadBundles(['cm-super']);
+     *
+     * @param {string[]} bundleNames - Bundles to preload
+     * @returns {Promise<{loaded: string[], failed: string[]}>}
+     */
+    async preloadBundles(bundleNames) {
+        await this.bundleManager.loadManifest();
+
+        const loaded = [];
+        const failed = [];
+
+        // Load bundles in parallel
+        const promises = bundleNames.map(async (bundleName) => {
+            try {
+                if (!this.bundleManager.bundleExists(bundleName)) {
+                    this._log(`Preload: bundle ${bundleName} does not exist`);
+                    failed.push(bundleName);
+                    return;
+                }
+
+                const data = await this.bundleManager.loadBundle(bundleName);
+                if (data) {
+                    this._log(`Preloaded bundle: ${bundleName} (${(data.byteLength / 1024 / 1024).toFixed(1)}MB)`);
+                    loaded.push(bundleName);
+                } else {
+                    failed.push(bundleName);
+                }
+            } catch (e) {
+                this._log(`Preload failed for ${bundleName}: ${e.message}`);
+                failed.push(bundleName);
+            }
+        });
+
+        await Promise.all(promises);
+        return { loaded, failed };
+    }
+
+    /**
+     * Pre-warm the compiler in the background.
+     * Call this early (e.g., on page load) to eliminate cold start latency.
+     * The promise resolves when initialization is complete, but you don't need to await it.
+     *
+     * @example
+     * // On app mount, before user starts typing
+     * const compiler = new BusyTeXCompiler(options);
+     * compiler.prewarm(); // Fire and forget - init happens in background
+     *
+     * // Later, when user wants to compile:
+     * await compiler.compile(source); // Already warmed up!
+     *
+     * @returns {Promise<void>} Resolves when initialization is complete
+     */
+    prewarm() {
+        // Return existing init promise if already warming/initialized
+        if (this._prewarmPromise) {
+            return this._prewarmPromise;
+        }
+
+        this._prewarmPromise = this.init().catch(e => {
+            this._log('Prewarm failed: ' + e.message);
+            // Reset so next prewarm/init can retry
+            this._prewarmPromise = null;
+            throw e;
+        });
+
+        return this._prewarmPromise;
+    }
+
+    /**
+     * Check if compiler is ready (initialized and warmed up)
+     * @returns {boolean}
+     */
+    isReady() {
+        return this.workerReady && this.wasmModule !== undefined;
+    }
+
     async init() {
-        this._log('Initializing BusyTeX compiler...');
+        this._log('Initializing Siglum compiler...');
 
         // Load manifests + WASM in parallel
         await Promise.all([
@@ -83,9 +201,28 @@ export class BusyTeXCompiler {
         const startTime = performance.now();
 
         try {
+            // Try loading cached compiled module first (skips fetch + compile)
+            const cachedModule = await getCompiledWasmModule();
+            if (cachedModule) {
+                this.wasmModule = cachedModule;
+                const elapsed = (performance.now() - startTime).toFixed(0);
+                this._log('WASM loaded from cache in ' + elapsed + 'ms');
+                return;
+            }
+
+            // Fetch WASM as bytes (not streaming compile - we need bytes for caching)
             const response = await fetch(this.wasmUrl);
-            this.wasmModule = await WebAssembly.compileStreaming(response);
-            this._log('WASM loaded in ' + (performance.now() - startTime).toFixed(0) + 'ms');
+            const wasmBytes = new Uint8Array(await response.arrayBuffer());
+            const fetchElapsed = (performance.now() - startTime).toFixed(0);
+
+            // Compile from bytes
+            const compileStart = performance.now();
+            this.wasmModule = await WebAssembly.compile(wasmBytes);
+            const compileElapsed = (performance.now() - compileStart).toFixed(0);
+            this._log(`WASM fetched in ${fetchElapsed}ms, compiled in ${compileElapsed}ms`);
+
+            // Cache the bytes for future loads (Module can't be serialized to IndexedDB)
+            saveWasmBytes(wasmBytes).catch(() => {});
         } catch (e) {
             this._log('WASM load failed: ' + e.message);
             throw e;
@@ -94,6 +231,27 @@ export class BusyTeXCompiler {
 
     async _initWorker() {
         if (this.worker) return;
+
+        // Prevent race condition: if init is already in progress, wait for it
+        if (this._initWorkerPromise) {
+            return this._initWorkerPromise;
+        }
+
+        this._initWorkerPromise = this._doInitWorker();
+        try {
+            await this._initWorkerPromise;
+        } finally {
+            this._initWorkerPromise = null;
+        }
+    }
+
+    async _doInitWorker() {
+        // Check for existing global worker - prevents duplicates across instances
+        if (_globalActiveWorker && _globalActiveWorker !== this.worker) {
+            console.warn('[SiglumCompiler] WARNING: Another worker already exists! Terminating old worker.');
+            _globalActiveWorker.terminate();
+            _globalActiveWorker = null;
+        }
 
         // Get worker code - use external URL or read from src/worker.js
         let workerUrl = this.workerUrl;
@@ -105,13 +263,22 @@ export class BusyTeXCompiler {
             workerUrl = URL.createObjectURL(blob);
         }
 
+        const workerId = ++_globalWorkerId;
+
         this.worker = new Worker(workerUrl);
+        this.worker._workerId = workerId;
+        _globalActiveWorker = this.worker;
+
         this.worker.onmessage = (e) => this._handleWorkerMessage(e);
         this.worker.onerror = (e) => this._handleWorkerError(e);
 
         // Get absolute URL for busytex.js - derive from wasmUrl
         const wasmUrlObj = new URL(this.wasmUrl, window.location.href);
         const busytexJsUrl = new URL('busytex.js', wasmUrlObj.href).href;
+
+        // NOTE: Memory snapshots are DISABLED - pdfTeX's internal globals cause assertion
+        // failures when restored. Fast recompiles come from format caching (.fmt files).
+        const memorySnapshot = null;
 
         // Send init message
         return new Promise((resolve, reject) => {
@@ -130,7 +297,7 @@ export class BusyTeXCompiler {
                 }
             };
 
-            this.worker.postMessage({
+            const initMsg = {
                 type: 'init',
                 wasmModule: this.wasmModule,
                 busytexJsUrl,
@@ -138,7 +305,16 @@ export class BusyTeXCompiler {
                 packageMapData: this.bundleManager.packageMap,
                 bundleDepsData: this.bundleManager.bundleDeps,
                 bundleRegistryData: this.bundleManager.bundleRegistry ? [...this.bundleManager.bundleRegistry] : [],
-            });
+                verbose: this.verbose,
+            };
+
+            // Include memory snapshot if available (transfer for efficiency)
+            if (memorySnapshot) {
+                initMsg.memorySnapshot = memorySnapshot;
+                this.worker.postMessage(initMsg, [memorySnapshot]);
+            } else {
+                this.worker.postMessage(initMsg);
+            }
         });
     }
 
@@ -177,9 +353,13 @@ export class BusyTeXCompiler {
                 break;
 
             case 'file-range-fetch-request':
-                this._handleFileRangeFetchRequest(msg).catch(e => {
-                    console.error('[Compiler] file-range-fetch-request error:', e);
-                    this._log('Error handling file range fetch: ' + e.message);
+                this._queueRangeRequest(msg);
+                break;
+
+            case 'memory-snapshot':
+                // Worker sent memory snapshot after first successful compile - save to IndexedDB
+                this._handleMemorySnapshot(msg).catch(e => {
+                    this._log('Failed to save memory snapshot: ' + e.message);
                 });
                 break;
 
@@ -198,18 +378,40 @@ export class BusyTeXCompiler {
             this.pendingCompile = null;
         }
         this.workerReady = false;
+        // Terminate the worker before clearing the reference to avoid memory leak
+        if (this.worker) {
+            this.worker.terminate();
+            // Clear global reference if this is the active worker
+            if (_globalActiveWorker === this.worker) {
+                _globalActiveWorker = null;
+            }
+        }
         this.worker = null;
     }
 
     async _handleCtanFetchRequest(msg) {
-        const { requestId, packageName } = msg;
+        const { requestId, packageName, fileName, tlYear } = msg;
 
         try {
-            this._log('Worker requested CTAN package: ' + packageName);
+            // Look up the correct package for this file (e.g., bbm.sty → bbm-macros)
+            let actualPackage = packageName;
+            if (fileName) {
+                const mappedPackage = await this.ctanFetcher.lookupPackageForFile(fileName);
+                if (mappedPackage && mappedPackage !== packageName) {
+                    this._log(`[CTAN-REQ] ${fileName} maps to package "${mappedPackage}" (not "${packageName}")`);
+                    actualPackage = mappedPackage;
+                }
+            }
+
+            const yearLabel = tlYear ? ` (TL${tlYear})` : '';
+            this._log(`[CTAN-REQ] Worker requested package: ${actualPackage}${yearLabel}`);
             // Only fetch this specific package, not dependencies
             // Dependencies are resolved by the worker's retry loop - if a dependency
             // is missing, the worker will request it specifically
-            const result = await this.ctanFetcher.fetchPackage(packageName);
+            const result = await this.ctanFetcher.fetchPackage(actualPackage, { tlYear });
+            if (result) {
+                this._log(`[CTAN-REQ] ${packageName}: got ${result.files?.size || 0} files`);
+            }
 
             if (!result) {
                 this.worker.postMessage({
@@ -248,32 +450,29 @@ export class BusyTeXCompiler {
         try {
             this._log('Worker requested bundle: ' + bundleName);
 
-            // Load bundle data and metadata in parallel
-            const [bundleData, metaResponse] = await Promise.all([
-                this.bundleManager.loadBundle(bundleName),
-                fetch(`${this.bundlesUrl}/${bundleName}.meta.json`).catch(() => null),
-            ]);
+            const bundleData = await this.bundleManager.loadBundle(bundleName);
 
-            // Parse metadata if available
-            let bundleMeta = null;
-            if (metaResponse?.ok) {
-                try {
-                    bundleMeta = await metaResponse.json();
-                } catch (e) {
-                    this._log('Failed to parse bundle metadata: ' + e.message);
-                }
+            // SharedArrayBuffer: send directly (automatically shared, no transfer list)
+            // ArrayBuffer: copy before transfer so original stays valid in cache
+            const isShared = typeof SharedArrayBuffer !== 'undefined' && bundleData instanceof SharedArrayBuffer;
+            if (isShared) {
+                this.worker.postMessage({
+                    type: 'bundle-fetch-response',
+                    requestId,
+                    bundleName,
+                    success: true,
+                    bundleData,
+                });
+            } else {
+                const copy = bundleData.slice(0);
+                this.worker.postMessage({
+                    type: 'bundle-fetch-response',
+                    requestId,
+                    bundleName,
+                    success: true,
+                    bundleData: copy,
+                }, [copy]);
             }
-
-            // Copy bundleData before transfer so original stays valid in cache
-            const bundleDataCopy = bundleData.slice(0);
-            this.worker.postMessage({
-                type: 'bundle-fetch-response',
-                requestId,
-                bundleName,
-                success: true,
-                bundleData: bundleDataCopy,
-                bundleMeta,
-            }, [bundleDataCopy]);
         } catch (e) {
             this._log('Bundle fetch error: ' + e.message);
             this.worker.postMessage({
@@ -286,17 +485,104 @@ export class BusyTeXCompiler {
         }
     }
 
-    async _handleFileRangeFetchRequest(msg) {
+    /**
+     * Queue a range request for batching. Requests are coalesced and fetched
+     * together to reduce HTTP overhead.
+     */
+    _queueRangeRequest(msg) {
         const { requestId, bundleName, start, end } = msg;
 
-        try {
-            this._log(`Worker requested file range: ${bundleName} [${start}:${end}]`);
+        // Add to pending queue for this bundle
+        if (!this._pendingRangeRequests.has(bundleName)) {
+            this._pendingRangeRequests.set(bundleName, []);
+        }
+        this._pendingRangeRequests.get(bundleName).push({ requestId, start, end });
 
-            // Fetch using Range request to the uncompressed .raw file
+        // Reset debounce timer
+        if (this._rangeRequestTimer) {
+            clearTimeout(this._rangeRequestTimer);
+        }
+
+        this._rangeRequestTimer = setTimeout(() => {
+            this._processRangeRequestBatch().catch(e => {
+                console.error('[Compiler] Range batch processing error:', e);
+                this._log('Error processing range batch: ' + e.message);
+            });
+        }, this._rangeRequestDebounceMs);
+    }
+
+    /**
+     * Process all pending range requests, coalescing nearby ranges.
+     */
+    async _processRangeRequestBatch() {
+        this._rangeRequestTimer = null;
+
+        // Process each bundle's requests
+        for (const [bundleName, requests] of this._pendingRangeRequests.entries()) {
+            if (requests.length === 0) continue;
+
+            // Coalesce ranges
+            const coalesced = this._coalesceRanges(requests);
+
+            this._log(`Range coalescing: ${requests.length} requests -> ${coalesced.length} fetches for ${bundleName}`);
+
+            // Fetch each coalesced range
+            for (const group of coalesced) {
+                await this._fetchCoalescedRange(bundleName, group);
+            }
+        }
+
+        // Clear processed requests
+        this._pendingRangeRequests.clear();
+    }
+
+    /**
+     * Coalesce nearby ranges to reduce HTTP requests.
+     * Returns groups of original requests that can be satisfied by a single fetch.
+     */
+    _coalesceRanges(requests) {
+        if (requests.length === 0) return [];
+        if (requests.length === 1) return [[requests[0]]];
+
+        // Sort by start position
+        const sorted = [...requests].sort((a, b) => a.start - b.start);
+
+        const groups = [];
+        let currentGroup = [sorted[0]];
+        let groupEnd = sorted[0].end;
+
+        for (let i = 1; i < sorted.length; i++) {
+            const req = sorted[i];
+
+            // If this range is within the gap threshold of the current group, merge
+            if (req.start <= groupEnd + this._rangeCoalesceGapBytes) {
+                currentGroup.push(req);
+                groupEnd = Math.max(groupEnd, req.end);
+            } else {
+                // Start a new group
+                groups.push(currentGroup);
+                currentGroup = [req];
+                groupEnd = req.end;
+            }
+        }
+
+        groups.push(currentGroup);
+        return groups;
+    }
+
+    /**
+     * Fetch a coalesced range and distribute data to original requesters.
+     */
+    async _fetchCoalescedRange(bundleName, group) {
+        // Calculate the overall range to fetch
+        const fetchStart = Math.min(...group.map(r => r.start));
+        const fetchEnd = Math.max(...group.map(r => r.end));
+
+        try {
             const url = `${this.bundlesUrl}/${bundleName}.raw`;
             const response = await fetch(url, {
                 headers: {
-                    'Range': `bytes=${start}-${end - 1}`,
+                    'Range': `bytes=${fetchStart}-${fetchEnd - 1}`,
                 },
             });
 
@@ -304,29 +590,73 @@ export class BusyTeXCompiler {
                 throw new Error(`Range request failed with status ${response.status}`);
             }
 
-            const data = new Uint8Array(await response.arrayBuffer());
-            this._log(`File range fetched: ${data.length} bytes`);
+            const fullData = new Uint8Array(await response.arrayBuffer());
+            this._log(`Fetched coalesced range [${fetchStart}:${fetchEnd}] = ${fullData.length} bytes`);
 
-            this.worker.postMessage({
-                type: 'file-range-fetch-response',
-                requestId,
-                bundleName,
-                start,
-                end,
-                success: true,
-                data,
-            }, [data.buffer]);
+            // Distribute data to each original requester
+            for (const req of group) {
+                const offset = req.start - fetchStart;
+                const length = req.end - req.start;
+                const data = fullData.slice(offset, offset + length);
+
+                this.worker.postMessage({
+                    type: 'file-range-fetch-response',
+                    requestId: req.requestId,
+                    bundleName,
+                    start: req.start,
+                    end: req.end,
+                    success: true,
+                    data,
+                }, [data.buffer]);
+            }
         } catch (e) {
-            this._log('File range fetch error: ' + e.message);
-            this.worker.postMessage({
-                type: 'file-range-fetch-response',
-                requestId,
-                bundleName,
-                start,
-                end,
-                success: false,
-                error: e.message,
-            });
+            this._log('Coalesced range fetch error: ' + e.message);
+
+            // Send error to all requesters in this group
+            for (const req of group) {
+                this.worker.postMessage({
+                    type: 'file-range-fetch-response',
+                    requestId: req.requestId,
+                    bundleName,
+                    start: req.start,
+                    end: req.end,
+                    success: false,
+                    error: e.message,
+                });
+            }
+        }
+    }
+
+    async _handleMemorySnapshot(msg) {
+        // Save memory snapshot to persistent storage for future instant restore
+        const { snapshot, byteLength, isShared } = msg;
+        if (!snapshot || byteLength === 0) {
+            this._log('Memory snapshot is empty, skipping save');
+            return;
+        }
+
+        // For SharedArrayBuffer: create a regular copy for IndexedDB (can't store SAB)
+        // For transferred ArrayBuffer: wrap in Uint8Array view
+        let snapshotArray;
+        if (isShared) {
+            // Copy from SharedArrayBuffer to regular ArrayBuffer for IndexedDB
+            snapshotArray = new Uint8Array(byteLength);
+            snapshotArray.set(new Uint8Array(snapshot));
+            this._log(`Saving memory snapshot to cache (${(byteLength / 1024 / 1024).toFixed(1)}MB, from shared)...`);
+        } else {
+            snapshotArray = new Uint8Array(snapshot);
+            this._log(`Saving memory snapshot to cache (${(byteLength / 1024 / 1024).toFixed(1)}MB)...`);
+        }
+
+        const success = await saveWasmMemorySnapshot(snapshotArray, {
+            savedAt: Date.now(),
+            byteLength,
+        });
+
+        if (success) {
+            this._log('Memory snapshot saved');
+        } else {
+            this._log('Failed to save memory snapshot');
         }
     }
 
@@ -360,33 +690,101 @@ export class BusyTeXCompiler {
             await this._initWorker();
         }
 
-        // Determine required bundles
+        // Determine required bundles from direct \usepackage commands
         const { bundles } = this.bundleManager.checkPackages(source, engine);
-        this._log('Required bundles: ' + bundles.join(', '));
 
-        // Load bundle data and transfer to worker
-        // Worker VFS resets each compile, so bundles must be sent every time
-        // Use transfer (not clone) to avoid duplication - copies are made from cache
-        this.onProgress('loading', 'Loading bundles...');
-        const loadedBundles = await this.bundleManager.loadBundles(bundles);
+        // Add eager bundles for this engine (these get loaded immediately instead of deferred)
+        const eagerBundles = this.getEagerBundles(engine);
 
-        let bundleData = {};
-        let transferList = [];
-        let totalBytes = 0;
+        // Pre-scan for CTAN packages and dependency bundles - batch fetch before compilation
+        let depBundles = [];
+        if (this.enableCtan) {
+            const additionalFilesMap = options.additionalFiles || {};
+            const { ctanPackages, additionalBundles } = this.bundleManager.prescanForCtanPackages(source, engine, additionalFilesMap);
 
-        for (const [name, data] of Object.entries(loadedBundles)) {
-            if (data) {
-                // Create copy for transfer (original stays in bundleManager cache)
-                const copy = data.slice(0);
-                bundleData[name] = copy;
-                transferList.push(copy);
-                totalBytes += copy.byteLength;
+            // Add bundles needed for package dependencies (not detected from direct \usepackage)
+            if (additionalBundles && additionalBundles.length > 0) {
+                depBundles = additionalBundles;
+            }
+
+            if (ctanPackages.length > 0) {
+                this._log(`Pre-scan: ${ctanPackages.length} potential CTAN packages`);
+                const prescanStart = performance.now();
+
+                const { fetched, failed, skipped } = await this.ctanFetcher.batchFetchPackages(ctanPackages);
+
+                const elapsed = (performance.now() - prescanStart).toFixed(0);
+                if (fetched.length > 0 || skipped.length > 0) {
+                    this._log(`Pre-fetch: ${fetched.length} new, ${skipped.length} cached, ${failed.length} not found (${elapsed}ms)`);
+                }
             }
         }
-        this._log(`Transferring ${Object.keys(bundleData).length} bundles (${(totalBytes/1024/1024).toFixed(1)}MB)`);
+
+        // Combine all bundles: direct packages + eager + dependency bundles
+        const allBundles = [...new Set([...bundles, ...eagerBundles, ...depBundles])];
+
+        // Log required bundles with optional extras
+        const extras = [];
+        if (eagerBundles.length > 0) extras.push('eager: ' + eagerBundles.join(', '));
+        if (depBundles.length > 0) extras.push('deps: ' + depBundles.join(', '));
+        if (extras.length > 0) {
+            this._log('Required bundles: ' + bundles.join(', ') + ' (+ ' + extras.join(', ') + ')');
+        } else {
+            this._log('Required bundles: ' + bundles.join(', '));
+        }
+
+        // Prepare bundle data for worker
+        // Two modes:
+        // 1. OPFS mode: bundles extracted to OPFS, worker reads directly (no memory transfer)
+        // 2. Legacy mode: bundle blobs transferred to worker (SharedArrayBuffer or copy)
+        this.onProgress('loading', 'Loading bundles...');
+
+        let bundleData = {};
+        let bundleNames = [];
+        let transferList = [];
+        let useOPFSMode = false;
+
+        if (this.bundleManager.useOPFSExtraction && this.bundleManager.isOPFSAvailable()) {
+            // OPFS mode: extract bundles to OPFS, send only names
+            bundleNames = await this.bundleManager.ensureBundlesExtracted(allBundles);
+            useOPFSMode = true;
+            this._log(`OPFS mode: ${bundleNames.length} bundles ready (zero memory transfer)`);
+        } else {
+            // Legacy mode: load bundle blobs
+            const loadedBundles = await this.bundleManager.loadBundles(allBundles);
+            let totalBytes = 0;
+            let usingSharedArrayBuffer = false;
+
+            for (const [name, data] of Object.entries(loadedBundles)) {
+                if (data) {
+                    // Check if data is SharedArrayBuffer (zero-copy) or regular ArrayBuffer (needs transfer)
+                    const isShared = typeof SharedArrayBuffer !== 'undefined' && data instanceof SharedArrayBuffer;
+                    if (isShared) {
+                        // SharedArrayBuffer: no copy needed, worker reads same memory
+                        bundleData[name] = data;
+                        usingSharedArrayBuffer = true;
+                    } else {
+                        // Regular ArrayBuffer: copy for transfer (original stays in cache)
+                        const copy = data.slice(0);
+                        bundleData[name] = copy;
+                        transferList.push(copy);
+                    }
+                    totalBytes += data.byteLength;
+                }
+            }
+            if (usingSharedArrayBuffer) {
+                this._log(`Sharing ${Object.keys(bundleData).length} bundles via SharedArrayBuffer (${(totalBytes/1024/1024).toFixed(1)}MB, zero-copy)`);
+            } else {
+                this._log(`Transferring ${Object.keys(bundleData).length} bundles (${(totalBytes/1024/1024).toFixed(1)}MB)`);
+            }
+        }
 
         // Get CTAN files from memory cache (populated by previous fetches)
         const ctanFiles = this.ctanFetcher.getCachedFiles();
+        const ctanFileCount = Object.keys(ctanFiles).length;
+        if (ctanFileCount > 0) {
+            this._log(`Passing ${ctanFileCount} cached CTAN files to worker`);
+        }
 
         // Merge in any additional files provided by the user
         const additionalFiles = options.additionalFiles || {};
@@ -399,20 +797,25 @@ export class BusyTeXCompiler {
             ctanFiles['/' + filename] = data;
         }
 
-        // Check for cached format
+        // Check for cached format (in-memory first, then OPFS)
         let cachedFormat = null;
         const preamble = extractPreamble(source);
         const preambleHash = hashPreamble(preamble);
-        const fmtMeta = await getFmtMeta(preambleHash + '_' + engine);
-        if (fmtMeta) {
-            const fmtData = await readFromOPFS(fmtMeta.fmtPath);
-            // Ensure buffer isn't detached (byteLength > 0) and create a fresh copy with slice()
+        const fmtKey = preambleHash + '_' + engine;
+
+        // Check in-memory cache first (fast path)
+        if (this._fmtMemCache?.key === fmtKey && this._fmtMemCache?.data?.buffer?.byteLength > 0) {
+            cachedFormat = { fmtName: fmtKey, fmtData: this._fmtMemCache.data };
+            this._log('Using cached format (memory)');
+        } else {
+            // Fall back to OPFS - path is deterministic from fmtKey
+            const fmtPath = getFmtPath(fmtKey);
+            const fmtData = await readFromOPFS(fmtPath);
             if (fmtData && fmtData.buffer.byteLength > 0) {
-                cachedFormat = {
-                    fmtName: preambleHash + '_' + engine,
-                    fmtData: fmtData.slice(),
-                };
-                this._log('Using cached format');
+                // Cache in memory for subsequent compiles
+                this._fmtMemCache = { key: fmtKey, data: fmtData.slice() };
+                cachedFormat = { fmtName: fmtKey, fmtData: this._fmtMemCache.data };
+                this._log('Using cached format (OPFS)');
             }
         }
 
@@ -437,12 +840,17 @@ export class BusyTeXCompiler {
                     clearTimeout(timeout);
 
                     if (result.success) {
-                        const pdfData = new Uint8Array(result.pdfData);
+                        // Create Uint8Array view - works for both SharedArrayBuffer and ArrayBuffer
+                        // Both are zero-copy views, just pointing to different backing memory
+                        const pdfData = result.pdfData ? new Uint8Array(result.pdfData) : null;
 
-                        // Cache the PDF
-                        if (useCache) {
+                        // Cache the PDF (IndexedDB requires regular ArrayBuffer, not SharedArrayBuffer)
+                        if (useCache && pdfData) {
                             const docHash = hashDocument(source);
-                            await saveCachedPdf(docHash, engine, result.pdfData);
+                            const cacheBuffer = result.pdfDataIsShared
+                                ? result.pdfData.slice(0)  // Copy SharedArrayBuffer to regular ArrayBuffer
+                                : result.pdfData;          // Already regular ArrayBuffer
+                            await saveCachedPdf(docHash, engine, cacheBuffer);
                         }
 
                         // Cache aux files (use same key that includes format state)
@@ -450,9 +858,22 @@ export class BusyTeXCompiler {
                             await saveAuxCache(auxCacheKey, result.auxFilesToCache);
                         }
 
+                        // Auto-generate format cache if no cached format was used
+                        // Do this in background to not block the compile result
+                        // Skip for xelatex - XeTeX can't dump formats with native fonts
+                        if (!cachedFormat && preamble && engine !== 'xelatex') {
+                            this.generateFormat(source, { engine }).then(async () => {
+                                // Populate memory cache from the newly generated format
+                                const data = await readFromOPFS(getFmtPath(fmtKey));
+                                if (data) this._fmtMemCache = { key: fmtKey, data: data.slice() };
+                            }).catch(() => {}); // Silent fail for background task
+                        }
+
                         resolve({
                             success: true,
                             pdf: pdfData,
+                            pdfIsShared: result.pdfDataIsShared || false, // Pass flag to consumer
+                            syncTexData: result.syncTexData || null, // SyncTeX data for source/PDF synchronization
                             stats: result.stats,
                             log: result.log,
                         });
@@ -479,34 +900,45 @@ export class BusyTeXCompiler {
                 options: {
                     enableLazyFS: this.enableLazyFS,
                     enableCtan: this.enableCtan,
+                    useOPFSMode,  // Worker reads bundles from OPFS instead of receiving blobs
+                    maxRetries: this.maxRetries,
+                    verbose: this.verbose,
                 },
-                bundleData,
+                bundleData: useOPFSMode ? {} : bundleData,  // Empty if using OPFS
+                bundleNames: useOPFSMode ? bundleNames : [],  // Bundle names for OPFS mode
                 ctanFiles,
                 cachedFormat,
                 cachedAuxFiles: auxCache?.files || null,
-                deferredBundleNames: this.bundleManager.bundleDeps?.deferred || [],
+                // Deferred bundles minus any that are eagerly loaded
+                deferredBundleNames: (this.bundleManager.bundleDeps?.deferred || [])
+                    .filter(b => !eagerBundles.includes(b)),
             }, transferList);
         });
     }
 
     async generateFormat(source, options = {}) {
         const engine = options.engine || 'pdflatex';
+
+        // XeTeX can't dump formats with native fonts (fontspec)
+        if (engine === 'xelatex') {
+            this._log('Format caching not supported for XeLaTeX (native fonts)');
+            return null;
+        }
+
         const preamble = extractPreamble(source);
 
         if (!preamble) {
             throw new Error('No preamble found in source');
         }
 
-        // Check cache
+        // Check cache - path is deterministic from fmtKey
         const preambleHash = hashPreamble(preamble);
         const fmtKey = preambleHash + '_' + engine;
-        const fmtMeta = await getFmtMeta(fmtKey);
-        if (fmtMeta) {
-            const fmtData = await readFromOPFS(fmtMeta.fmtPath);
-            if (fmtData) {
-                this._log('Format already cached');
-                return new Uint8Array(fmtData);
-            }
+        const fmtPath = getFmtPath(fmtKey);
+        const existingFmt = await readFromOPFS(fmtPath);
+        if (existingFmt && existingFmt.buffer.byteLength > 0) {
+            this._log('Format already cached');
+            return new Uint8Array(existingFmt);
         }
 
         // Ensure worker is ready
@@ -514,9 +946,20 @@ export class BusyTeXCompiler {
             await this._initWorker();
         }
 
-        // Determine required bundles
+        // Determine required bundles (same logic as compile)
         const { bundles } = this.bundleManager.checkPackages(source, engine);
-        const bundleData = await this.bundleManager.loadBundles(bundles);
+
+        // Get dependency bundles from prescan (e.g., utils for environ)
+        let depBundles = [];
+        if (this.enableCtan) {
+            const { additionalBundles } = this.bundleManager.prescanForCtanPackages(source, engine, {});
+            if (additionalBundles && additionalBundles.length > 0) {
+                depBundles = additionalBundles;
+            }
+        }
+
+        const allBundles = [...new Set([...bundles, ...depBundles])];
+        const bundleData = await this.bundleManager.loadBundles(allBundles);
 
         // Get CTAN files from memory cache
         const ctanFiles = this.ctanFetcher.getCachedFiles();
@@ -540,10 +983,8 @@ export class BusyTeXCompiler {
                     if (result.success) {
                         const fmtData = new Uint8Array(result.formatData);
 
-                        // Cache to OPFS
-                        const fmtPath = `fmt-cache/${fmtKey}.fmt`;
+                        // Cache to OPFS - path is deterministic, no metadata needed
                         await writeToOPFS(fmtPath, fmtData);
-                        await saveFmtMeta(fmtKey, { fmtPath });
 
                         this._log('Format generated and cached');
                         resolve(fmtData);
@@ -568,6 +1009,7 @@ export class BusyTeXCompiler {
                 bundleRegistryData: [...this.bundleManager.bundleRegistry],
                 bundleData,
                 ctanFiles,
+                maxRetries: this.maxRetries,
             });
         }).finally(() => {
             this.formatGenerationPromise = null;
@@ -593,6 +1035,10 @@ export class BusyTeXCompiler {
     terminate() {
         if (this.worker) {
             this.worker.terminate();
+            // Clear global reference if this is the active worker
+            if (_globalActiveWorker === this.worker) {
+                _globalActiveWorker = null;
+            }
             this.worker = null;
             this.workerReady = false;
         }
@@ -612,12 +1058,6 @@ export class BusyTeXCompiler {
         this.bundleManager.clearCache();
         this.ctanFetcher.clearMountedFiles();
 
-        // Clear format cache
-        this.formatCache.clear();
-
-        // Reset init state so next compile will reinitialize
-        this.initPromise = null;
-
         this._log('Compiler unloaded');
     }
 
@@ -628,3 +1068,6 @@ export class BusyTeXCompiler {
         return this.worker !== null;
     }
 }
+
+// Backwards-compatible alias
+export const BusyTeXCompiler = SiglumCompiler;

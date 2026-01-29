@@ -1,538 +1,446 @@
-// Simple CTAN proxy server with ZIP extraction
-// Run with: bun run ctan-proxy.ts
+// CTAN proxy server with ZIP extraction and caching
+// Run with: bun packages/ctan-proxy.ts
 
-import { unzipSync } from 'fflate';
-import { execSync } from 'child_process';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, readdirSync, statSync, existsSync, mkdirSync } from 'fs';
+import { promisify } from 'util';
+import { exec } from 'child_process';
+import { writeFile, readFile, rm, readdir, mkdir } from 'fs/promises';
+import { existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { tmpdir } from 'os';
 
-const PORT = 8081;
+// Import shared extraction logic
+import {
+  LRUCache,
+  processExtractedFiles,
+  processRawFileData,
+  processZipData,
+  textDecoder,
+  isValidZip,
+  type ProcessedPackage,
+} from './ctan-core.ts';
 
-// Disk cache directory
-const CACHE_DIR = join(dirname(import.meta.path), 'cache');
+const execAsync = promisify(exec);
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+const PORT = parseInt(process.env.CTAN_PROXY_PORT || '8081', 10);
+const CACHE_DIR = process.env.CTAN_PROXY_CACHE_DIR || join(dirname(import.meta.path), 'cache');
+const MEMORY_CACHE_MAX_SIZE = parseInt(process.env.CTAN_PROXY_MEMORY_CACHE_SIZE || '100', 10);
+const INFO_CACHE_MAX_SIZE = parseInt(process.env.CTAN_PROXY_INFO_CACHE_SIZE || '500', 10);
+const ALIAS_CACHE_MAX_SIZE = parseInt(process.env.CTAN_PROXY_ALIAS_CACHE_SIZE || '1000', 10);
+
+// Supported TexLive years for version fallback (newest first)
+// Use older years when packages require kernel features not in our LaTeX build
+const SUPPORTED_TL_YEARS = [2025, 2024, 2023] as const;
+type TLYear = typeof SUPPORTED_TL_YEARS[number];
+const DEFAULT_TL_YEAR: TLYear = 2025;
+
+function getTexLiveUrl(pkgName: string, year: TLYear): string {
+  return `https://ftp.tu-chemnitz.de/pub/tug/historic/systems/texlive/${year}/tlnet-final/archive/${pkgName}.tar.xz`;
+}
+
+// Ensure cache directory exists
 if (!existsSync(CACHE_DIR)) {
   mkdirSync(CACHE_DIR, { recursive: true });
 }
 
-// Load disk cache into memory on startup
-const pkgFetchCache = new Map<string, any>();
-const dynamicAliasCache = new Map<string, string>();
+// ============================================================================
+// Caches
+// ============================================================================
 
-// Load existing cache files
-function loadDiskCache() {
-  try {
-    const cacheFiles = readdirSync(CACHE_DIR).filter(f => f.endsWith('.json'));
-    for (const file of cacheFiles) {
-      const pkgName = file.replace('.json', '');
-      try {
-        const data = JSON.parse(readFileSync(join(CACHE_DIR, file), 'utf-8'));
-        pkgFetchCache.set(pkgName, data);
-      } catch (e) {
-        console.warn(`Failed to load cache for ${pkgName}:`, e);
-      }
-    }
-    console.log(`Loaded ${cacheFiles.length} packages from disk cache`);
-  } catch (e) {
-    console.log('No existing disk cache found');
-  }
+const memoryCache = new LRUCache<ProcessedPackage>(MEMORY_CACHE_MAX_SIZE);
+const pkgInfoCache = new LRUCache<any>(INFO_CACHE_MAX_SIZE);
+const aliasCache = new LRUCache<string>(ALIAS_CACHE_MAX_SIZE);
 
-  // Load alias cache
+// Reverse index: filename -> package name (for fast lookup when CTAN doesn't know a package)
+const fileToPackageIndex = new Map<string, string>();
+
+// In-flight request deduplication
+const inFlightRequests = new Map<string, Promise<Response>>();
+
+// Bootstrap aliases for edge cases where CTAN lookup fails
+const bootstrapAliases: Record<string, string> = {
+  'etex': 'etex-pkg',
+  'tikz': 'pgf',
+};
+
+// ============================================================================
+// HTTP helpers
+// ============================================================================
+
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+function jsonResponse(data: any, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+  });
+}
+
+// ============================================================================
+// Disk Cache (lazy loading)
+// ============================================================================
+
+async function loadFromDisk(pkgName: string): Promise<ProcessedPackage | null> {
   try {
-    const aliasPath = join(CACHE_DIR, '_aliases.json');
-    if (existsSync(aliasPath)) {
-      const aliases = JSON.parse(readFileSync(aliasPath, 'utf-8'));
-      for (const [key, value] of Object.entries(aliases)) {
-        dynamicAliasCache.set(key, value as string);
-      }
-      console.log(`Loaded ${Object.keys(aliases).length} aliases from disk cache`);
-    }
-  } catch (e) {
-    console.log('No alias cache found');
+    const data = await readFile(join(CACHE_DIR, `${pkgName}.json`), 'utf-8');
+    return JSON.parse(data);
+  } catch {
+    return null;
   }
 }
 
-// Save package to disk cache
-function saveToDiskCache(pkgName: string, data: any) {
+async function saveToDisk(pkgName: string, data: ProcessedPackage): Promise<void> {
   try {
-    writeFileSync(join(CACHE_DIR, `${pkgName}.json`), JSON.stringify(data));
+    await writeFile(join(CACHE_DIR, `${pkgName}.json`), JSON.stringify(data));
   } catch (e) {
     console.warn(`Failed to save cache for ${pkgName}:`, e);
   }
 }
 
-// Save aliases to disk
-function saveAliasCache() {
+async function loadAliasCache(): Promise<void> {
+  try {
+    const data = await readFile(join(CACHE_DIR, '_aliases.json'), 'utf-8');
+    const aliases = JSON.parse(data);
+    for (const [key, value] of Object.entries(aliases)) {
+      aliasCache.set(key, value as string);
+    }
+    console.log(`Loaded ${aliasCache.size} aliases from disk`);
+  } catch {
+    // No alias cache yet
+  }
+}
+
+async function loadFileIndex(): Promise<void> {
+  try {
+    const data = await readFile(join(CACHE_DIR, '_file_index.json'), 'utf-8');
+    const index = JSON.parse(data);
+    for (const [key, value] of Object.entries(index)) {
+      fileToPackageIndex.set(key, value as string);
+    }
+    console.log(`Loaded ${fileToPackageIndex.size} file index entries from disk`);
+  } catch {
+    // No index yet
+  }
+}
+
+async function saveAliasCache(): Promise<void> {
   try {
     const aliases: Record<string, string> = {};
-    for (const [key, value] of dynamicAliasCache.entries()) {
+    for (const [key, value] of aliasCache.entries()) {
       aliases[key] = value;
     }
-    writeFileSync(join(CACHE_DIR, '_aliases.json'), JSON.stringify(aliases, null, 2));
+    await writeFile(join(CACHE_DIR, '_aliases.json'), JSON.stringify(aliases, null, 2));
   } catch (e) {
     console.warn('Failed to save alias cache:', e);
   }
 }
 
-// Load cache on startup
-loadDiskCache();
-
-// Cache for package info (CTAN metadata - small, keep in memory only)
-const pkgInfoCache = new Map<string, any>();
-
-// Minimal bootstrap aliases - only for packages where CTAN lookup itself fails
-// (e.g., etex is a TeX engine, not a package - we need etex-pkg)
-const bootstrapAliases: Record<string, string> = {
-  'etex': 'etex-pkg',  // etex is the engine, etex-pkg is the LaTeX package
-  'tikz': 'pgf',       // tikz has no CTAN entry, it's part of pgf
-};
-
-// Validate package names - filters out LaTeX macro artifacts like #2, \@tempb, %, etc.
-function isValidPackageName(name: string): boolean {
-  if (!name || name.length === 0) return false;
-  // Must start with a letter, can contain letters, numbers, and hyphens
-  // Filter out: # (macro args), \ (commands), @ (internal), % (comments), spaces
-  if (/^[a-zA-Z][a-zA-Z0-9\-]*$/.test(name)) {
-    return true;
-  }
-  return false;
-}
-
-const server = Bun.serve({
-  port: PORT,
-  idleTimeout: 120,  // 2 minutes for large packages like cm-super
-  async fetch(req) {
-    const url = new URL(req.url);
-
-    // CORS headers
-    const corsHeaders = {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-    };
-
-    if (req.method === 'OPTIONS') {
-      return new Response(null, { headers: corsHeaders });
-    }
-
-    // Route: /api/pkg/:name - Get package info from CTAN
-    if (url.pathname.startsWith('/api/pkg/')) {
-      const pkgName = url.pathname.replace('/api/pkg/', '');
-      try {
-        const info = await getCTANPackageInfo(pkgName);
-        return new Response(JSON.stringify(info || { error: 'Not found' }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
-      } catch (e: any) {
-        return new Response(JSON.stringify({ error: e.message }), {
-          status: 500,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
-      }
-    }
-
-    // Route: /api/deps/:name - Get package dependencies recursively
-    if (url.pathname.startsWith('/api/deps/')) {
-      const pkgName = url.pathname.replace('/api/deps/', '');
-      try {
-        const deps = await getPackageDependencies(pkgName);
-        return new Response(JSON.stringify({ package: pkgName, dependencies: deps }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
-      } catch (e: any) {
-        return new Response(JSON.stringify({ error: e.message }), {
-          status: 500,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
-      }
-    }
-
-    // Route: /api/fetch/:name - Download, extract, and return package files
-    if (url.pathname.startsWith('/api/fetch/')) {
-      const requestedPkg = url.pathname.replace('/api/fetch/', '');
-
-      // Check bootstrap aliases first (minimal hardcoded list for edge cases)
-      let pkgName = bootstrapAliases[requestedPkg] || dynamicAliasCache.get(requestedPkg) || requestedPkg;
-
-      // Check cache first
-      if (pkgFetchCache.has(pkgName)) {
-        console.log(`Cache hit: ${requestedPkg}${pkgName !== requestedPkg ? ` (via ${pkgName})` : ''}`);
-        return new Response(JSON.stringify(pkgFetchCache.get(pkgName)), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
-      }
-
-      try {
-        console.log(`Fetching package: ${requestedPkg}${pkgName !== requestedPkg ? ` (via ${pkgName})` : ''}`);
-
-        // Try TexLive archive first (has pre-built .sty files)
-        const tlUrl = `https://ftp.tu-chemnitz.de/pub/tug/historic/systems/texlive/2023/tlnet-final/archive/${pkgName}.tar.xz`;
-        console.log(`  Trying TexLive: ${tlUrl}`);
-        const tlResponse = await fetch(tlUrl, { redirect: 'follow' });
-
-        if (tlResponse.ok) {
-          const tarData = new Uint8Array(await tlResponse.arrayBuffer());
-          return await processTexLiveTar(tarData, pkgName, corsHeaders);
-        }
-
-        // TexLive not found - query CTAN to find the parent package
-        console.log(`  TexLive not found, querying CTAN for package info...`);
-        const infoResponse = await fetch(`https://ctan.org/json/2.0/pkg/${pkgName}`);
-        const info = await infoResponse.json();
-
-        if (info.errors) {
-          // CTAN doesn't know this package - check if any cached package contains a file with this name
-          console.log(`  CTAN doesn't know ${pkgName}, searching cached packages...`);
-          for (const [cachedPkgName, cachedData] of pkgFetchCache.entries()) {
-            const files = cachedData.files || {};
-            for (const filePath of Object.keys(files)) {
-              const fileName = filePath.split('/').pop()?.replace(/\.(sty|tex|cls|def)$/, '') || '';
-              if (fileName === pkgName) {
-                console.log(`  Found ${pkgName} in cached package ${cachedPkgName}`);
-                dynamicAliasCache.set(pkgName, cachedPkgName);
-                saveAliasCache();
-                return new Response(JSON.stringify(cachedData), {
-                  headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-                });
-              }
-            }
-          }
-          // Not found anywhere
-          console.log(`  ${pkgName} not found in any source`);
-          return new Response(JSON.stringify({ error: 'Package not found' }), {
-            status: 404,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-          });
-        }
-
-        // Check if CTAN tells us this is part of a different package (miktex or texlive field)
-        const parentPkg = info.miktex || info.texlive;
-        if (parentPkg && parentPkg !== pkgName) {
-          console.log(`  CTAN says ${pkgName} is part of ${parentPkg}`);
-          // Cache this mapping for future requests
-          dynamicAliasCache.set(requestedPkg, parentPkg);
-          if (pkgName !== requestedPkg) {
-            dynamicAliasCache.set(pkgName, parentPkg);
-          }
-          saveAliasCache();
-
-          // Check if we already have the parent cached
-          if (pkgFetchCache.has(parentPkg)) {
-            console.log(`  Cache hit for parent: ${parentPkg}`);
-            return new Response(JSON.stringify(pkgFetchCache.get(parentPkg)), {
-              headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-            });
-          }
-
-          // Try to fetch the parent package from TexLive
-          const parentTlUrl = `https://ftp.tu-chemnitz.de/pub/tug/historic/systems/texlive/2023/tlnet-final/archive/${parentPkg}.tar.xz`;
-          console.log(`  Trying TexLive for parent: ${parentTlUrl}`);
-          const parentTlResponse = await fetch(parentTlUrl, { redirect: 'follow' });
-          if (parentTlResponse.ok) {
-            const tarData = new Uint8Array(await parentTlResponse.arrayBuffer());
-            return await processTexLiveTar(tarData, parentPkg, corsHeaders);
-          }
-
-          // Update pkgName for CTAN fallback
-          pkgName = parentPkg;
-        }
-
-        // Fall back to CTAN download
-        console.log(`  Trying CTAN download...`);
-
-        // Determine download URL
-        let downloadUrl: string | null = null;
-        if (info.install) {
-          downloadUrl = `https://mirrors.ctan.org/install${info.install}`;
-        } else if (info.ctan?.path) {
-          // Try TDS zip first, fall back to source
-          downloadUrl = `https://mirrors.ctan.org${info.ctan.path}.zip`;
-        }
-
-        if (!downloadUrl) {
-          return new Response(JSON.stringify({ error: 'No download URL available' }), {
-            status: 404,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-          });
-        }
-
-        console.log(`  Downloading: ${downloadUrl}`);
-        const zipResponse = await fetch(downloadUrl, { redirect: 'follow' });
-
-        if (!zipResponse.ok) {
-          // Try alternate URL format
-          if (info.ctan?.path && !downloadUrl.includes('/install/')) {
-            const altUrl = `https://mirrors.ctan.org${info.ctan.path}/${pkgName}.zip`;
-            console.log(`  Trying alternate: ${altUrl}`);
-            const altResponse = await fetch(altUrl, { redirect: 'follow' });
-            if (altResponse.ok) {
-              const zipData = new Uint8Array(await altResponse.arrayBuffer());
-              return processZip(zipData, pkgName, corsHeaders);
-            }
-          }
-          return new Response(JSON.stringify({ error: `Download failed: ${zipResponse.status}` }), {
-            status: 500,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-          });
-        }
-
-        const zipData = new Uint8Array(await zipResponse.arrayBuffer());
-        return processZip(zipData, pkgName, corsHeaders);
-
-      } catch (e: any) {
-        console.error(`Error fetching ${pkgName}:`, e);
-        return new Response(JSON.stringify({ error: e.message }), {
-          status: 500,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
-      }
-    }
-
-    return new Response('CTAN Proxy Server\n\nEndpoints:\n  /api/pkg/:name - Get package info\n  /api/fetch/:name - Download and extract package', {
-      headers: corsHeaders
-    });
-  }
-});
-
-function processZip(zipData: Uint8Array, pkgName: string, corsHeaders: Record<string, string>) {
+async function saveFileIndex(): Promise<void> {
   try {
-    console.log(`  Extracting ZIP (${(zipData.length / 1024).toFixed(1)} KB)`);
-    const files = unzipSync(zipData);
-
-    // Find TeX files and font files
-    const result: Record<string, { path: string; content: string | Uint8Array }> = {};
-    const texExtensions = ['.sty', '.cls', '.def', '.cfg', '.tex', '.fd', '.clo'];
-    // Font-related extensions (Type1, TFM, map files)
-    const fontExtensions = ['.pfb', '.pfm', '.afm', '.tfm', '.vf', '.map', '.enc'];
-    const detectedDeps = new Set<string>();
-
-    for (const [filePath, content] of Object.entries(files)) {
-      const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
-      const fileName = filePath.split('/').pop() || '';
-
-      // Skip source files, docs, etc
-      if (filePath.includes('/doc/') || filePath.includes('/source/')) continue;
-
-      if (texExtensions.includes(ext)) {
-        // Determine target path
-        let targetDir = `/texlive/texmf-dist/tex/latex/${pkgName}`;
-
-        // If it's a TDS zip, preserve structure
-        if (filePath.includes('/tex/latex/')) {
-          const match = filePath.match(/\/tex\/latex\/([^/]+)/);
-          if (match) {
-            targetDir = `/texlive/texmf-dist/tex/latex/${match[1]}`;
-          }
-        } else if (filePath.includes('/tex/generic/')) {
-          const match = filePath.match(/\/tex\/generic\/([^/]+)/);
-          if (match) {
-            targetDir = `/texlive/texmf-dist/tex/generic/${match[1]}`;
-          }
-        }
-
-        const textContent = new TextDecoder().decode(content);
-        result[`${targetDir}/${fileName}`] = {
-          path: targetDir,
-          content: textContent
-        };
-
-        // Scan for \RequirePackage dependencies
-        const reqMatches = textContent.matchAll(/\\RequirePackage(?:\[[^\]]*\])?\{([^}]+)\}/g);
-        for (const match of reqMatches) {
-          const deps = match[1].split(',').map(d => d.trim());
-          deps.filter(d => isValidPackageName(d)).forEach(d => detectedDeps.add(d));
-        }
-      } else if (fontExtensions.includes(ext)) {
-        // Font files - preserve TDS path structure
-        // Match any /fonts/... path and preserve it
-        const fontsMatch = filePath.match(/\/(fonts\/[^/]+(?:\/[^/]+)*)\//);
-        let targetDir: string;
-
-        if (fontsMatch) {
-          // Preserve the TDS structure: fonts/type1/public/cm-super -> /texlive/texmf-dist/fonts/type1/public/cm-super
-          const fontsPath = fontsMatch[1];
-          const afterFonts = filePath.substring(filePath.indexOf(fontsMatch[0]) + fontsMatch[0].length);
-          const dirParts = afterFonts.split('/');
-          dirParts.pop(); // Remove filename
-          const subPath = dirParts.join('/');
-          targetDir = `/texlive/texmf-dist/${fontsPath}${subPath ? '/' + subPath : ''}`;
-        } else {
-          // Fallback for fonts without TDS structure
-          targetDir = `/texlive/texmf-dist/fonts/type1/public/${pkgName}`;
-        }
-
-        // For binary font files, encode as base64 to reduce JSON size
-        // Mark with _base64 suffix so client knows to decode
-        const base64Content = Buffer.from(content).toString('base64');
-        result[`${targetDir}/${fileName}`] = {
-          path: targetDir,
-          content: base64Content,
-          encoding: 'base64'
-        };
-      }
+    const index: Record<string, string> = {};
+    for (const [key, value] of fileToPackageIndex.entries()) {
+      index[key] = value;
     }
-
-    const fileCount = Object.keys(result).length;
-    const dependencies = [...detectedDeps].filter(d => d !== pkgName);
-    console.log(`  Extracted ${fileCount} files, detected deps: ${dependencies.join(', ') || 'none'}`);
-
-    if (fileCount === 0) {
-      return new Response(JSON.stringify({ error: 'No usable files found in package' }), {
-        status: 404,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
-    }
-
-    const responseData = {
-      name: pkgName,
-      files: result,
-      totalFiles: fileCount,
-      dependencies
-    };
-    // Cache the result in memory and on disk
-    pkgFetchCache.set(pkgName, responseData);
-    saveToDiskCache(pkgName, responseData);
-
-    return new Response(JSON.stringify(responseData), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-
-  } catch (e: any) {
-    console.error(`  ZIP extraction error:`, e);
-    return new Response(JSON.stringify({ error: `ZIP extraction failed: ${e.message}` }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
+    await writeFile(join(CACHE_DIR, '_file_index.json'), JSON.stringify(index, null, 2));
+  } catch (e) {
+    console.warn('Failed to save file index:', e);
   }
 }
 
-// Process TexLive .tar.xz archive
-async function processTexLiveTar(tarData: Uint8Array, pkgName: string, corsHeaders: Record<string, string>) {
-  const tmpDir = mkdtempSync(join(tmpdir(), 'texlive-'));
-  try {
-    console.log(`  Extracting TexLive tar.xz (${(tarData.length / 1024).toFixed(1)} KB)`);
+// Load aliases and file index on startup (small files, ok to load eagerly)
+loadAliasCache();
+loadFileIndex();
 
-    // Write tar.xz to temp file and extract with system tar
+async function countDiskPackages(): Promise<number> {
+  try {
+    const entries = await readdir(CACHE_DIR);
+    return entries.filter(f => f.endsWith('.json') && !f.startsWith('_')).length;
+  } catch {
+    return 0;
+  }
+}
+
+// ============================================================================
+// Cache lookup with lazy disk loading
+// ============================================================================
+
+async function getCachedPackage(pkgName: string): Promise<ProcessedPackage | null> {
+  // Check memory first
+  if (memoryCache.has(pkgName)) {
+    return memoryCache.get(pkgName)!;
+  }
+
+  // Try disk
+  const diskData = await loadFromDisk(pkgName);
+  if (diskData) {
+    memoryCache.set(pkgName, diskData);
+    return diskData;
+  }
+
+  return null;
+}
+
+async function cachePackage(pkgName: string, data: ProcessedPackage): Promise<void> {
+  memoryCache.set(pkgName, data);
+
+  // Build file index for fast reverse lookups
+  const files = data.files || {};
+  let indexUpdated = false;
+  for (const filePath of Object.keys(files)) {
+    const fileName = filePath.split('/').pop()?.replace(/\.(sty|tex|cls|def)$/, '') || '';
+    if (fileName && !fileToPackageIndex.has(fileName)) {
+      fileToPackageIndex.set(fileName, pkgName);
+      indexUpdated = true;
+    }
+  }
+
+  await saveToDisk(pkgName, data);
+  if (indexUpdated) {
+    await saveFileIndex();
+  }
+}
+
+// ============================================================================
+// Package fetching
+// ============================================================================
+
+async function fetchPackage(requestedPkg: string, tlYear: TLYear = DEFAULT_TL_YEAR): Promise<Response> {
+  // Resolve aliases
+  let pkgName = bootstrapAliases[requestedPkg] || aliasCache.get(requestedPkg) || requestedPkg;
+
+  // For version-specific requests, use a year-suffixed cache key
+  // This allows caching different versions of the same package
+  const cacheKey = tlYear !== DEFAULT_TL_YEAR ? `${pkgName}@tl${tlYear}` : pkgName;
+
+  // Check cache (memory + disk)
+  const cached = await getCachedPackage(cacheKey);
+  if (cached) {
+    console.log(`Cache hit: ${requestedPkg}${pkgName !== requestedPkg ? ` (via ${pkgName})` : ''}${tlYear !== DEFAULT_TL_YEAR ? ` @TL${tlYear}` : ''}`);
+    return jsonResponse(cached);
+  }
+
+  console.log(`Fetching package: ${requestedPkg}${pkgName !== requestedPkg ? ` (via ${pkgName})` : ''} from TL${tlYear}`);
+
+  // Try TexLive archive first
+  const tlUrl = getTexLiveUrl(pkgName, tlYear);
+  console.log(`  Trying TexLive ${tlYear}: ${tlUrl}`);
+
+  const tlResponse = await fetch(tlUrl, { redirect: 'follow' });
+  if (tlResponse.ok) {
+    const tarData = new Uint8Array(await tlResponse.arrayBuffer());
+    return await processTexLiveTar(tarData, pkgName, tlYear);
+  }
+
+  // Query CTAN for package info
+  console.log(`  TexLive not found, querying CTAN...`);
+  const infoResponse = await fetch(`https://ctan.org/json/2.0/pkg/${pkgName}`);
+  const info = await infoResponse.json();
+
+  if (info.errors) {
+    // Use file index for O(1) lookup instead of scanning all cached packages
+    console.log(`  CTAN doesn't know ${pkgName}, checking file index...`);
+    const cachedPkgName = fileToPackageIndex.get(pkgName);
+    if (cachedPkgName) {
+      const cachedData = await getCachedPackage(cachedPkgName);
+      if (cachedData) {
+        console.log(`  Found in cached package ${cachedPkgName}`);
+        aliasCache.set(pkgName, cachedPkgName);
+        await saveAliasCache();
+        return jsonResponse(cachedData);
+      }
+    }
+    console.log(`  ${pkgName} not found`);
+    return jsonResponse({ error: 'Package not found' }, 404);
+  }
+
+  // Check if part of a different package
+  const parentPkg = info.miktex || info.texlive;
+  if (parentPkg && parentPkg !== pkgName) {
+    console.log(`  CTAN says ${pkgName} is part of ${parentPkg}`);
+    aliasCache.set(requestedPkg, parentPkg);
+    if (pkgName !== requestedPkg) aliasCache.set(pkgName, parentPkg);
+    await saveAliasCache();
+
+    // For version-specific requests, use a year-suffixed cache key
+    const parentCacheKey = tlYear !== DEFAULT_TL_YEAR ? `${parentPkg}@tl${tlYear}` : parentPkg;
+
+    // Check cache for parent
+    const parentCached = await getCachedPackage(parentCacheKey);
+    if (parentCached) {
+      console.log(`  Cache hit for parent: ${parentPkg}${tlYear !== DEFAULT_TL_YEAR ? ` @TL${tlYear}` : ''}`);
+      return jsonResponse(parentCached);
+    }
+
+    // Try TexLive for parent
+    const parentTlUrl = getTexLiveUrl(parentPkg, tlYear);
+    console.log(`  Trying TexLive ${tlYear} for parent: ${parentTlUrl}`);
+    const parentTlResponse = await fetch(parentTlUrl, { redirect: 'follow' });
+    if (parentTlResponse.ok) {
+      const tarData = new Uint8Array(await parentTlResponse.arrayBuffer());
+      return await processTexLiveTar(tarData, parentPkg, tlYear);
+    }
+
+    pkgName = parentPkg;
+  }
+
+  // CTAN download
+  console.log(`  Trying CTAN download...`);
+
+  // Single file package - fetch raw
+  if (info.ctan?.file === true && info.ctan?.path) {
+    console.log(`  Single file, fetching raw: ${info.ctan.path}`);
+    const rawResponse = await fetch(`https://mirrors.ctan.org${info.ctan.path}`, { redirect: 'follow' });
+    if (rawResponse.ok) {
+      const content = await rawResponse.text();
+      const result = processRawFileData(info.ctan.path, content, pkgName);
+      console.log(`  Processed raw file: ${info.ctan.path.split('/').pop()}, deps: ${result.dependencies.join(', ') || 'none'}`);
+      await cachePackage(pkgName, result);
+      return jsonResponse(result);
+    }
+    console.log(`  Raw file failed: ${rawResponse.status}`);
+  }
+
+  // Determine ZIP URL
+  let downloadUrl: string | null = null;
+  if (info.install) {
+    downloadUrl = `https://mirrors.ctan.org/install${info.install}`;
+  } else if (info.ctan?.path) {
+    let ctanPath = info.ctan.path;
+    if (info.ctan.file === true) {
+      ctanPath = ctanPath.substring(0, ctanPath.lastIndexOf('/'));
+    }
+    downloadUrl = `https://mirrors.ctan.org${ctanPath}.zip`;
+  }
+
+  if (!downloadUrl) {
+    return jsonResponse({ error: 'No download URL available' }, 404);
+  }
+
+  console.log(`  Downloading: ${downloadUrl}`);
+  let zipResponse = await fetch(downloadUrl, { redirect: 'follow' });
+  console.log(`  Response: ${zipResponse.status}`);
+
+  // Try alternate URLs
+  if (!zipResponse.ok && info.ctan?.path) {
+    let ctanPath = info.ctan.path;
+    if (info.ctan.file === true) {
+      ctanPath = ctanPath.substring(0, ctanPath.lastIndexOf('/'));
+    }
+
+    for (const altUrl of [
+      `https://mirrors.ctan.org${ctanPath}/${pkgName}.zip`,
+      `https://mirrors.ctan.org${ctanPath}.tds.zip`,
+    ]) {
+      console.log(`  Trying: ${altUrl}`);
+      const altResponse = await fetch(altUrl, { redirect: 'follow' });
+      if (altResponse.ok) {
+        zipResponse = altResponse;
+        break;
+      }
+    }
+  }
+
+  if (!zipResponse.ok) {
+    return jsonResponse({ error: `Download failed: ${zipResponse.status}` }, 500);
+  }
+
+  const zipData = new Uint8Array(await zipResponse.arrayBuffer());
+  return await processZip(zipData, pkgName);
+}
+
+// ============================================================================
+// Processing functions
+// ============================================================================
+
+async function processZip(zipData: Uint8Array, pkgName: string): Promise<Response> {
+  // Validate ZIP magic bytes
+  if (!isValidZip(zipData)) {
+    const preview = textDecoder.decode(zipData.slice(0, 100));
+    console.log(`  Not a ZIP: ${preview.slice(0, 60)}...`);
+    return jsonResponse({ error: 'CTAN returned non-ZIP response' }, 404);
+  }
+
+  console.log(`  Extracting ZIP (${(zipData.length / 1024).toFixed(1)} KB)`);
+
+  const result = await processZipData(zipData, pkgName);
+
+  if ('error' in result) {
+    return jsonResponse(result, 404);
+  }
+
+  console.log(`  Extracted ${result.totalFiles} files, deps: ${result.dependencies.join(', ') || 'none'}`);
+  await cachePackage(pkgName, result);
+  return jsonResponse(result);
+}
+
+async function processTexLiveTar(tarData: Uint8Array, pkgName: string, tlYear: TLYear = DEFAULT_TL_YEAR): Promise<Response> {
+  const tmpDir = join(tmpdir(), `texlive-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+
+  try {
+    await mkdir(tmpDir, { recursive: true });
+    console.log(`  Extracting TexLive ${tlYear} tar.xz (${(tarData.length / 1024).toFixed(1)} KB)`);
+
     const tarPath = join(tmpDir, `${pkgName}.tar.xz`);
-    writeFileSync(tarPath, tarData);
-    execSync(`tar xJf "${tarPath}" -C "${tmpDir}"`, { stdio: 'pipe' });
+    await writeFile(tarPath, tarData);
+    await execAsync(`tar xJf "${tarPath}" -C "${tmpDir}"`);
 
-    // Find TeX files and font files
-    const result: Record<string, { path: string; content: string | Uint8Array }> = {};
-    const texExtensions = ['.sty', '.cls', '.def', '.cfg', '.tex', '.fd', '.clo'];
-    // Font-related extensions (Type1, TFM, map files)
-    const fontExtensions = ['.pfb', '.pfm', '.afm', '.tfm', '.vf', '.map', '.enc'];
-    const detectedDeps = new Set<string>();
+    // Walk directory and collect files
+    const files: Record<string, Uint8Array> = {};
+    await walkDirectory(tmpDir, tmpDir, files);
 
-    function walkDir(dir: string) {
-      const entries = readdirSync(dir);
-      for (const entry of entries) {
-        const fullPath = join(dir, entry);
-        const stat = statSync(fullPath);
-        if (stat.isDirectory()) {
-          walkDir(fullPath);
-        } else {
-          const ext = entry.substring(entry.lastIndexOf('.')).toLowerCase();
-          // Skip doc and source directories
-          if (fullPath.includes('/doc/') || fullPath.includes('/source/')) continue;
+    const extraction = processExtractedFiles(files, pkgName);
 
-          const relPath = fullPath.replace(tmpDir + '/', '');
-
-          if (texExtensions.includes(ext)) {
-            // Determine target path - preserve TDS structure
-            let targetDir = `/texlive/texmf-dist/tex/latex/${pkgName}`;
-
-            if (relPath.includes('/tex/latex/')) {
-              const match = relPath.match(/\/tex\/latex\/([^/]+)/);
-              if (match) targetDir = `/texlive/texmf-dist/tex/latex/${match[1]}`;
-            } else if (relPath.includes('/tex/generic/')) {
-              const match = relPath.match(/\/tex\/generic\/([^/]+)/);
-              if (match) targetDir = `/texlive/texmf-dist/tex/generic/${match[1]}`;
-            }
-
-            const textContent = readFileSync(fullPath, 'utf-8');
-            result[`${targetDir}/${entry}`] = {
-              path: targetDir,
-              content: textContent
-            };
-
-            // Scan for \RequirePackage dependencies
-            const reqMatches = textContent.matchAll(/\\RequirePackage(?:\[[^\]]*\])?\{([^}]+)\}/g);
-            for (const match of reqMatches) {
-              const deps = match[1].split(',').map(d => d.trim());
-              deps.filter(d => isValidPackageName(d)).forEach(d => detectedDeps.add(d));
-            }
-          } else if (fontExtensions.includes(ext)) {
-            // Font files - preserve TDS path structure
-            const fontsMatch = relPath.match(/\/(fonts\/[^/]+(?:\/[^/]+)*)\//);
-            let targetDir: string;
-
-            if (fontsMatch) {
-              // Preserve the TDS structure from the archive
-              const fontsPath = fontsMatch[1];
-              const afterFonts = relPath.substring(relPath.indexOf(fontsMatch[0]) + fontsMatch[0].length);
-              const dirParts = afterFonts.split('/');
-              dirParts.pop(); // Remove filename
-              const subPath = dirParts.join('/');
-              targetDir = `/texlive/texmf-dist/${fontsPath}${subPath ? '/' + subPath : ''}`;
-            } else {
-              targetDir = `/texlive/texmf-dist/fonts/type1/public/${pkgName}`;
-            }
-
-            // Read binary font files and encode as base64
-            const binaryContent = readFileSync(fullPath);
-            const base64Content = binaryContent.toString('base64');
-            result[`${targetDir}/${entry}`] = {
-              path: targetDir,
-              content: base64Content,
-              encoding: 'base64'
-            };
-          }
-        }
-      }
+    if (extraction.fileCount === 0) {
+      return jsonResponse({ error: 'No usable files found' }, 404);
     }
 
-    walkDir(tmpDir);
+    console.log(`  Extracted ${extraction.fileCount} files from TexLive ${tlYear}, deps: ${extraction.dependencies.join(', ') || 'none'}`);
 
-    const fileCount = Object.keys(result).length;
-    const dependencies = [...detectedDeps].filter(d => d !== pkgName);
-    console.log(`  Extracted ${fileCount} files from TexLive, deps: ${dependencies.join(', ') || 'none'}`);
-
-    if (fileCount === 0) {
-      return new Response(JSON.stringify({ error: 'No usable files found in package' }), {
-        status: 404,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
-    }
-
-    const responseData = {
+    const result: ProcessedPackage = {
       name: pkgName,
-      files: result,
-      totalFiles: fileCount,
-      dependencies,
-      source: 'texlive'
+      files: extraction.files,
+      totalFiles: extraction.fileCount,
+      dependencies: extraction.dependencies,
+      source: `texlive-${tlYear}`
     };
-    // Cache the result in memory and on disk
-    pkgFetchCache.set(pkgName, responseData);
-    saveToDiskCache(pkgName, responseData);
 
-    return new Response(JSON.stringify(responseData), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
+    // Use year-suffixed cache key for non-default years
+    const cacheKey = tlYear !== DEFAULT_TL_YEAR ? `${pkgName}@tl${tlYear}` : pkgName;
+    await cachePackage(cacheKey, result);
+    return jsonResponse(result);
 
-  } catch (e: any) {
-    console.error(`  TexLive tar extraction error:`, e);
-    return new Response(JSON.stringify({ error: `TexLive extraction failed: ${e.message}` }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
   } finally {
-    // Cleanup
-    try { rmSync(tmpDir, { recursive: true }); } catch (e) {}
+    try { await rm(tmpDir, { recursive: true }); } catch {}
   }
 }
 
-// Get package info from CTAN (cached)
+async function walkDirectory(baseDir: string, currentDir: string, files: Record<string, Uint8Array>): Promise<void> {
+  // Use withFileTypes to avoid separate stat() calls
+  const entries = await readdir(currentDir, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const fullPath = join(currentDir, entry.name);
+
+    if (entry.isDirectory()) {
+      await walkDirectory(baseDir, fullPath, files);
+    } else {
+      const relPath = fullPath.replace(baseDir + '/', '');
+      files[relPath] = new Uint8Array(await readFile(fullPath));
+    }
+  }
+}
+
+// ============================================================================
+// CTAN Info
+// ============================================================================
+
 async function getCTANPackageInfo(pkgName: string): Promise<any> {
   if (pkgInfoCache.has(pkgName)) {
     return pkgInfoCache.get(pkgName);
@@ -545,39 +453,141 @@ async function getCTANPackageInfo(pkgName: string): Promise<any> {
     if (info.errors) return null;
     pkgInfoCache.set(pkgName, info);
     return info;
-  } catch (e) {
+  } catch {
     return null;
   }
 }
 
-// Get package dependencies recursively from CTAN
 async function getPackageDependencies(pkgName: string, visited = new Set<string>()): Promise<string[]> {
   if (visited.has(pkgName)) return [];
   visited.add(pkgName);
 
   const info = await getCTANPackageInfo(pkgName);
-  if (!info) return [];
+  if (!info?.depends) return [];
 
   const deps: string[] = [];
-
-  // CTAN packages can have keyval "also" field with related packages
-  // and "depends" for actual dependencies
-  if (info.depends) {
-    for (const dep of info.depends) {
-      if (typeof dep === 'string' && !visited.has(dep)) {
-        deps.push(dep);
-        // Recursively get dependencies
-        const subDeps = await getPackageDependencies(dep, visited);
-        deps.push(...subDeps);
-      } else if (dep.name && !visited.has(dep.name)) {
-        deps.push(dep.name);
-        const subDeps = await getPackageDependencies(dep.name, visited);
-        deps.push(...subDeps);
-      }
+  for (const dep of info.depends) {
+    const name = typeof dep === 'string' ? dep : dep.name;
+    if (name && !visited.has(name)) {
+      deps.push(name);
+      deps.push(...await getPackageDependencies(name, visited));
     }
   }
 
   return [...new Set(deps)];
 }
 
-console.log(`CTAN Proxy running on http://localhost:${PORT}`);
+// ============================================================================
+// Server
+// ============================================================================
+
+Bun.serve({
+  port: PORT,
+  idleTimeout: 120,
+
+  async fetch(req) {
+    const url = new URL(req.url);
+    const path = url.pathname;
+
+    if (req.method === 'OPTIONS') {
+      return new Response(null, { headers: CORS_HEADERS });
+    }
+
+    // /api/stats - Cache statistics
+    if (path === '/api/stats') {
+      const diskPackages = await countDiskPackages();
+      return jsonResponse({
+        memory: {
+          packages: { current: memoryCache.size, max: MEMORY_CACHE_MAX_SIZE },
+          info: { current: pkgInfoCache.size, max: INFO_CACHE_MAX_SIZE },
+          aliases: { current: aliasCache.size, max: ALIAS_CACHE_MAX_SIZE },
+        },
+        disk: {
+          cacheDir: CACHE_DIR,
+          packages: diskPackages,
+          fileIndex: fileToPackageIndex.size,
+        },
+        inFlight: inFlightRequests.size,
+      });
+    }
+
+    // /api/pkg/:name - Get package info
+    if (path.startsWith('/api/pkg/')) {
+      const pkgName = path.slice(9);
+      try {
+        const info = await getCTANPackageInfo(pkgName);
+        return jsonResponse(info || { error: 'Not found' });
+      } catch (e: any) {
+        return jsonResponse({ error: e.message }, 500);
+      }
+    }
+
+    // /api/deps/:name - Get dependencies
+    if (path.startsWith('/api/deps/')) {
+      const pkgName = path.slice(10);
+      try {
+        const deps = await getPackageDependencies(pkgName);
+        return jsonResponse({ package: pkgName, dependencies: deps });
+      } catch (e: any) {
+        return jsonResponse({ error: e.message }, 500);
+      }
+    }
+
+    // /api/fetch/:name - Download and extract package
+    // Supports ?tlYear=2024 query param for version fallback
+    if (path.startsWith('/api/fetch/')) {
+      const pkgName = path.slice(11);
+
+      // Parse tlYear query parameter
+      const tlYearParam = url.searchParams.get('tlYear');
+      let tlYear: TLYear = DEFAULT_TL_YEAR;
+      if (tlYearParam) {
+        const year = parseInt(tlYearParam, 10);
+        if (SUPPORTED_TL_YEARS.includes(year as TLYear)) {
+          tlYear = year as TLYear;
+        } else {
+          return jsonResponse({ error: `Unsupported TexLive year: ${tlYearParam}. Supported: ${SUPPORTED_TL_YEARS.join(', ')}` }, 400);
+        }
+      }
+
+      // Request deduplication - include year in the key
+      const dedupeKey = tlYear !== DEFAULT_TL_YEAR ? `${pkgName}@tl${tlYear}` : pkgName;
+      if (inFlightRequests.has(dedupeKey)) {
+        console.log(`  Deduplicating request for: ${dedupeKey}`);
+        return inFlightRequests.get(dedupeKey)!;
+      }
+
+      // Create and track the fetch promise
+      const fetchPromise = fetchPackage(pkgName, tlYear)
+        .catch(e => {
+          console.error(`Error fetching ${pkgName}:`, e);
+          return jsonResponse({ error: e.message }, 500);
+        })
+        .finally(() => {
+          inFlightRequests.delete(dedupeKey);
+        });
+
+      inFlightRequests.set(dedupeKey, fetchPromise);
+      return fetchPromise;
+    }
+
+    return new Response(
+      'CTAN Proxy Server\n\n' +
+      'Endpoints:\n' +
+      '  /api/fetch/:name[?tlYear=YYYY] - Download and extract package (default: TL2025)\n' +
+      '  /api/pkg/:name                 - Get CTAN package info\n' +
+      '  /api/deps/:name                - Get dependencies\n' +
+      '  /api/stats                     - Cache statistics\n' +
+      `\nSupported TexLive years: ${SUPPORTED_TL_YEARS.join(', ')}\n`,
+      { headers: CORS_HEADERS }
+    );
+  }
+});
+
+// Startup message (async to count disk packages)
+(async () => {
+  const diskPackages = await countDiskPackages();
+  console.log(`CTAN Proxy running on http://localhost:${PORT}`);
+  console.log(`  Cache: ${CACHE_DIR} (${diskPackages} packages)`);
+  console.log(`  Loaded: ${aliasCache.size} aliases, ${fileToPackageIndex.size} file index entries`);
+})();

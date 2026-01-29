@@ -1,15 +1,33 @@
-// Storage module for OPFS and IndexedDB caching
+// Storage module - uses @siglum/filesystem for all file operations
 
-// Safari detection - Safari has issues with ArrayBuffer detachment and WebAssembly.Module serialization
-const isSafari = typeof navigator !== 'undefined' && /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+import { fileSystem } from '@siglum/filesystem';
+
+function getFileSystem() {
+    return fileSystem;
+}
+
+let wasmCacheMounted = false;
+async function ensureWasmCacheMounted() {
+    if (wasmCacheMounted) return true;
+    const fs = await getFileSystem();
+    if (!fs) return false;
+    try {
+        await fs.mountAuto('/wasm-cache');
+        wasmCacheMounted = true;
+        return true;
+    } catch (e) {
+        console.warn('Failed to mount wasm-cache filesystem:', e);
+        return false;
+    }
+}
 
 const IDB_NAME = 'siglum-ctan-cache';
 const IDB_STORE = 'packages';
-const CTAN_CACHE_VERSION = 7;
+const CTAN_CACHE_VERSION = 9; // Bumped to force refetch from TexLive 2025 (enumitem v3.11 fix)
 const BUNDLE_CACHE_VERSION = 4;
+const MANIFEST_CACHE_VERSION = 5; // Bumped: consolidated metadata into bundles.json
 
 let idbCache = null;
-let opfsRoot = null;
 
 // IndexedDB operations
 export async function openIDBCache() {
@@ -76,65 +94,48 @@ export async function listAllCachedPackages() {
     }
 }
 
-// OPFS operations
-let opfsInitAttempted = false;
-let opfsDisabled = false; // Set to true after persistent failures to avoid spam
-
-export async function getOPFSRoot() {
-    if (opfsRoot) return opfsRoot;
-    if (opfsDisabled) return null; // Don't retry after persistent failure
-
-    // Safari workaround: request persistent storage first to initialize storage subsystem
-    if (!opfsInitAttempted && navigator.storage?.persist) {
-        opfsInitAttempted = true;
-        try {
-            await navigator.storage.persist();
-        } catch (e) {
-            // Ignore - just a workaround attempt
-        }
+// Mount for manifests
+let manifestsMounted = false;
+async function ensureManifestsMounted() {
+    if (manifestsMounted) return true;
+    const fs = await getFileSystem();
+    if (!fs) return false;
+    try {
+        await fs.mountAuto('/manifests');
+        manifestsMounted = true;
+        return true;
+    } catch (e) {
+        console.warn('Failed to mount manifests filesystem:', e);
+        return false;
     }
-
-    // Safari can have transient OPFS failures - retry a few times
-    const maxRetries = 3;
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-            opfsRoot = await navigator.storage.getDirectory();
-            return opfsRoot;
-        } catch (e) {
-            if (attempt === maxRetries) {
-                // Only log once, then disable OPFS for this session
-                console.warn('OPFS not available, disabling for this session:', e.message || e);
-                opfsDisabled = true;
-                return null;
-            }
-            // Wait briefly before retry (Safari transient errors often resolve quickly)
-            await new Promise(r => setTimeout(r, 100 * attempt));
-        }
-    }
-    return null;
 }
 
+// Mount for format cache
+let fmtCacheMounted = false;
+async function ensureFmtCacheMounted() {
+    if (fmtCacheMounted) return true;
+    const fs = await getFileSystem();
+    if (!fs) return false;
+    try {
+        await fs.mountAuto('/fmt-cache');
+        fmtCacheMounted = true;
+        return true;
+    } catch (e) {
+        console.warn('Failed to mount fmt-cache filesystem:', e);
+        return false;
+    }
+}
+
+// Backwards-compatible file operations using @siglum/filesystem
 export async function readFromOPFS(filePath) {
     try {
-        const root = await getOPFSRoot();
-        if (!root) return null;
-
-        const parts = filePath.split('/').filter(p => p);
-        let current = root;
-
-        for (let i = 0; i < parts.length - 1; i++) {
-            current = await current.getDirectoryHandle(parts[i]);
+        const fs = await getFileSystem();
+        if (!fs) return null;
+        // Ensure the appropriate mount exists based on path
+        if (filePath.startsWith('/fmt-cache') || filePath.startsWith('fmt-cache')) {
+            if (!await ensureFmtCacheMounted()) return null;
         }
-
-        const fileName = parts[parts.length - 1];
-        const fileHandle = await current.getFileHandle(fileName);
-        const file = await fileHandle.getFile();
-        const buffer = await file.arrayBuffer();
-        // Create a TRUE copy to avoid Safari ArrayBuffer detachment issues
-        // new Uint8Array(buffer) creates a VIEW, not a copy - the buffer can be detached
-        const copy = new Uint8Array(buffer.byteLength);
-        copy.set(new Uint8Array(buffer));
-        return copy;
+        return await fs.readBinary(filePath.startsWith('/') ? filePath : '/' + filePath);
     } catch (e) {
         return null;
     }
@@ -142,21 +143,14 @@ export async function readFromOPFS(filePath) {
 
 export async function writeToOPFS(filePath, content) {
     try {
-        const root = await getOPFSRoot();
-        if (!root) return false;
-
-        const parts = filePath.split('/').filter(p => p);
-        let current = root;
-
-        for (let i = 0; i < parts.length - 1; i++) {
-            current = await current.getDirectoryHandle(parts[i], { create: true });
+        const fs = await getFileSystem();
+        if (!fs) return false;
+        // Ensure the appropriate mount exists based on path
+        if (filePath.startsWith('/fmt-cache') || filePath.startsWith('fmt-cache')) {
+            if (!await ensureFmtCacheMounted()) return false;
         }
-
-        const fileName = parts[parts.length - 1];
-        const fileHandle = await current.getFileHandle(fileName, { create: true });
-        const writable = await fileHandle.createWritable();
-        await writable.write(content);
-        await writable.close();
+        const normalizedPath = filePath.startsWith('/') ? filePath : '/' + filePath;
+        await fs.writeBinary(normalizedPath, content, { createParents: true });
         return true;
     } catch (e) {
         return false;
@@ -164,64 +158,47 @@ export async function writeToOPFS(filePath, content) {
 }
 
 // Bundle cache operations
-let bundleCacheVersionChecked = false;
+let bundleCacheMounted = false;
 
-export async function checkBundleCacheVersion() {
-    if (bundleCacheVersionChecked) return;
-    bundleCacheVersionChecked = true;
-
+async function ensureBundleCacheMounted() {
+    if (bundleCacheMounted) return true;
+    const fs = await getFileSystem();
+    if (!fs) return false;
     try {
-        const root = await getOPFSRoot();
-        if (!root) return;
+        await fs.mountAuto('/bundle-cache');
+        bundleCacheMounted = true;
 
-        const versionHandle = await root.getFileHandle('bundle-cache-version', { create: true });
-        const file = await versionHandle.getFile();
-        const text = await file.text();
-        const version = parseInt(text) || 0;
-
-        if (version < BUNDLE_CACHE_VERSION) {
-            console.log('Bundle cache version mismatch, clearing cache...');
-            await clearBundleCache();
-            const writable = await versionHandle.createWritable();
-            await writable.write(String(BUNDLE_CACHE_VERSION));
-            await writable.close();
-        }
-    } catch (e) {
-        // First run, create version file
+        // Check version and clear if outdated
         try {
-            const root = await getOPFSRoot();
-            if (root) {
-                const versionHandle = await root.getFileHandle('bundle-cache-version', { create: true });
-                const writable = await versionHandle.createWritable();
-                await writable.write(String(BUNDLE_CACHE_VERSION));
-                await writable.close();
+            const versionStr = await fs.readFile('/bundle-cache/version');
+            const version = parseInt(versionStr) || 0;
+            if (version < BUNDLE_CACHE_VERSION) {
+                if (version > 0) {
+                    console.log(`Bundle cache version upgrade (${version} → ${BUNDLE_CACHE_VERSION}), clearing...`);
+                }
+                await fs.rmdir('/bundle-cache', { recursive: true });
+                await fs.mountAuto('/bundle-cache');
             }
-        } catch (e2) {}
+        } catch (e) {
+            // Version file doesn't exist, will be created on first write
+        }
+
+        // Write current version
+        await fs.writeFile('/bundle-cache/version', String(BUNDLE_CACHE_VERSION));
+        return true;
+    } catch (e) {
+        console.warn('Failed to mount bundle-cache filesystem:', e);
+        return false;
     }
 }
 
-export async function clearBundleCache() {
-    try {
-        const root = await getOPFSRoot();
-        if (!root) return;
-        await root.removeEntry('bundles', { recursive: true });
-    } catch (e) {}
-}
-
 export async function getBundleFromOPFS(bundleName) {
-    await checkBundleCacheVersion();
     try {
-        const root = await getOPFSRoot();
-        if (!root) return null;
+        const fs = await getFileSystem();
+        if (!fs || !await ensureBundleCacheMounted()) return null;
 
-        const bundlesDir = await root.getDirectoryHandle('bundles');
-        const fileHandle = await bundlesDir.getFileHandle(bundleName + '.data');
-        const file = await fileHandle.getFile();
-        const buffer = await file.arrayBuffer();
-        // Create a TRUE copy to avoid Safari ArrayBuffer detachment issues
-        const copy = new Uint8Array(buffer.byteLength);
-        copy.set(new Uint8Array(buffer));
-        return copy.buffer;
+        const data = await fs.readBinary(`/bundle-cache/bundles/${bundleName}.data`);
+        return data?.buffer || null;
     } catch (e) {
         return null;
     }
@@ -229,19 +206,85 @@ export async function getBundleFromOPFS(bundleName) {
 
 export async function saveBundleToOPFS(bundleName, data) {
     try {
-        const root = await getOPFSRoot();
-        if (!root) return;
+        const fs = await getFileSystem();
+        if (!fs || !await ensureBundleCacheMounted()) return false;
 
-        const bundlesDir = await root.getDirectoryHandle('bundles', { create: true });
-        const fileHandle = await bundlesDir.getFileHandle(bundleName + '.data', { create: true });
-        const writable = await fileHandle.createWritable();
-        await writable.write(data);
-        await writable.close();
+        await fs.mkdir('/bundle-cache/bundles');
+        // Convert SharedArrayBuffer to regular ArrayBuffer for IndexedDB compatibility
+        // (SharedArrayBuffer can't be serialized for storage)
+        let buffer = data;
+        if (typeof SharedArrayBuffer !== 'undefined' && data instanceof SharedArrayBuffer) {
+            buffer = new ArrayBuffer(data.byteLength);
+            new Uint8Array(buffer).set(new Uint8Array(data));
+        }
+        await fs.writeBinary(`/bundle-cache/bundles/${bundleName}.data`, new Uint8Array(buffer));
+        return true;
+    } catch (e) {
+        console.warn(`Failed to save bundle ${bundleName}:`, e);
+        return false;
+    }
+}
+
+// Manifest cache
+export async function getManifestFromOPFS(name) {
+    try {
+        const fs = await getFileSystem();
+        if (!fs || !await ensureManifestsMounted()) return null;
+
+        const content = await fs.readFile(`/manifests/${name}.json`);
+        return JSON.parse(content);
+    } catch (e) {
+        return null;
+    }
+}
+
+export async function saveManifestToOPFS(name, data) {
+    try {
+        const fs = await getFileSystem();
+        if (!fs || !await ensureManifestsMounted()) return false;
+
+        await fs.writeFile(`/manifests/${name}.json`, JSON.stringify(data), { createParents: true });
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+export async function getManifestVersion() {
+    try {
+        const fs = await getFileSystem();
+        if (!fs || !await ensureManifestsMounted()) return 0;
+
+        const content = await fs.readFile('/manifests/version');
+        return parseInt(content) || 0;
+    } catch (e) {
+        return 0;
+    }
+}
+
+export async function saveManifestVersion(version) {
+    try {
+        const fs = await getFileSystem();
+        if (!fs || !await ensureManifestsMounted()) return false;
+
+        await fs.writeFile('/manifests/version', String(version), { createParents: true });
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+export async function clearManifestCache() {
+    try {
+        const fs = await getFileSystem();
+        if (!fs) return;
+
+        await fs.rmdir('/manifests', { recursive: true });
+        manifestsMounted = false; // Force remount next time
     } catch (e) {}
 }
 
 // Aux file cache
-const AUX_CACHE_VERSION = 1;
 const AUX_STORE = 'aux-cache';
 let auxCacheDb = null;
 const auxMemoryCache = new Map();
@@ -298,7 +341,6 @@ export async function saveAuxCache(preambleHash, auxFiles) {
 }
 
 // Document cache for compiled PDFs
-const DOC_CACHE_VERSION = 1;
 const DOC_STORE = 'doc-cache';
 let docCacheDb = null;
 const docMemoryCache = new Map();
@@ -322,14 +364,8 @@ export async function openDocCacheDb() {
     });
 }
 
-export function hashDocument(source) {
-    let hash = 5381;
-    for (let i = 0; i < source.length; i++) {
-        hash = ((hash << 5) + hash) + source.charCodeAt(i);
-        hash = hash & hash;
-    }
-    return hash.toString(16);
-}
+// Re-export hashDocument from centralized hash module (BLAKE3-WASM)
+export { hashDocument } from './hash.js';
 
 export async function getCachedPdf(docHash, engine) {
     const key = docHash + '_' + engine;
@@ -374,67 +410,10 @@ export async function saveCachedPdf(docHash, engine, pdfData) {
     } catch (e) {}
 }
 
-// Format cache
-const FMT_STORE = 'fmt-cache';
-let fmtCacheDb = null;
-const fmtMemoryCache = new Map();
+// Format cache - format files stored at /fmt-cache/{fmtKey}.fmt
 
-export async function openFmtCacheDb() {
-    if (fmtCacheDb) return fmtCacheDb;
-    return new Promise((resolve, reject) => {
-        const request = indexedDB.open('siglum-fmt-cache', 1);
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => {
-            fmtCacheDb = request.result;
-            resolve(fmtCacheDb);
-        };
-        request.onupgradeneeded = (event) => {
-            const db = event.target.result;
-            if (!db.objectStoreNames.contains(FMT_STORE)) {
-                db.createObjectStore(FMT_STORE, { keyPath: 'hash' });
-            }
-        };
-    });
-}
-
-export async function getFmtMeta(preambleHash) {
-    if (fmtMemoryCache.has(preambleHash)) {
-        return fmtMemoryCache.get(preambleHash);
-    }
-    try {
-        const db = await openFmtCacheDb();
-        return new Promise((resolve) => {
-            const tx = db.transaction(FMT_STORE, 'readonly');
-            const store = tx.objectStore(FMT_STORE);
-            const request = store.get(preambleHash);
-            request.onerror = () => resolve(null);
-            request.onsuccess = () => {
-                const result = request.result;
-                if (result) fmtMemoryCache.set(preambleHash, result);
-                resolve(result);
-            };
-        });
-    } catch (e) {
-        return null;
-    }
-}
-
-export async function saveFmtMeta(preambleHash, meta) {
-    fmtMemoryCache.set(preambleHash, meta);
-    try {
-        const db = await openFmtCacheDb();
-        const tx = db.transaction(FMT_STORE, 'readwrite');
-        const store = tx.objectStore(FMT_STORE);
-        store.put({ hash: preambleHash, ...meta, timestamp: Date.now() });
-    } catch (e) {}
-}
-
-export async function loadFmtFromOPFS(fmtPath) {
-    return await readFromOPFS(fmtPath);
-}
-
-export async function saveFmtToOPFS(fmtPath, fmtData) {
-    return await writeToOPFS(fmtPath, fmtData);
+export function getFmtPath(fmtKey) {
+    return `fmt-cache/${fmtKey}.fmt`;
 }
 
 // Clear all CTAN cache
@@ -445,14 +424,6 @@ export async function clearCTANCache() {
         const store = tx.objectStore(IDB_STORE);
         store.clear();
         await new Promise(r => tx.oncomplete = r);
-
-        const root = await getOPFSRoot();
-        if (root) {
-            try {
-                await root.removeEntry('ctan-packages', { recursive: true });
-            } catch (e) {}
-        }
-
         return true;
     } catch (e) {
         return false;
@@ -486,13 +457,9 @@ async function openWasmCacheDb() {
     });
 }
 
-// Get cached compiled WebAssembly.Module from IndexedDB
+// Get cached WASM bytes from IndexedDB and compile to module
+// We cache bytes (not Module) because WebAssembly.Module can't be serialized to IndexedDB in Chrome/Safari
 export async function getCompiledWasmModule() {
-    // Safari has bugs with WebAssembly.Module serialization in IndexedDB - skip cache entirely
-    if (isSafari) {
-        console.log('Safari detected - skipping WASM module cache (serialization bugs)');
-        return null;
-    }
     try {
         const db = await openWasmCacheDb();
         return new Promise((resolve) => {
@@ -500,58 +467,183 @@ export async function getCompiledWasmModule() {
             const store = tx.objectStore(WASM_STORE);
             const request = store.get('busytex');
             request.onerror = () => resolve(null);
-            request.onsuccess = () => {
+            request.onsuccess = async () => {
                 const result = request.result;
-                if (result?.module instanceof WebAssembly.Module) {
-                    console.log('Loaded compiled WASM module from IndexedDB cache');
-                    resolve(result.module);
+                if (result?.bytes instanceof Uint8Array) {
+                    try {
+                        const module = await WebAssembly.compile(result.bytes);
+                        resolve(module);
+                    } catch {
+                        resolve(null);
+                    }
                 } else {
                     resolve(null);
                 }
             };
         });
     } catch (e) {
-        console.warn('Failed to get cached WASM module:', e);
+        console.warn('Failed to get cached WASM:', e);
         return null;
     }
 }
 
-// Save compiled WebAssembly.Module to IndexedDB
-export async function saveCompiledWasmModule(module) {
-    // Safari has bugs with WebAssembly.Module serialization - don't cache
-    if (isSafari) {
-        return false;
-    }
+// Save WASM bytes to IndexedDB (not Module - Module can't be serialized)
+export async function saveWasmBytes(bytes) {
     try {
         const db = await openWasmCacheDb();
         return new Promise((resolve) => {
             const tx = db.transaction(WASM_STORE, 'readwrite');
             const store = tx.objectStore(WASM_STORE);
-            const request = store.put({ key: 'busytex', module, timestamp: Date.now() });
-            request.onerror = () => {
-                console.warn('Failed to cache compiled WASM module');
-                resolve(false);
-            };
-            request.onsuccess = () => {
-                console.log('Cached compiled WASM module to IndexedDB');
-                resolve(true);
-            };
+            const request = store.put({ key: 'busytex', bytes, timestamp: Date.now() });
+            request.onerror = () => resolve(false);
+            request.onsuccess = () => resolve(true);
         });
-    } catch (e) {
-        console.warn('Failed to save compiled WASM module:', e);
+    } catch {
         return false;
     }
 }
 
-// Legacy OPFS functions - keep for backwards compatibility during transition
-export async function getWasmFromOPFS() {
-    // Try new IndexedDB cache first
-    return null; // Disable legacy OPFS cache - use getCompiledWasmModule instead
+// WASM Memory Snapshot Cache - stores initialized WASM heap for instant restore
+// This caches the WASM linear memory after first successful initialization
+// Restoring from snapshot skips the ~3-5s initialization overhead
+const MEMORY_SNAPSHOT_VERSION = 1;
+const MEMORY_SNAPSHOT_PATH = '/wasm-cache/memory-snapshot.bin';
+const MEMORY_SNAPSHOT_META_PATH = '/wasm-cache/memory-snapshot-meta.json';
+
+// Prevent concurrent save operations (race condition protection)
+let snapshotSaveInProgress = false;
+
+// Save WASM memory snapshot after successful initialization
+// Accepts either a WebAssembly.Memory object or a Uint8Array directly
+// The snapshot is written to persistent storage for instant restore on next load
+export async function saveWasmMemorySnapshot(memoryOrSnapshot, metadata = {}) {
+    // Prevent concurrent saves - only one save operation at a time
+    if (snapshotSaveInProgress) {
+        console.log('Memory snapshot save already in progress, skipping');
+        return false;
+    }
+    snapshotSaveInProgress = true;
+
+    try {
+        if (!await ensureWasmCacheMounted()) {
+            console.warn('Cannot save memory snapshot - filesystem not available');
+            return false;
+        }
+
+        // Accept either a memory object (with .buffer) or a Uint8Array directly
+        // This avoids unnecessary copies when we already have a Uint8Array
+        const snapshot = memoryOrSnapshot instanceof Uint8Array
+            ? memoryOrSnapshot
+            : new Uint8Array(memoryOrSnapshot.buffer);
+
+        const byteLength = snapshot.byteLength;
+
+        // Write snapshot binary - fileSystem handles any necessary copying internally
+        const fs = await getFileSystem();
+        if (!fs) return false;
+        await fs.writeBinary(MEMORY_SNAPSHOT_PATH, snapshot, { createParents: true, silent: true });
+
+        // Write metadata as JSON (small, no optimization needed)
+        const metaData = {
+            byteLength,
+            metadata,
+            timestamp: Date.now(),
+            version: MEMORY_SNAPSHOT_VERSION,
+        };
+        await fs.writeFile(MEMORY_SNAPSHOT_META_PATH, JSON.stringify(metaData), { silent: true });
+
+        console.log(`Saved WASM memory snapshot (${(byteLength / 1024 / 1024).toFixed(1)}MB)`);
+        return true;
+    } catch (e) {
+        console.warn('Failed to save memory snapshot:', e);
+        return false;
+    } finally {
+        snapshotSaveInProgress = false;
+    }
 }
 
-export async function saveWasmToOPFS(wasmBytes) {
-    // No longer used - we cache compiled modules instead of bytes
-    return false;
+// Restore WASM memory from cached snapshot
+// Returns null if no valid snapshot exists
+export async function getWasmMemorySnapshot() {
+    try {
+        const fs = await getFileSystem();
+        if (!fs || !await ensureWasmCacheMounted()) {
+            return null;
+        }
+
+        // Read metadata first (small file, fast) to validate before loading large snapshot
+        let metaJson;
+        try {
+            metaJson = await fs.readFile(MEMORY_SNAPSHOT_META_PATH);
+        } catch {
+            // Metadata doesn't exist - no snapshot available
+            return null;
+        }
+
+        const meta = JSON.parse(metaJson);
+
+        if (meta.version !== MEMORY_SNAPSHOT_VERSION) {
+            console.log('Memory snapshot version mismatch, clearing...');
+            // Clear asynchronously - don't block the return
+            clearWasmMemorySnapshot().catch(() => {});
+            return null;
+        }
+
+        // Read snapshot binary - this is the large (~500MB) operation
+        let snapshot;
+        try {
+            snapshot = await fs.readBinary(MEMORY_SNAPSHOT_PATH);
+        } catch {
+            // Snapshot file missing (possibly corrupted state) - clear metadata
+            clearWasmMemorySnapshot().catch(() => {});
+            return null;
+        }
+
+        // Validate snapshot size matches metadata
+        if (snapshot.byteLength !== meta.byteLength) {
+            console.warn('Memory snapshot size mismatch, clearing...');
+            clearWasmMemorySnapshot().catch(() => {});
+            return null;
+        }
+
+        console.log(`Loaded WASM memory snapshot (${(meta.byteLength / 1024 / 1024).toFixed(1)}MB)`);
+        return {
+            snapshot,
+            byteLength: meta.byteLength,
+            metadata: meta.metadata || {},
+        };
+    } catch (e) {
+        console.warn('Failed to get memory snapshot:', e);
+        return null;
+    }
 }
 
-export { CTAN_CACHE_VERSION, BUNDLE_CACHE_VERSION, WASM_CACHE_VERSION };
+// Clear memory snapshot (call when WASM version changes)
+export async function clearWasmMemorySnapshot() {
+    try {
+        const fs = await getFileSystem();
+        if (!fs || !await ensureWasmCacheMounted()) {
+            return false;
+        }
+
+        // Delete both files in parallel for efficiency
+        await Promise.all([
+            fs.deleteFile(MEMORY_SNAPSHOT_PATH, { silent: true }).catch(() => {}),
+            fs.deleteFile(MEMORY_SNAPSHOT_META_PATH, { silent: true }).catch(() => {}),
+        ]);
+
+        console.log('Cleared WASM memory snapshot');
+        return true;
+    } catch (e) {
+        console.warn('Failed to clear memory snapshot:', e);
+        return false;
+    }
+}
+
+export {
+    CTAN_CACHE_VERSION,
+    BUNDLE_CACHE_VERSION,
+    MANIFEST_CACHE_VERSION,
+    WASM_CACHE_VERSION,
+    MEMORY_SNAPSHOT_VERSION,
+};

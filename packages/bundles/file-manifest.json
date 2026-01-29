@@ -16299,981 +16299,6 @@
     "start": 9386777,
     "end": 9389591
   },
-  "/texlive/texmf-dist/fonts/cmap/dvipdfmx/EUC-UCS2": {
-    "bundle": "extra",
-    "start": 0,
-    "end": 101740
-  },
-  "/texlive/texmf-dist/fonts/cmap/dvipdfmx/README": {
-    "bundle": "extra",
-    "start": 101740,
-    "end": 102628
-  },
-  "/texlive/texmf-dist/fonts/cmap/dvipdfmx/UTF8-UCS2": {
-    "bundle": "extra",
-    "start": 102628,
-    "end": 128314
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabicdigits.map": {
-    "bundle": "extra",
-    "start": 128314,
-    "end": 128570
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabicdigits.tec": {
-    "bundle": "extra",
-    "start": 128570,
-    "end": 128751
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-farsi-fullvoc.map": {
-    "bundle": "extra",
-    "start": 128751,
-    "end": 145383
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-farsi-fullvoc.tec": {
-    "bundle": "extra",
-    "start": 145383,
-    "end": 150498
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-farsi-novoc.map": {
-    "bundle": "extra",
-    "start": 150498,
-    "end": 166105
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-farsi-novoc.tec": {
-    "bundle": "extra",
-    "start": 166105,
-    "end": 170291
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-farsi-trans-loc.map": {
-    "bundle": "extra",
-    "start": 170291,
-    "end": 176065
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-farsi-trans-loc.tec": {
-    "bundle": "extra",
-    "start": 176065,
-    "end": 177355
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-farsi-voc.map": {
-    "bundle": "extra",
-    "start": 177355,
-    "end": 193628
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-farsi-voc.tec": {
-    "bundle": "extra",
-    "start": 193628,
-    "end": 197862
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-fullvoc.map": {
-    "bundle": "extra",
-    "start": 197862,
-    "end": 214152
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-fullvoc.tec": {
-    "bundle": "extra",
-    "start": 214152,
-    "end": 218989
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-kashmiri-fullvoc.map": {
-    "bundle": "extra",
-    "start": 218989,
-    "end": 236204
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-kashmiri-fullvoc.tec": {
-    "bundle": "extra",
-    "start": 236204,
-    "end": 241503
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-kashmiri-novoc.map": {
-    "bundle": "extra",
-    "start": 241503,
-    "end": 257734
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-kashmiri-novoc.tec": {
-    "bundle": "extra",
-    "start": 257734,
-    "end": 262077
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-kashmiri-voc.map": {
-    "bundle": "extra",
-    "start": 262077,
-    "end": 278933
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-kashmiri-voc.tec": {
-    "bundle": "extra",
-    "start": 278933,
-    "end": 283305
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-kurdish.map": {
-    "bundle": "extra",
-    "start": 283305,
-    "end": 292404
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-kurdish.tec": {
-    "bundle": "extra",
-    "start": 292404,
-    "end": 294797
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-maghribi-fullvoc.map": {
-    "bundle": "extra",
-    "start": 294797,
-    "end": 311120
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-maghribi-fullvoc.tec": {
-    "bundle": "extra",
-    "start": 311120,
-    "end": 315965
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-maghribi-novoc.map": {
-    "bundle": "extra",
-    "start": 315965,
-    "end": 330744
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-maghribi-novoc.tec": {
-    "bundle": "extra",
-    "start": 330744,
-    "end": 334601
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-maghribi-voc.map": {
-    "bundle": "extra",
-    "start": 334601,
-    "end": 350098
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-maghribi-voc.tec": {
-    "bundle": "extra",
-    "start": 350098,
-    "end": 354052
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-malay-fullvoc.map": {
-    "bundle": "extra",
-    "start": 354052,
-    "end": 370320
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-malay-fullvoc.tec": {
-    "bundle": "extra",
-    "start": 370320,
-    "end": 375295
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-malay-novoc.map": {
-    "bundle": "extra",
-    "start": 375295,
-    "end": 390565
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-malay-novoc.tec": {
-    "bundle": "extra",
-    "start": 390565,
-    "end": 394665
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-malay-voc.map": {
-    "bundle": "extra",
-    "start": 394665,
-    "end": 410574
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-malay-voc.tec": {
-    "bundle": "extra",
-    "start": 410574,
-    "end": 414658
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-novoc.map": {
-    "bundle": "extra",
-    "start": 414658,
-    "end": 429404
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-novoc.tec": {
-    "bundle": "extra",
-    "start": 429404,
-    "end": 433256
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-pashto-fullvoc.map": {
-    "bundle": "extra",
-    "start": 433256,
-    "end": 449652
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-pashto-fullvoc.tec": {
-    "bundle": "extra",
-    "start": 449652,
-    "end": 454695
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-pashto-novoc.map": {
-    "bundle": "extra",
-    "start": 454695,
-    "end": 470107
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-pashto-novoc.tec": {
-    "bundle": "extra",
-    "start": 470107,
-    "end": 474239
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-pashto-trans-loc.map": {
-    "bundle": "extra",
-    "start": 474239,
-    "end": 479762
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-pashto-trans-loc.tec": {
-    "bundle": "extra",
-    "start": 479762,
-    "end": 481057
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-pashto-voc.map": {
-    "bundle": "extra",
-    "start": 481057,
-    "end": 497094
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-pashto-voc.tec": {
-    "bundle": "extra",
-    "start": 497094,
-    "end": 501244
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-sindhi-fullvoc.map": {
-    "bundle": "extra",
-    "start": 501244,
-    "end": 517084
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-sindhi-fullvoc.tec": {
-    "bundle": "extra",
-    "start": 517084,
-    "end": 521971
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-sindhi-novoc.map": {
-    "bundle": "extra",
-    "start": 521971,
-    "end": 536813
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-sindhi-novoc.tec": {
-    "bundle": "extra",
-    "start": 536813,
-    "end": 540733
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-sindhi-trans-loc.map": {
-    "bundle": "extra",
-    "start": 540733,
-    "end": 546519
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-sindhi-trans-loc.tec": {
-    "bundle": "extra",
-    "start": 546519,
-    "end": 547798
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-sindhi-voc.map": {
-    "bundle": "extra",
-    "start": 547798,
-    "end": 563279
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-sindhi-voc.tec": {
-    "bundle": "extra",
-    "start": 563279,
-    "end": 567219
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-trans-dmg.map": {
-    "bundle": "extra",
-    "start": 567219,
-    "end": 573611
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-trans-dmg.tec": {
-    "bundle": "extra",
-    "start": 573611,
-    "end": 577001
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-trans-loc.map": {
-    "bundle": "extra",
-    "start": 577001,
-    "end": 582866
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-trans-loc.tec": {
-    "bundle": "extra",
-    "start": 582866,
-    "end": 584619
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-turk-fullvoc.map": {
-    "bundle": "extra",
-    "start": 584619,
-    "end": 600836
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-turk-fullvoc.tec": {
-    "bundle": "extra",
-    "start": 600836,
-    "end": 605815
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-turk-novoc.map": {
-    "bundle": "extra",
-    "start": 605815,
-    "end": 621048
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-turk-novoc.tec": {
-    "bundle": "extra",
-    "start": 621048,
-    "end": 625100
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-turk-voc.map": {
-    "bundle": "extra",
-    "start": 625100,
-    "end": 640958
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-turk-voc.tec": {
-    "bundle": "extra",
-    "start": 640958,
-    "end": 645060
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-uighur.map": {
-    "bundle": "extra",
-    "start": 645060,
-    "end": 653566
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-uighur.tec": {
-    "bundle": "extra",
-    "start": 653566,
-    "end": 655822
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-urdu-fullvoc.map": {
-    "bundle": "extra",
-    "start": 655822,
-    "end": 672510
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-urdu-fullvoc.tec": {
-    "bundle": "extra",
-    "start": 672510,
-    "end": 677656
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-urdu-novoc.map": {
-    "bundle": "extra",
-    "start": 677656,
-    "end": 693360
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-urdu-novoc.tec": {
-    "bundle": "extra",
-    "start": 693360,
-    "end": 697547
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-urdu-trans-loc.map": {
-    "bundle": "extra",
-    "start": 697547,
-    "end": 703384
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-urdu-trans-loc.tec": {
-    "bundle": "extra",
-    "start": 703384,
-    "end": 704727
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-urdu-voc.map": {
-    "bundle": "extra",
-    "start": 704727,
-    "end": 721056
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-urdu-voc.tec": {
-    "bundle": "extra",
-    "start": 721056,
-    "end": 725307
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-voc.map": {
-    "bundle": "extra",
-    "start": 725307,
-    "end": 740771
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-voc.tec": {
-    "bundle": "extra",
-    "start": 740771,
-    "end": 744714
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/farsidigits.map": {
-    "bundle": "extra",
-    "start": 744714,
-    "end": 744969
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/farsidigits.tec": {
-    "bundle": "extra",
-    "start": 744969,
-    "end": 745152
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/fixlamalif.map": {
-    "bundle": "extra",
-    "start": 745152,
-    "end": 745907
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/fixlamalif.tec": {
-    "bundle": "extra",
-    "start": 745907,
-    "end": 746165
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/mirrorpunct.map": {
-    "bundle": "extra",
-    "start": 746165,
-    "end": 746415
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/mirrorpunct.tec": {
-    "bundle": "extra",
-    "start": 746415,
-    "end": 746598
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/base/qx-unicode.map": {
-    "bundle": "extra",
-    "start": 746598,
-    "end": 752567
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/base/qx-unicode.tec": {
-    "bundle": "extra",
-    "start": 752567,
-    "end": 754226
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/base/tex-text.map": {
-    "bundle": "extra",
-    "start": 754226,
-    "end": 755028
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/base/tex-text.tec": {
-    "bundle": "extra",
-    "start": 755028,
-    "end": 755426
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-bb.map": {
-    "bundle": "extra",
-    "start": 755426,
-    "end": 756476
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-bb.tec": {
-    "bundle": "extra",
-    "start": 756476,
-    "end": 756976
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-bbit.map": {
-    "bundle": "extra",
-    "start": 756976,
-    "end": 757126
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-bbit.tec": {
-    "bundle": "extra",
-    "start": 757126,
-    "end": 757292
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-bf.map": {
-    "bundle": "extra",
-    "start": 757292,
-    "end": 759512
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-bf.tec": {
-    "bundle": "extra",
-    "start": 759512,
-    "end": 760367
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-bfit.map": {
-    "bundle": "extra",
-    "start": 760367,
-    "end": 762407
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-bfit.tec": {
-    "bundle": "extra",
-    "start": 762407,
-    "end": 763178
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-frak.map": {
-    "bundle": "extra",
-    "start": 763178,
-    "end": 764138
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-frak.tec": {
-    "bundle": "extra",
-    "start": 764138,
-    "end": 764558
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-frakbf.map": {
-    "bundle": "extra",
-    "start": 764558,
-    "end": 765554
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-frakbf.tec": {
-    "bundle": "extra",
-    "start": 765554,
-    "end": 765973
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-it.map": {
-    "bundle": "extra",
-    "start": 765973,
-    "end": 768013
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-it.tec": {
-    "bundle": "extra",
-    "start": 768013,
-    "end": 768821
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-scr.map": {
-    "bundle": "extra",
-    "start": 768821,
-    "end": 769817
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-scr.tec": {
-    "bundle": "extra",
-    "start": 769817,
-    "end": 770307
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-scrbf.map": {
-    "bundle": "extra",
-    "start": 770307,
-    "end": 771303
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-scrbf.tec": {
-    "bundle": "extra",
-    "start": 771303,
-    "end": 771733
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-sf.map": {
-    "bundle": "extra",
-    "start": 771733,
-    "end": 772909
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-sf.tec": {
-    "bundle": "extra",
-    "start": 772909,
-    "end": 773394
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-sfbf.map": {
-    "bundle": "extra",
-    "start": 773394,
-    "end": 775614
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-sfbf.tec": {
-    "bundle": "extra",
-    "start": 775614,
-    "end": 776469
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-sfbfit.map": {
-    "bundle": "extra",
-    "start": 776469,
-    "end": 778509
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-sfbfit.tec": {
-    "bundle": "extra",
-    "start": 778509,
-    "end": 779274
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-sfit.map": {
-    "bundle": "extra",
-    "start": 779274,
-    "end": 780270
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-sfit.tec": {
-    "bundle": "extra",
-    "start": 780270,
-    "end": 780674
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-tt.map": {
-    "bundle": "extra",
-    "start": 780674,
-    "end": 781850
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-tt.tec": {
-    "bundle": "extra",
-    "start": 781850,
-    "end": 782330
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/brh-kan.map": {
-    "bundle": "extra",
-    "start": 782330,
-    "end": 787826
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/brh-kan.tec": {
-    "bundle": "extra",
-    "start": 787826,
-    "end": 789417
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-dvn.map": {
-    "bundle": "extra",
-    "start": 789417,
-    "end": 794773
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-dvn.tec": {
-    "bundle": "extra",
-    "start": 794773,
-    "end": 796486
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-iast.map": {
-    "bundle": "extra",
-    "start": 796486,
-    "end": 803660
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-iast.tec": {
-    "bundle": "extra",
-    "start": 803660,
-    "end": 805245
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-kan.map": {
-    "bundle": "extra",
-    "start": 805245,
-    "end": 813209
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-kan.tec": {
-    "bundle": "extra",
-    "start": 813209,
-    "end": 815766
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-sankan.map": {
-    "bundle": "extra",
-    "start": 815766,
-    "end": 824267
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-sankan.tec": {
-    "bundle": "extra",
-    "start": 824267,
-    "end": 826830
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-santel.map": {
-    "bundle": "extra",
-    "start": 826830,
-    "end": 835631
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-santel.tec": {
-    "bundle": "extra",
-    "start": 835631,
-    "end": 838386
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-sdvn.map": {
-    "bundle": "extra",
-    "start": 838386,
-    "end": 844254
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-sdvn.tec": {
-    "bundle": "extra",
-    "start": 844254,
-    "end": 846222
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-tamil.map": {
-    "bundle": "extra",
-    "start": 846222,
-    "end": 852169
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-tamil.tec": {
-    "bundle": "extra",
-    "start": 852169,
-    "end": 853685
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-tel.map": {
-    "bundle": "extra",
-    "start": 853685,
-    "end": 859518
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-tel.tec": {
-    "bundle": "extra",
-    "start": 859518,
-    "end": 861242
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-tibetan/loctib.map": {
-    "bundle": "extra",
-    "start": 861242,
-    "end": 867393
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-tibetan/loctib.tec": {
-    "bundle": "extra",
-    "start": 867393,
-    "end": 869868
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-tibetan/wylie.map": {
-    "bundle": "extra",
-    "start": 869868,
-    "end": 876013
-  },
-  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-tibetan/wylie.tec": {
-    "bundle": "extra",
-    "start": 876013,
-    "end": 878421
-  },
-  "/texlive/texmf-dist/makeindex/babel/bbglo.ist": {
-    "bundle": "extra",
-    "start": 878421,
-    "end": 879107
-  },
-  "/texlive/texmf-dist/makeindex/babel/bbind.ist": {
-    "bundle": "extra",
-    "start": 879107,
-    "end": 879798
-  },
-  "/texlive/texmf-dist/makeindex/base/din.ist": {
-    "bundle": "extra",
-    "start": 879798,
-    "end": 880872
-  },
-  "/texlive/texmf-dist/makeindex/base/icase.ist": {
-    "bundle": "extra",
-    "start": 880872,
-    "end": 881683
-  },
-  "/texlive/texmf-dist/makeindex/base/latex.ist": {
-    "bundle": "extra",
-    "start": 881683,
-    "end": 882047
-  },
-  "/texlive/texmf-dist/makeindex/base/math.ist": {
-    "bundle": "extra",
-    "start": 882047,
-    "end": 884572
-  },
-  "/texlive/texmf-dist/makeindex/base/mkind.ist": {
-    "bundle": "extra",
-    "start": 884572,
-    "end": 885159
-  },
-  "/texlive/texmf-dist/makeindex/base/puncts.ist": {
-    "bundle": "extra",
-    "start": 885159,
-    "end": 886368
-  },
-  "/texlive/texmf-dist/makeindex/base/tex.ist": {
-    "bundle": "extra",
-    "start": 886368,
-    "end": 886974
-  },
-  "/texlive/texmf-dist/makeindex/fixlatvian/lv.ist": {
-    "bundle": "extra",
-    "start": 886974,
-    "end": 887852
-  },
-  "/texlive/texmf-dist/makeindex/latex/gglo.ist": {
-    "bundle": "extra",
-    "start": 887852,
-    "end": 890618
-  },
-  "/texlive/texmf-dist/makeindex/latex/gind.ist": {
-    "bundle": "extra",
-    "start": 890618,
-    "end": 893360
-  },
-  "/texlive/texmf-dist/makeindex/plain/plaintex.ist": {
-    "bundle": "extra",
-    "start": 893360,
-    "end": 893414
-  },
-  "/texlive/texmf-dist/metafont/base/mf.mf": {
-    "bundle": "extra",
-    "start": 893414,
-    "end": 893446
-  },
-  "/texlive/texmf-dist/metafont/base/plain.mf": {
-    "bundle": "extra",
-    "start": 893446,
-    "end": 916335
-  },
-  "/texlive/texmf-dist/metafont/config/cmmf.ini": {
-    "bundle": "extra",
-    "start": 916335,
-    "end": 916428
-  },
-  "/texlive/texmf-dist/metafont/config/mf.ini": {
-    "bundle": "extra",
-    "start": 916428,
-    "end": 916507
-  },
-  "/texlive/texmf-dist/metafont/misc/mode2dpi.mf": {
-    "bundle": "extra",
-    "start": 916507,
-    "end": 916700
-  },
-  "/texlive/texmf-dist/metafont/misc/mode2dpixy.mf": {
-    "bundle": "extra",
-    "start": 916700,
-    "end": 916992
-  },
-  "/texlive/texmf-dist/metafont/misc/modename.mf": {
-    "bundle": "extra",
-    "start": 916992,
-    "end": 917152
-  },
-  "/texlive/texmf-dist/metafont/misc/ps2mfbas.mf": {
-    "bundle": "extra",
-    "start": 917152,
-    "end": 917938
-  },
-  "/texlive/texmf-dist/metapost/minim-mp/minim.mp": {
-    "bundle": "extra",
-    "start": 917938,
-    "end": 924357
-  },
-  "/texlive/texmf-dist/mft/base/README": {
-    "bundle": "extra",
-    "start": 924357,
-    "end": 924400
-  },
-  "/texlive/texmf-dist/mft/base/cmbase.mft": {
-    "bundle": "extra",
-    "start": 924400,
-    "end": 928165
-  },
-  "/texlive/texmf-dist/mft/base/mplain.mft": {
-    "bundle": "extra",
-    "start": 928165,
-    "end": 932247
-  },
-  "/texlive/texmf-dist/mft/base/plain.mft": {
-    "bundle": "extra",
-    "start": 932247,
-    "end": 933915
-  },
-  "/texlive/texmf-dist/mft/knuth-local/e.mft": {
-    "bundle": "extra",
-    "start": 933915,
-    "end": 936068
-  },
-  "/texlive/texmf-dist/texmf-var/fonts/conf/texlive-fontconfig.conf": {
-    "bundle": "extra",
-    "start": 936068,
-    "end": 936434
-  },
-  "/texlive/texmf-dist/texmf-var/fonts/map/dvipdfmx/updmap/kanjix.map": {
-    "bundle": "extra",
-    "start": 936434,
-    "end": 936835
-  },
-  "/texlive/texmf-dist/texmf-var/fonts/map/dvips/updmap/builtin35.map": {
-    "bundle": "extra",
-    "start": 936835,
-    "end": 952713
-  },
-  "/texlive/texmf-dist/texmf-var/fonts/map/dvips/updmap/download35.map": {
-    "bundle": "extra",
-    "start": 952713,
-    "end": 974064
-  },
-  "/texlive/texmf-dist/texmf-var/fonts/map/dvips/updmap/ps2pk.map": {
-    "bundle": "extra",
-    "start": 974064,
-    "end": 1050287
-  },
-  "/texlive/texmf-dist/texmf-var/fonts/map/dvips/updmap/psfonts.map": {
-    "bundle": "extra",
-    "start": 1050287,
-    "end": 1126515
-  },
-  "/texlive/texmf-dist/texmf-var/fonts/map/dvips/updmap/psfonts_pk.map": {
-    "bundle": "extra",
-    "start": 1126515,
-    "end": 1198809
-  },
-  "/texlive/texmf-dist/texmf-var/fonts/map/dvips/updmap/psfonts_t1.map": {
-    "bundle": "extra",
-    "start": 1198809,
-    "end": 1275037
-  },
-  "/texlive/texmf-dist/texmf-var/fonts/map/pdftex/updmap/pdftex.map": {
-    "bundle": "extra",
-    "start": 1275037,
-    "end": 1411660
-  },
-  "/texlive/texmf-dist/texmf-var/fonts/map/pdftex/updmap/pdftex_dl14.map": {
-    "bundle": "extra",
-    "start": 1328946,
-    "end": 1405176
-  },
-  "/texlive/texmf-dist/texmf-var/fonts/map/pdftex/updmap/pdftex_ndl14.map": {
-    "bundle": "extra",
-    "start": 1405176,
-    "end": 1479741
-  },
-  "/texlive/texmf-dist/texmf-var/tex/generic/config/language.dat": {
-    "bundle": "extra",
-    "start": 1479741,
-    "end": 1482550
-  },
-  "/texlive/texmf-dist/texmf-var/tex/generic/config/language.dat.lua": {
-    "bundle": "extra",
-    "start": 1482550,
-    "end": 1484115
-  },
-  "/texlive/texmf-dist/texmf-var/tex/generic/config/language.def": {
-    "bundle": "extra",
-    "start": 1484115,
-    "end": 1485595
-  },
-  "/texlive/texmf-dist/texmf-var/web2c/luahbtex/luahbtex.log": {
-    "bundle": "extra",
-    "start": 1485595,
-    "end": 1490543
-  },
-  "/texlive/texmf-dist/texmf-var/web2c/luahbtex/lualatex.log": {
-    "bundle": "extra",
-    "start": 1490543,
-    "end": 1536205
-  },
-  "/texlive/texmf-dist/texmf-var/web2c/pdftex/etex.log": {
-    "bundle": "extra",
-    "start": 1536205,
-    "end": 1540555
-  },
-  "/texlive/texmf-dist/texmf-var/web2c/pdftex/latex.log": {
-    "bundle": "extra",
-    "start": 1540555,
-    "end": 1605174
-  },
-  "/texlive/texmf-dist/texmf-var/web2c/pdftex/mptopdf.fmt": {
-    "bundle": "extra",
-    "start": 1605174,
-    "end": 1708476
-  },
-  "/texlive/texmf-dist/texmf-var/web2c/pdftex/mptopdf.log": {
-    "bundle": "extra",
-    "start": 1708476,
-    "end": 1712820
-  },
-  "/texlive/texmf-dist/texmf-var/web2c/pdftex/pdfetex.log": {
-    "bundle": "extra",
-    "start": 1712820,
-    "end": 1717580
-  },
-  "/texlive/texmf-dist/texmf-var/web2c/pdftex/pdflatex.log": {
-    "bundle": "extra",
-    "start": 1717580,
-    "end": 1782396
-  },
-  "/texlive/texmf-dist/texmf-var/web2c/pdftex/pdftex.log": {
-    "bundle": "extra",
-    "start": 1782396,
-    "end": 1787152
-  },
-  "/texlive/texmf-dist/texmf-var/web2c/updmap.log": {
-    "bundle": "extra",
-    "start": 1787152,
-    "end": 1807360
-  },
-  "/texlive/texmf-dist/texmf-var/web2c/xetex/xelatex-dev.fmt": {
-    "bundle": "extra",
-    "start": 1807360,
-    "end": 10524065
-  },
-  "/texlive/texmf-dist/texmf-var/web2c/xetex/xelatex-dev.log": {
-    "bundle": "extra",
-    "start": 10524065,
-    "end": 10569431
-  },
-  "/texlive/texmf-dist/texmf-var/web2c/xetex/xelatex.log": {
-    "bundle": "extra",
-    "start": 10569431,
-    "end": 10614624
-  },
-  "/texlive/texmf-dist/texmf-var/web2c/xetex/xetex.log": {
-    "bundle": "extra",
-    "start": 10614624,
-    "end": 10618681
-  },
-  "/texlive/texmf-dist/xdvi/XDvi": {
-    "bundle": "extra",
-    "start": 10618681,
-    "end": 10632593
-  },
-  "/texlive/texmf-dist/xdvi/pixmap/toolbar.xpm": {
-    "bundle": "extra",
-    "start": 10632593,
-    "end": 10640759
-  },
-  "/texlive/texmf-dist/xdvi/pixmap/toolbar2.xpm": {
-    "bundle": "extra",
-    "start": 10640759,
-    "end": 10648497
-  },
-  "/texlive/texmf.cnf": {
-    "bundle": "extra",
-    "start": 10648497,
-    "end": 10648497
-  },
-  "/texlive/texmfcnf.lua": {
-    "bundle": "extra",
-    "start": 10648497,
-    "end": 10648497
-  },
   "/texlive/texmf-dist/tex/lualatex/addliga/addliga.sty": {
     "bundle": "tex-lualatex",
     "start": 0,
@@ -38261,58 +37286,58 @@
   },
   "/texlive/texmf-dist/doc/latex/mdframed/ctan-lion.png": {
     "bundle": "boxes",
-    "start": 0,
-    "end": 81950
+    "start": 2107,
+    "end": 84057
   },
   "/texlive/texmf-dist/doc/latex/mdframed/mdframed-example-default.pdf": {
     "bundle": "boxes",
-    "start": 81950,
-    "end": 389254
+    "start": 84057,
+    "end": 391361
   },
   "/texlive/texmf-dist/doc/latex/mdframed/mdframed-example-default.tex": {
     "bundle": "boxes",
-    "start": 389254,
-    "end": 397284
+    "start": 391361,
+    "end": 399391
   },
   "/texlive/texmf-dist/doc/latex/mdframed/mdframed-example-pstricks.pdf": {
     "bundle": "boxes",
-    "start": 397284,
-    "end": 475629
+    "start": 399391,
+    "end": 477736
   },
   "/texlive/texmf-dist/doc/latex/mdframed/mdframed-example-pstricks.tex": {
     "bundle": "boxes",
-    "start": 475629,
-    "end": 480743
+    "start": 477736,
+    "end": 482850
   },
   "/texlive/texmf-dist/doc/latex/mdframed/mdframed-example-texsx.pdf": {
     "bundle": "boxes",
-    "start": 480743,
-    "end": 739236
+    "start": 482850,
+    "end": 741343
   },
   "/texlive/texmf-dist/doc/latex/mdframed/mdframed-example-texsx.tex": {
     "bundle": "boxes",
-    "start": 739236,
-    "end": 748225
+    "start": 741343,
+    "end": 750332
   },
   "/texlive/texmf-dist/doc/latex/mdframed/mdframed-example-tikz.pdf": {
     "bundle": "boxes",
-    "start": 748225,
-    "end": 1075804
+    "start": 750332,
+    "end": 1077911
   },
   "/texlive/texmf-dist/doc/latex/mdframed/mdframed-example-tikz.tex": {
     "bundle": "boxes",
-    "start": 1075804,
-    "end": 1083122
+    "start": 1077911,
+    "end": 1085229
   },
   "/texlive/texmf-dist/doc/latex/mdframed/mdframed.pdf": {
     "bundle": "boxes",
-    "start": 1083122,
-    "end": 1894428
+    "start": 1085229,
+    "end": 1896535
   },
   "/texlive/texmf-dist/doc/latex/mdframed/README.txt": {
     "bundle": "boxes",
-    "start": 1894428,
-    "end": 1896535
+    "start": 0,
+    "end": 2107
   },
   "/texlive/texmf-dist/doc/latex/tcolorbox/Basilica_5.png": {
     "bundle": "boxes",
@@ -38326,13 +37351,13 @@
   },
   "/texlive/texmf-dist/doc/latex/tcolorbox/lichtspiel.jpg": {
     "bundle": "boxes",
-    "start": 1999131,
-    "end": 2034355
+    "start": 2004272,
+    "end": 2039496
   },
   "/texlive/texmf-dist/doc/latex/tcolorbox/README.md": {
     "bundle": "boxes",
-    "start": 2034355,
-    "end": 2039496
+    "start": 1999131,
+    "end": 2004272
   },
   "/texlive/texmf-dist/doc/latex/tcolorbox/tcolorbox-example-poster.pdf": {
     "bundle": "boxes",
@@ -38622,92 +37647,92 @@
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcbdocumentation.code.tex": {
     "bundle": "boxes",
     "start": 9311624,
-    "end": 9346073
+    "end": 9344667
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcbexternal.code.tex": {
     "bundle": "boxes",
-    "start": 9346073,
-    "end": 9355178
+    "start": 9344667,
+    "end": 9353772
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcbfitting.code.tex": {
     "bundle": "boxes",
-    "start": 9355178,
-    "end": 9372342
+    "start": 9353772,
+    "end": 9370936
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcbhooks.code.tex": {
     "bundle": "boxes",
-    "start": 9372342,
-    "end": 9382715
+    "start": 9370936,
+    "end": 9381309
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcblistings.code.tex": {
     "bundle": "boxes",
-    "start": 9382715,
-    "end": 9386129
+    "start": 9381309,
+    "end": 9384723
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcblistingscore.code.tex": {
     "bundle": "boxes",
-    "start": 9386129,
-    "end": 9402598
+    "start": 9384723,
+    "end": 9400870
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcblistingsutf8.code.tex": {
     "bundle": "boxes",
-    "start": 9402598,
-    "end": 9404012
+    "start": 9400870,
+    "end": 9402284
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcbmagazine.code.tex": {
     "bundle": "boxes",
-    "start": 9404012,
-    "end": 9409648
+    "start": 9402284,
+    "end": 9407920
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcbminted.code.tex": {
     "bundle": "boxes",
-    "start": 9409648,
-    "end": 9413125
+    "start": 9407920,
+    "end": 9411372
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcbposter.code.tex": {
     "bundle": "boxes",
-    "start": 9413125,
-    "end": 9425584
+    "start": 9411372,
+    "end": 9423831
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcbprocessing.code.tex": {
     "bundle": "boxes",
-    "start": 9425584,
-    "end": 9427933
+    "start": 9423831,
+    "end": 9426180
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcbraster.code.tex": {
     "bundle": "boxes",
-    "start": 9427933,
-    "end": 9437277
+    "start": 9426180,
+    "end": 9435553
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcbskins.code.tex": {
     "bundle": "boxes",
-    "start": 9437277,
-    "end": 9522215
+    "start": 9435553,
+    "end": 9519152
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcbskinsjigsaw.code.tex": {
     "bundle": "boxes",
-    "start": 9522215,
-    "end": 9532301
+    "start": 9519152,
+    "end": 9529192
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcbtheorems.code.tex": {
     "bundle": "boxes",
-    "start": 9532301,
-    "end": 9545426
+    "start": 9529192,
+    "end": 9542317
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcbvignette.code.tex": {
     "bundle": "boxes",
-    "start": 9545426,
-    "end": 9558173
+    "start": 9542317,
+    "end": 9555064
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcbxparse.code.tex": {
     "bundle": "boxes",
-    "start": 9558173,
-    "end": 9559154
+    "start": 9555064,
+    "end": 9556045
   },
   "/texlive/texmf-dist/tex/latex/tcolorbox/tcolorbox.sty": {
     "bundle": "boxes",
-    "start": 9559154,
-    "end": 9668061
+    "start": 9556045,
+    "end": 9661868
   },
   "/texlive/texmf-dist/doc/latex/pdfpages/dummy-l.pdf": {
     "bundle": "pdf-tools",
@@ -43403,5 +42428,900 @@
     "bundle": "amsmath",
     "start": 535484,
     "end": 537526
+  },
+  "/texlive/texmf-dist/texmf-var/fonts/map/dvipdfmx/updmap/kanjix.map": {
+    "bundle": "extra-maps",
+    "start": 0,
+    "end": 401
+  },
+  "/texlive/texmf-dist/texmf-var/fonts/map/dvips/updmap/builtin35.map": {
+    "bundle": "extra-maps",
+    "start": 401,
+    "end": 16279
+  },
+  "/texlive/texmf-dist/texmf-var/fonts/map/dvips/updmap/download35.map": {
+    "bundle": "extra-maps",
+    "start": 16279,
+    "end": 37630
+  },
+  "/texlive/texmf-dist/texmf-var/fonts/map/dvips/updmap/ps2pk.map": {
+    "bundle": "extra-maps",
+    "start": 37630,
+    "end": 113853
+  },
+  "/texlive/texmf-dist/texmf-var/fonts/map/dvips/updmap/psfonts.map": {
+    "bundle": "extra-maps",
+    "start": 113853,
+    "end": 190081
+  },
+  "/texlive/texmf-dist/texmf-var/fonts/map/dvips/updmap/psfonts_pk.map": {
+    "bundle": "extra-maps",
+    "start": 190081,
+    "end": 262375
+  },
+  "/texlive/texmf-dist/texmf-var/fonts/map/dvips/updmap/psfonts_t1.map": {
+    "bundle": "extra-maps",
+    "start": 262375,
+    "end": 338603
+  },
+  "/texlive/texmf-dist/texmf-var/fonts/map/pdftex/updmap/pdftex.map": {
+    "bundle": "extra-maps",
+    "start": 338603,
+    "end": 475226
+  },
+  "/texlive/texmf-dist/texmf-var/fonts/map/pdftex/updmap/pdftex_dl14.map": {
+    "bundle": "extra-maps",
+    "start": 475226,
+    "end": 551456
+  },
+  "/texlive/texmf-dist/texmf-var/fonts/map/pdftex/updmap/pdftex_ndl14.map": {
+    "bundle": "extra-maps",
+    "start": 551456,
+    "end": 626021
+  },
+  "/texlive/texmf-dist/texmf-var/tex/generic/config/language.dat": {
+    "bundle": "extra-maps",
+    "start": 626021,
+    "end": 628830
+  },
+  "/texlive/texmf-dist/texmf-var/tex/generic/config/language.dat.lua": {
+    "bundle": "extra-maps",
+    "start": 628830,
+    "end": 630395
+  },
+  "/texlive/texmf-dist/texmf-var/tex/generic/config/language.def": {
+    "bundle": "extra-maps",
+    "start": 630395,
+    "end": 631875
+  },
+  "/texlive/texmf.cnf": {
+    "bundle": "extra-maps",
+    "start": 631875,
+    "end": 631875
+  },
+  "/texlive/texmfcnf.lua": {
+    "bundle": "extra-maps",
+    "start": 631875,
+    "end": 631875
+  },
+  "/texlive/texmf-dist/fonts/cmap/dvipdfmx/EUC-UCS2": {
+    "bundle": "extra-cjk",
+    "start": 0,
+    "end": 101740
+  },
+  "/texlive/texmf-dist/fonts/cmap/dvipdfmx/README": {
+    "bundle": "extra-cjk",
+    "start": 101740,
+    "end": 102628
+  },
+  "/texlive/texmf-dist/fonts/cmap/dvipdfmx/UTF8-UCS2": {
+    "bundle": "extra-cjk",
+    "start": 102628,
+    "end": 128314
+  },
+  "/texlive/texmf-dist/makeindex/babel/bbglo.ist": {
+    "bundle": "extra-misc",
+    "start": 0,
+    "end": 686
+  },
+  "/texlive/texmf-dist/makeindex/babel/bbind.ist": {
+    "bundle": "extra-misc",
+    "start": 686,
+    "end": 1377
+  },
+  "/texlive/texmf-dist/makeindex/base/din.ist": {
+    "bundle": "extra-misc",
+    "start": 1377,
+    "end": 2451
+  },
+  "/texlive/texmf-dist/makeindex/base/icase.ist": {
+    "bundle": "extra-misc",
+    "start": 2451,
+    "end": 3262
+  },
+  "/texlive/texmf-dist/makeindex/base/latex.ist": {
+    "bundle": "extra-misc",
+    "start": 3262,
+    "end": 3626
+  },
+  "/texlive/texmf-dist/makeindex/base/math.ist": {
+    "bundle": "extra-misc",
+    "start": 3626,
+    "end": 6151
+  },
+  "/texlive/texmf-dist/makeindex/base/mkind.ist": {
+    "bundle": "extra-misc",
+    "start": 6151,
+    "end": 6738
+  },
+  "/texlive/texmf-dist/makeindex/base/puncts.ist": {
+    "bundle": "extra-misc",
+    "start": 6738,
+    "end": 7947
+  },
+  "/texlive/texmf-dist/makeindex/base/tex.ist": {
+    "bundle": "extra-misc",
+    "start": 7947,
+    "end": 8553
+  },
+  "/texlive/texmf-dist/makeindex/fixlatvian/lv.ist": {
+    "bundle": "extra-misc",
+    "start": 8553,
+    "end": 9431
+  },
+  "/texlive/texmf-dist/makeindex/latex/gglo.ist": {
+    "bundle": "extra-misc",
+    "start": 9431,
+    "end": 12197
+  },
+  "/texlive/texmf-dist/makeindex/latex/gind.ist": {
+    "bundle": "extra-misc",
+    "start": 12197,
+    "end": 14939
+  },
+  "/texlive/texmf-dist/makeindex/plain/plaintex.ist": {
+    "bundle": "extra-misc",
+    "start": 14939,
+    "end": 14993
+  },
+  "/texlive/texmf-dist/metafont/base/mf.mf": {
+    "bundle": "extra-misc",
+    "start": 14993,
+    "end": 15025
+  },
+  "/texlive/texmf-dist/metafont/base/plain.mf": {
+    "bundle": "extra-misc",
+    "start": 15025,
+    "end": 37914
+  },
+  "/texlive/texmf-dist/metafont/config/cmmf.ini": {
+    "bundle": "extra-misc",
+    "start": 37914,
+    "end": 38007
+  },
+  "/texlive/texmf-dist/metafont/config/mf.ini": {
+    "bundle": "extra-misc",
+    "start": 38007,
+    "end": 38086
+  },
+  "/texlive/texmf-dist/metafont/misc/mode2dpi.mf": {
+    "bundle": "extra-misc",
+    "start": 38086,
+    "end": 38279
+  },
+  "/texlive/texmf-dist/metafont/misc/mode2dpixy.mf": {
+    "bundle": "extra-misc",
+    "start": 38279,
+    "end": 38571
+  },
+  "/texlive/texmf-dist/metafont/misc/modename.mf": {
+    "bundle": "extra-misc",
+    "start": 38571,
+    "end": 38731
+  },
+  "/texlive/texmf-dist/metafont/misc/ps2mfbas.mf": {
+    "bundle": "extra-misc",
+    "start": 38731,
+    "end": 39517
+  },
+  "/texlive/texmf-dist/metapost/minim-mp/minim.mp": {
+    "bundle": "extra-misc",
+    "start": 39517,
+    "end": 45936
+  },
+  "/texlive/texmf-dist/mft/base/README": {
+    "bundle": "extra-misc",
+    "start": 45936,
+    "end": 45979
+  },
+  "/texlive/texmf-dist/mft/base/cmbase.mft": {
+    "bundle": "extra-misc",
+    "start": 45979,
+    "end": 49744
+  },
+  "/texlive/texmf-dist/mft/base/mplain.mft": {
+    "bundle": "extra-misc",
+    "start": 49744,
+    "end": 53826
+  },
+  "/texlive/texmf-dist/mft/base/plain.mft": {
+    "bundle": "extra-misc",
+    "start": 53826,
+    "end": 55494
+  },
+  "/texlive/texmf-dist/mft/knuth-local/e.mft": {
+    "bundle": "extra-misc",
+    "start": 55494,
+    "end": 57647
+  },
+  "/texlive/texmf-dist/texmf-var/fonts/conf/texlive-fontconfig.conf": {
+    "bundle": "extra-misc",
+    "start": 57647,
+    "end": 58013
+  },
+  "/texlive/texmf-dist/texmf-var/web2c/pdftex/mptopdf.fmt": {
+    "bundle": "extra-misc",
+    "start": 58013,
+    "end": 161315
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabicdigits.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 0,
+    "end": 256
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabicdigits.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 256,
+    "end": 437
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-farsi-fullvoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 437,
+    "end": 17069
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-farsi-fullvoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 17069,
+    "end": 22184
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-farsi-novoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 22184,
+    "end": 37791
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-farsi-novoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 37791,
+    "end": 41977
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-farsi-trans-loc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 41977,
+    "end": 47751
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-farsi-trans-loc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 47751,
+    "end": 49041
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-farsi-voc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 49041,
+    "end": 65314
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-farsi-voc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 65314,
+    "end": 69548
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-fullvoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 69548,
+    "end": 85838
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-fullvoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 85838,
+    "end": 90675
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-kashmiri-fullvoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 90675,
+    "end": 107890
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-kashmiri-fullvoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 107890,
+    "end": 113189
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-kashmiri-novoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 113189,
+    "end": 129420
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-kashmiri-novoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 129420,
+    "end": 133763
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-kashmiri-voc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 133763,
+    "end": 150619
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-kashmiri-voc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 150619,
+    "end": 154991
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-kurdish.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 154991,
+    "end": 164090
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-kurdish.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 164090,
+    "end": 166483
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-maghribi-fullvoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 166483,
+    "end": 182806
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-maghribi-fullvoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 182806,
+    "end": 187651
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-maghribi-novoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 187651,
+    "end": 202430
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-maghribi-novoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 202430,
+    "end": 206287
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-maghribi-voc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 206287,
+    "end": 221784
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-maghribi-voc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 221784,
+    "end": 225738
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-malay-fullvoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 225738,
+    "end": 242006
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-malay-fullvoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 242006,
+    "end": 246981
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-malay-novoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 246981,
+    "end": 262251
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-malay-novoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 262251,
+    "end": 266351
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-malay-voc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 266351,
+    "end": 282260
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-malay-voc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 282260,
+    "end": 286344
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-novoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 286344,
+    "end": 301090
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-novoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 301090,
+    "end": 304942
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-pashto-fullvoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 304942,
+    "end": 321338
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-pashto-fullvoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 321338,
+    "end": 326381
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-pashto-novoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 326381,
+    "end": 341793
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-pashto-novoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 341793,
+    "end": 345925
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-pashto-trans-loc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 345925,
+    "end": 351448
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-pashto-trans-loc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 351448,
+    "end": 352743
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-pashto-voc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 352743,
+    "end": 368780
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-pashto-voc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 368780,
+    "end": 372930
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-sindhi-fullvoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 372930,
+    "end": 388770
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-sindhi-fullvoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 388770,
+    "end": 393657
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-sindhi-novoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 393657,
+    "end": 408499
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-sindhi-novoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 408499,
+    "end": 412419
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-sindhi-trans-loc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 412419,
+    "end": 418205
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-sindhi-trans-loc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 418205,
+    "end": 419484
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-sindhi-voc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 419484,
+    "end": 434965
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-sindhi-voc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 434965,
+    "end": 438905
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-trans-dmg.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 438905,
+    "end": 445297
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-trans-dmg.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 445297,
+    "end": 448687
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-trans-loc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 448687,
+    "end": 454552
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-trans-loc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 454552,
+    "end": 456305
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-turk-fullvoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 456305,
+    "end": 472522
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-turk-fullvoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 472522,
+    "end": 477501
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-turk-novoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 477501,
+    "end": 492734
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-turk-novoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 492734,
+    "end": 496786
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-turk-voc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 496786,
+    "end": 512644
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-turk-voc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 512644,
+    "end": 516746
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-uighur.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 516746,
+    "end": 525252
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-uighur.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 525252,
+    "end": 527508
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-urdu-fullvoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 527508,
+    "end": 544196
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-urdu-fullvoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 544196,
+    "end": 549342
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-urdu-novoc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 549342,
+    "end": 565046
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-urdu-novoc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 565046,
+    "end": 569233
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-urdu-trans-loc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 569233,
+    "end": 575070
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-urdu-trans-loc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 575070,
+    "end": 576413
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-urdu-voc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 576413,
+    "end": 592742
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-urdu-voc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 592742,
+    "end": 596993
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-voc.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 596993,
+    "end": 612457
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/arabtex-voc.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 612457,
+    "end": 616400
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/farsidigits.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 616400,
+    "end": 616655
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/farsidigits.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 616655,
+    "end": 616838
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/fixlamalif.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 616838,
+    "end": 617593
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/fixlamalif.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 617593,
+    "end": 617851
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/mirrorpunct.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 617851,
+    "end": 618101
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/arabxetex/mirrorpunct.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 618101,
+    "end": 618284
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/base/qx-unicode.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 618284,
+    "end": 624253
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/base/qx-unicode.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 624253,
+    "end": 625912
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/base/tex-text.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 625912,
+    "end": 626714
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/base/tex-text.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 626714,
+    "end": 627112
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-bb.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 627112,
+    "end": 628162
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-bb.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 628162,
+    "end": 628662
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-bbit.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 628662,
+    "end": 628812
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-bbit.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 628812,
+    "end": 628978
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-bf.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 628978,
+    "end": 631198
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-bf.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 631198,
+    "end": 632053
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-bfit.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 632053,
+    "end": 634093
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-bfit.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 634093,
+    "end": 634864
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-frak.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 634864,
+    "end": 635824
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-frak.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 635824,
+    "end": 636244
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-frakbf.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 636244,
+    "end": 637240
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-frakbf.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 637240,
+    "end": 637659
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-it.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 637659,
+    "end": 639699
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-it.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 639699,
+    "end": 640507
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-scr.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 640507,
+    "end": 641503
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-scr.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 641503,
+    "end": 641993
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-scrbf.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 641993,
+    "end": 642989
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-scrbf.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 642989,
+    "end": 643419
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-sf.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 643419,
+    "end": 644595
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-sf.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 644595,
+    "end": 645080
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-sfbf.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 645080,
+    "end": 647300
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-sfbf.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 647300,
+    "end": 648155
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-sfbfit.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 648155,
+    "end": 650195
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-sfbfit.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 650195,
+    "end": 650960
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-sfit.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 650960,
+    "end": 651956
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-sfit.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 651956,
+    "end": 652360
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-tt.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 652360,
+    "end": 653536
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/unimath-plain-xetex/unimath-tt.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 653536,
+    "end": 654016
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/brh-kan.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 654016,
+    "end": 659512
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/brh-kan.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 659512,
+    "end": 661103
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-dvn.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 661103,
+    "end": 666459
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-dvn.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 666459,
+    "end": 668172
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-iast.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 668172,
+    "end": 675346
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-iast.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 675346,
+    "end": 676931
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-kan.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 676931,
+    "end": 684895
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-kan.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 684895,
+    "end": 687452
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-sankan.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 687452,
+    "end": 695953
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-sankan.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 695953,
+    "end": 698516
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-santel.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 698516,
+    "end": 707317
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-santel.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 707317,
+    "end": 710072
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-sdvn.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 710072,
+    "end": 715940
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-sdvn.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 715940,
+    "end": 717908
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-tamil.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 717908,
+    "end": 723855
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-tamil.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 723855,
+    "end": 725371
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-tel.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 725371,
+    "end": 731204
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-itrans/itrans-tel.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 731204,
+    "end": 732928
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-tibetan/loctib.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 732928,
+    "end": 739079
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-tibetan/loctib.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 739079,
+    "end": 741554
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-tibetan/wylie.map": {
+    "bundle": "extra-xetex-lang",
+    "start": 741554,
+    "end": 747699
+  },
+  "/texlive/texmf-dist/fonts/misc/xetex/fontmapping/xetex-tibetan/wylie.tec": {
+    "bundle": "extra-xetex-lang",
+    "start": 747699,
+    "end": 750107
   }
 }

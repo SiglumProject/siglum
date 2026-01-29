@@ -1,7 +1,7 @@
 {
-  "name": "busytex-lazy",
+  "name": "@siglum/engine",
   "version": "0.1.0",
-  "description": "Browser-based LaTeX compilation with lazy loading and CTAN package resolution",
+  "description": "The fastest browser-based LaTeX compiler - TeX Live 2025 in WebAssembly with lazy loading and CTAN package resolution",
   "type": "module",
   "main": "src/index.js",
   "exports": {
@@ -12,20 +12,17 @@
     "./storage": "./src/storage.js"
   },
   "files": [
-    "src/",
-    "busytex.js",
-    "busytex.wasm",
-    "packages/bundles/"
+    "src/"
   ],
   "scripts": {
     "dev": "bun serve-local.ts",
+    "build:worker": "cp src/worker.js ../webtex/siglum-ui/app/public/worker.js && echo 'Copied worker.js to siglum-ui'",
     "api": "cd cloudflare && bunx wrangler@3.114.16 dev --port 8787 --remote",
-    "demo": "python3 -m http.server 8080",
     "proxy": "cd packages && bun run ctan-proxy.ts"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SiglumProject/busytex-lazy.git"
+    "url": "git+https://github.com/SiglumProject/siglum-engine.git"
   },
   "keywords": [
     "latex",
@@ -39,11 +36,16 @@
   "author": "Siglum Project",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/SiglumProject/busytex-lazy/issues"
+    "url": "https://github.com/SiglumProject/siglum-engine/issues"
   },
-  "homepage": "https://github.com/SiglumProject/busytex-lazy#readme",
+  "homepage": "https://github.com/SiglumProject/siglum-engine#readme",
   "dependencies": {
-    "jszip": "^3.10.1",
+    "@siglum/filesystem": "^0.2.1",
+    "blake3-wasm": "2.1.5",
     "xzwasm": "^0.1.2"
+  },
+  "devDependencies": {
+    "fflate": "^0.8.2",
+    "jszip": "^3.10.1"
   }
 }

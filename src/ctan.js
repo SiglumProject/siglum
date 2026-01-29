@@ -8,6 +8,10 @@ import {
     CTAN_CACHE_VERSION
 } from './storage.js';
 
+// Common LaTeX file extensions for file-to-package lookups
+// Used when package name doesn't match file name (e.g., algorithm.sty → algorithms package)
+const LATEX_FILE_EXTENSIONS = ['.sty', '.cls', '.def', '.clo', '.fd', '.cfg', '.tex'];
+
 // Lazy load xzwasm when needed (UMD module loaded via script tag)
 let XzReadableStream = null;
 let xzwasmUrl = './src/xzwasm.js'; // Default, can be overridden
@@ -92,15 +96,19 @@ function parseTar(tarData) {
     return files;
 }
 
-// Note: We now use TexLive 2023 for ALL packages for version compatibility
-// (CTAN has latest versions that may require newer LaTeX than our 2022-11-01)
+// Note: We use TexLive 2025 for ALL packages for version compatibility
 
 // Dynamic package name cache (populated by CTAN API lookups)
 const packageNameCache = new Map();
 
+// File-to-package index (loaded from server on first use)
+let fileToPackageIndex = null;
+let fileToPackageLoading = null;
+
 export class CTANFetcher {
     constructor(options = {}) {
-        this.proxyUrl = options.proxyUrl || 'http://localhost:8081';
+        this.proxyUrl = options.proxyUrl || 'http://localhost:8787';
+        this.bundlesUrl = options.bundlesUrl || this.proxyUrl + '/bundles';
         this.mountedFiles = new Set();
         this.fileCache = new Map(); // Memory cache for file contents
         this.fetchCount = 0;
@@ -112,6 +120,37 @@ export class CTANFetcher {
         }
     }
 
+    // Load file-to-package index (maps filename.sty → package-name)
+    async loadFileToPackageIndex() {
+        if (fileToPackageIndex) return fileToPackageIndex;
+        if (fileToPackageLoading) return fileToPackageLoading;
+
+        fileToPackageLoading = (async () => {
+            try {
+                const response = await fetch(`${this.bundlesUrl}/file-to-package.json`);
+                if (response.ok) {
+                    fileToPackageIndex = await response.json();
+                    this.onLog(`Loaded file-to-package index: ${Object.keys(fileToPackageIndex).length} entries`);
+                } else {
+                    this.onLog(`Failed to load file-to-package index: ${response.status}`);
+                    fileToPackageIndex = {};
+                }
+            } catch (e) {
+                this.onLog(`Error loading file-to-package index: ${e.message}`);
+                fileToPackageIndex = {};
+            }
+            return fileToPackageIndex;
+        })();
+
+        return fileToPackageLoading;
+    }
+
+    // Look up package name for a file (e.g., "lingmacros.sty" → "tree-dvips")
+    async lookupPackageForFile(fileName) {
+        const index = await this.loadFileToPackageIndex();
+        return index[fileName] || null;
+    }
+
     // Get all cached file contents (for passing to worker)
     // Only returns files that were loaded in this session (via fetchPackage)
     getCachedFiles() {
@@ -121,10 +160,17 @@ export class CTANFetcher {
     async loadPackageFromCache(packageName) {
         try {
             const meta = await getPackageMeta(packageName);
-            if (!meta) return null;
+            if (!meta) {
+                this.onLog(`[Cache] ${packageName}: no metadata found - will fetch fresh`);
+                return null;
+            }
 
             // Check cache version
-            if (meta.cacheVersion !== CTAN_CACHE_VERSION) return null;
+            if (meta.cacheVersion !== CTAN_CACHE_VERSION) {
+                this.onLog(`[Cache] ${packageName}: version mismatch (cached=${meta.cacheVersion}, current=${CTAN_CACHE_VERSION}) - will refetch`);
+                return null;
+            }
+            this.onLog(`[Cache] ${packageName}: loading from cache (v${meta.cacheVersion}, source=${meta.source || 'unknown'})`);
 
             // Check if it's a "not found" marker
             if (meta.notFound) return { notFound: true };
@@ -169,21 +215,43 @@ export class CTANFetcher {
         }
     }
 
-    async fetchPackage(packageName) {
-        // Check cache first
-        const cached = await this.loadPackageFromCache(packageName);
-        if (cached) {
-            if (cached.notFound) {
-                this.onLog(`Package ${packageName} marked as not found in cache`);
-                return null;
+    async fetchPackage(packageName, options = {}) {
+        const { tlYear } = options;
+        const yearLabel = tlYear ? ` (TL${tlYear})` : '';
+        this.onLog(`[FETCH] ${packageName}${yearLabel}: starting fetch`);
+
+        // Skip cache for version-specific requests - we want a different version
+        if (!tlYear) {
+            // Check cache first
+            const cached = await this.loadPackageFromCache(packageName);
+            if (cached) {
+                if (cached.notFound) {
+                    // Package itself doesn't exist - but maybe the file is in a different package
+                    // e.g., algorithm.sty is in the "algorithms" package
+                    // Try common extensions in order of likelihood
+                    const extensions = LATEX_FILE_EXTENSIONS;
+                    for (const ext of extensions) {
+                        const fileName = packageName + ext;
+                        const realPkg = await this.lookupPackageForFile(fileName);
+                        if (realPkg && realPkg !== packageName) {
+                            this.onLog(`[FETCH] ${packageName}: not found, but ${fileName} is in package "${realPkg}"`);
+                            return this.fetchPackage(realPkg, options);
+                        }
+                    }
+                    this.onLog(`[FETCH] ${packageName}: marked as not found in cache`);
+                    return null;
+                }
+                this.onLog(`[FETCH] ${packageName}: loaded from OPFS cache`);
+                return cached;
             }
-            this.onLog(`Package ${packageName} loaded from cache`);
-            return cached;
+        } else {
+            this.onLog(`[FETCH] ${packageName}: skipping cache for TL${tlYear} request`);
         }
 
+        this.onLog(`[FETCH] ${packageName}: not in cache, fetching from TexLive${yearLabel}...`);
         // Try TexLive first for version compatibility with our LaTeX 2022-11-01
         // (CTAN has latest versions that may require newer LaTeX)
-        return this.fetchTexLivePackage(packageName);
+        return this.fetchTexLivePackage(packageName, tlYear);
     }
 
     // Look up real TexLive archive name via CTAN API
@@ -208,8 +276,18 @@ export class CTANFetcher {
         }
     }
 
-    // Fetch from TexLive 2023 archive (for packages with version compatibility issues)
-    async fetchTexLivePackage(packageName) {
+    // Fetch from TexLive archive
+    // tlYear: optional year (2025, 2024, 2023) - if specified, goes directly to CTAN proxy
+    async fetchTexLivePackage(packageName, tlYear = null) {
+        const yearLabel = tlYear ? ` (TL${tlYear})` : '';
+
+        // If specific TL year requested, go directly to CTAN proxy (skip local archive)
+        // This is used for version fallback when kernel incompatibility is detected
+        if (tlYear) {
+            this.onLog(`[TEXLIVE] Fetching ${packageName} from TL${tlYear} via CTAN proxy...`);
+            return this.fetchCtanPackage(packageName, tlYear);
+        }
+
         // Check cache first (same cache as CTAN)
         const cached = await this.loadPackageFromCache(packageName);
         if (cached) {
@@ -221,68 +299,119 @@ export class CTANFetcher {
             return cached;
         }
 
-        // Try direct name first
-        this.onLog(`Fetching ${packageName} from TexLive 2023...`);
+        this.onLog(`[TEXLIVE] Fetching ${packageName} from TexLive 2025 via ${this.proxyUrl}...`);
+
+        let response = null;
         let texlivePkg = packageName;
 
+        // Try direct package name first
         try {
-            let response = await fetch(`${this.proxyUrl}/api/texlive/${texlivePkg}`);
+            const url = `${this.proxyUrl}/api/texlive/${packageName}`;
+            this.onLog(`[TEXLIVE] Trying URL: ${url}`);
+            response = await fetch(url);
+            this.onLog(`[TEXLIVE] Response status: ${response?.status}`);
+        } catch (e) {
+            this.onLog(`[TEXLIVE] Fetch error: ${e.message}`);
+            response = null;
+        }
 
-            // If not found, look up real package name via CTAN API
-            if (!response.ok) {
-                this.onLog(`Direct fetch failed, looking up package container...`);
-                const realName = await this.lookupTexLivePackageName(packageName);
-                if (realName !== packageName) {
-                    this.onLog(`${packageName} is in ${realName}, fetching...`);
-                    texlivePkg = realName;
-                    response = await fetch(`${this.proxyUrl}/api/texlive/${texlivePkg}`);
+        // If not found, look up in file-to-package index (try common extensions)
+        if (!response || !response.ok) {
+            const extensions = LATEX_FILE_EXTENSIONS;
+            for (const ext of extensions) {
+                const fileName = packageName + ext;
+                const realPkg = await this.lookupPackageForFile(fileName);
+                if (realPkg && realPkg !== packageName) {
+                    this.onLog(`${fileName} is in package "${realPkg}", fetching...`);
+                    texlivePkg = realPkg;
+                    try {
+                        response = await fetch(`${this.proxyUrl}/api/texlive/${texlivePkg}`);
+                        if (response?.ok) break;
+                    } catch (e) {
+                        response = null;
+                    }
                 }
             }
-            if (!response.ok) {
-                this.onLog(`TexLive package ${packageName} not found, trying CTAN...`);
-                // Fall back to CTAN for packages not in TexLive 2023
+        }
+
+        // If still not found, try CTAN API lookup as fallback
+        if (!response || !response.ok) {
+            this.onLog(`Looking up package container via CTAN API...`);
+            const realName = await this.lookupTexLivePackageName(packageName);
+            if (realName !== packageName) {
+                this.onLog(`${packageName} is in ${realName}, fetching...`);
+                texlivePkg = realName;
+                try {
+                    response = await fetch(`${this.proxyUrl}/api/texlive/${texlivePkg}`);
+                } catch (e) {
+                    response = null;
+                }
+            }
+        }
+
+        try {
+            if (!response || !response.ok) {
+                this.onLog(`[TEXLIVE] FAILED for ${packageName} (status=${response?.status}), falling back to CTAN...`);
+                // Fall back to CTAN for packages not in TexLive 2025
                 return this.fetchCtanPackage(packageName);
             }
+            this.onLog(`[TEXLIVE] SUCCESS for ${packageName}, extracting XZ archive...`);
 
             // Get XZ-compressed TAR
-            const xzData = await response.arrayBuffer();
-            this.onLog(`Downloaded ${(xzData.byteLength / 1024).toFixed(1)} KB, decompressing...`);
+            let xzData = await response.arrayBuffer();
+            const downloadedSize = xzData.byteLength;
+            this.onLog(`Downloaded ${(downloadedSize / 1024).toFixed(1)} KB, decompressing...`);
 
             // Load xzwasm and decompress XZ using streaming
+            // Use Blob.stream() instead of Response(arrayBuffer).body to avoid
+            // ArrayBuffer detachment issues when multiple decompressions run in parallel
             const XzStream = await loadXzwasm();
-            const xzStream = new XzStream(new Response(xzData).body);
+            const xzStream = new XzStream(new Blob([xzData]).stream());
+            xzData = null; // Allow GC of original buffer
+
             const reader = xzStream.getReader();
             const chunks = [];
+            let totalLen = 0;
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
                 // Must copy chunk - xzwasm may reuse its internal buffer
-                chunks.push(new Uint8Array(value));
+                const chunk = new Uint8Array(value);
+                chunks.push(chunk);
+                totalLen += chunk.length;
             }
 
-            // Concatenate chunks
-            const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
+            // Concatenate chunks into final TAR buffer
             this.onLog(`Decompressed ${chunks.length} chunks, total ${totalLen} bytes`);
             const tarData = new Uint8Array(totalLen);
             let pos = 0;
-            for (const chunk of chunks) {
-                tarData.set(chunk, pos);
-                pos += chunk.length;
+            for (let i = 0; i < chunks.length; i++) {
+                tarData.set(chunks[i], pos);
+                pos += chunks[i].length;
+                chunks[i] = null; // Allow GC of chunk after copying
             }
-
-            // Debug: log first 100 bytes as hex
-            const hex = Array.from(tarData.subarray(0, 100))
-                .map(b => b.toString(16).padStart(2, '0')).join(' ');
-            this.onLog(`First 100 bytes: ${hex}`);
 
             // Parse TAR
             const tarFiles = parseTar(tarData);
             this.onLog(`Extracted ${tarFiles.size} files from TAR (keys: ${[...tarFiles.keys()].slice(0,3).join(', ')}...)`);
 
+            // Log package version for debugging
+            for (const [tarPath, content] of tarFiles) {
+                if (tarPath.endsWith(`${packageName}.sty`)) {
+                    const text = new TextDecoder().decode(content.slice(0, 500));
+                    const versionMatch = text.match(/ProvidesPackage\{[^}]+\}\[([^\]]+)\]/);
+                    if (versionMatch) {
+                        this.onLog(`Package ${packageName} version: ${versionMatch[1]}`);
+                    }
+                    break;
+                }
+            }
+
             // Process files (similar to CTAN fetch)
             const texExtensions = ['.sty', '.cls', '.def', '.cfg', '.tex', '.fd', '.clo', '.ltx'];
             const fontExtensions = ['.pfb', '.pfm', '.afm', '.tfm', '.vf', '.map', '.enc'];
             const files = new Map();
+            const opfsWrites = [];
 
             for (const [tarPath, content] of tarFiles) {
                 // Skip docs and source
@@ -294,26 +423,32 @@ export class CTANFetcher {
 
                 if (texExtensions.includes(ext) || fontExtensions.includes(ext)) {
                     // Map to texlive path structure
+                    // Note: tar paths may or may not have leading slash
                     let targetPath;
-                    if (tarPath.includes('/texmf-dist/')) {
-                        const idx = tarPath.indexOf('/texmf-dist/');
-                        targetPath = '/texlive' + tarPath.substring(idx);
-                    } else if (tarPath.includes('/tex/')) {
-                        const idx = tarPath.indexOf('/tex/');
-                        targetPath = '/texlive/texmf-dist' + tarPath.substring(idx);
-                    } else if (tarPath.includes('/fonts/')) {
-                        const idx = tarPath.indexOf('/fonts/');
-                        targetPath = '/texlive/texmf-dist' + tarPath.substring(idx);
+                    if (tarPath.includes('/texmf-dist/') || tarPath.includes('texmf-dist/')) {
+                        const idx = tarPath.indexOf('texmf-dist/');
+                        targetPath = '/texlive/' + tarPath.substring(idx);
+                    } else if (tarPath.includes('/tex/') || tarPath.startsWith('tex/')) {
+                        // Handle both /tex/ and tex/ (no leading slash)
+                        const idx = tarPath.indexOf('tex/');
+                        targetPath = '/texlive/texmf-dist/' + tarPath.substring(idx);
+                    } else if (tarPath.includes('/fonts/') || tarPath.startsWith('fonts/')) {
+                        const idx = tarPath.indexOf('fonts/');
+                        targetPath = '/texlive/texmf-dist/' + tarPath.substring(idx);
                     } else {
                         targetPath = `/texlive/texmf-dist/tex/latex/${packageName}/${fileName}`;
                     }
 
-                    files.set(targetPath, new Uint8Array(content));
+                    const fileData = new Uint8Array(content);
+                    files.set(targetPath, fileData);
                     this.mountedFiles.add(targetPath);
-                    this.fileCache.set(targetPath, new Uint8Array(content));
-                    await writeToOPFS(targetPath, content);
+                    this.fileCache.set(targetPath, fileData);
+                    opfsWrites.push(writeToOPFS(targetPath, content));
                 }
             }
+
+            // Parallel OPFS writes
+            await Promise.all(opfsWrites);
 
             this.onLog(`Processed ${files.size} TeX/font files from ${packageName}`);
 
@@ -326,30 +461,75 @@ export class CTANFetcher {
                 return null;
             }
 
-            // Cache metadata
-            await savePackageMeta(packageName, {
-                name: packageName,
+            // Cache metadata under the requested package name
+            const cacheEntry = {
+                name: texlivePkg, // The actual package that provided the files
                 files: [...files.keys()],
                 dependencies: [],
                 cacheVersion: CTAN_CACHE_VERSION,
-                source: 'texlive-2023',
-            });
+                source: 'texlive-2025',
+            };
+            await savePackageMeta(packageName, cacheEntry);
+
+            // Also cache under the resolved name if different (avoids duplicate fetches)
+            if (texlivePkg !== packageName) {
+                await savePackageMeta(texlivePkg, cacheEntry);
+                this.onLog(`Cached under both "${packageName}" and "${texlivePkg}"`);
+            }
 
             this.fetchCount++;
             return { files, dependencies: [] };
         } catch (e) {
-            this.onLog(`TexLive fetch error: ${e.message}, trying CTAN...`);
+            this.onLog(`[TEXLIVE] EXTRACTION ERROR for ${packageName}: ${e.message}`);
+            this.onLog(`[TEXLIVE] Stack: ${e.stack?.split('\n').slice(0, 3).join(' | ')}`);
+            this.onLog(`[TEXLIVE] Falling back to CTAN (WARNING: may have older version)...`);
             return this.fetchCtanPackage(packageName);
         }
     }
 
     // Fetch from CTAN proxy (fallback when TexLive doesn't have the package)
-    async fetchCtanPackage(packageName) {
-        this.onLog(`Fetching ${packageName} from CTAN...`);
+    async fetchCtanPackage(packageName, tlYear = null) {
+        const yearSuffix = tlYear ? `?tlYear=${tlYear}` : '';
+        const yearLabel = tlYear ? ` (TL${tlYear})` : '';
+        this.onLog(`[CTAN-FALLBACK] Fetching ${packageName}${yearLabel} from CTAN proxy...`);
+
+        if (packageName === 'enumitem' && !tlYear) {
+            this.onLog(`[CTAN-FALLBACK] *** WARNING: enumitem from CTAN may be v3.10 which has known bugs! ***`);
+            this.onLog(`[CTAN-FALLBACK] *** TexLive 2025 should be used for enumitem v3.11 ***`);
+        }
+
+        let response = null;
+        let ctanPkg = packageName;
+
+        // Try direct package name first
         try {
-            const response = await fetch(`${this.proxyUrl}/api/fetch/${packageName}`);
-            if (!response.ok) {
-                this.onLog(`CTAN package ${packageName} not found (${response.status})`);
+            response = await fetch(`${this.proxyUrl}/api/fetch/${packageName}${yearSuffix}`);
+        } catch (e) {
+            response = null;
+        }
+
+        // If not found, look up in file-to-package index (try common extensions)
+        if (!response || !response.ok) {
+            const extensions = LATEX_FILE_EXTENSIONS;
+            for (const ext of extensions) {
+                const fileName = packageName + ext;
+                const realPkg = await this.lookupPackageForFile(fileName);
+                if (realPkg && realPkg !== packageName) {
+                    this.onLog(`${fileName} is in package "${realPkg}", fetching from CTAN${yearLabel}...`);
+                    ctanPkg = realPkg;
+                    try {
+                        response = await fetch(`${this.proxyUrl}/api/fetch/${ctanPkg}${yearSuffix}`);
+                        if (response?.ok) break;
+                    } catch (e) {
+                        response = null;
+                    }
+                }
+            }
+        }
+
+        try {
+            if (!response || !response.ok) {
+                this.onLog(`CTAN package ${packageName} not found (404)`);
                 await savePackageMeta(packageName, {
                     notFound: true,
                     cacheVersion: CTAN_CACHE_VERSION,
@@ -369,6 +549,7 @@ export class CTANFetcher {
 
             // Process and cache files
             const files = new Map();
+            const opfsWrites = [];
             for (const [path, info] of Object.entries(data.files)) {
                 let content;
                 if (info.encoding === 'base64') {
@@ -385,17 +566,27 @@ export class CTANFetcher {
                 files.set(path, content);
                 this.mountedFiles.add(path);
                 this.fileCache.set(path, content);
-                await writeToOPFS(path, content);
+                opfsWrites.push(writeToOPFS(path, content));
             }
 
-            // Cache metadata
-            await savePackageMeta(packageName, {
-                name: packageName,
+            // Parallel OPFS writes
+            await Promise.all(opfsWrites);
+
+            // Cache metadata under the requested package name
+            const cacheEntry = {
+                name: ctanPkg, // The actual package that provided the files
                 files: [...files.keys()],
                 dependencies: data.dependencies || [],
                 cacheVersion: CTAN_CACHE_VERSION,
                 source: 'ctan',
-            });
+            };
+            await savePackageMeta(packageName, cacheEntry);
+
+            // Also cache under the resolved name if different (avoids duplicate fetches)
+            if (ctanPkg !== packageName) {
+                await savePackageMeta(ctanPkg, cacheEntry);
+                this.onLog(`Cached under both "${packageName}" and "${ctanPkg}"`);
+            }
 
             this.fetchCount++;
             return {
@@ -432,6 +623,75 @@ export class CTANFetcher {
         return allFiles;
     }
 
+    /**
+     * Batch fetch multiple packages in parallel.
+     * Used for pre-fetching detected CTAN packages before compilation.
+     * @param {string[]} packageNames - Package names to fetch
+     * @param {Object} options
+     * @param {number} options.concurrency - Max parallel fetches (default: 1, see note below)
+     * @returns {Promise<{fetched: string[], failed: string[], skipped: string[]}>}
+     */
+    async batchFetchPackages(packageNames, options = {}) {
+        // Concurrency limited to 1 because xzwasm's WASM module has shared internal state
+        // that causes "detached ArrayBuffer" errors when multiple decompressions run in parallel.
+        // HTTP fetches are still fast, and decompression is CPU-bound anyway, so serialization
+        // doesn't significantly impact total time (~200ms for 10 packages).
+        const { concurrency = 1 } = options;
+
+        const fetched = [];
+        const failed = [];
+        const skipped = [];
+
+        // Deduplicate
+        const uniquePackages = [...new Set(packageNames)];
+        const toFetch = [];
+
+        // Check cache first
+        for (const pkgName of uniquePackages) {
+            const cached = await this.loadPackageFromCache(pkgName);
+            if (cached && cached.files && !cached.notFound) {
+                // Already cached and has files - populate memory cache
+                for (const [path, content] of cached.files) {
+                    this.fileCache.set(path, content);
+                }
+                skipped.push(pkgName);
+            } else {
+                toFetch.push(pkgName);
+            }
+        }
+
+        if (toFetch.length === 0) {
+            return { fetched, failed, skipped };
+        }
+
+        this.onLog(`[PRE-FETCH] Batch fetching ${toFetch.length} packages...`);
+
+        // Fetch in chunks with concurrency limit
+        for (let i = 0; i < toFetch.length; i += concurrency) {
+            const chunk = toFetch.slice(i, i + concurrency);
+            const results = await Promise.allSettled(
+                chunk.map(async (pkgName) => {
+                    const result = await this.fetchPackage(pkgName);
+                    return { pkgName, result };
+                })
+            );
+
+            for (const res of results) {
+                if (res.status === 'fulfilled' && res.value.result) {
+                    fetched.push(res.value.pkgName);
+                } else {
+                    const pkgName = res.status === 'fulfilled'
+                        ? res.value.pkgName
+                        : 'unknown';
+                    failed.push(pkgName);
+                }
+            }
+        }
+
+        this.onLog(`[PRE-FETCH] Done: ${fetched.length} fetched, ${failed.length} failed, ${skipped.length} cached`);
+        return { fetched, failed, skipped };
+    }
+
     getMountedFiles() {
         return [...this.mountedFiles];
     }
@@ -466,4 +726,20 @@ export function isValidPackageName(name) {
     const skipList = ['document', 'texput', 'null', 'undefined', 'NaN'];
     if (skipList.includes(name)) return false;
     return true;
+}
+
+// Force clear a specific package from cache
+export async function forceRefreshPackage(packageName) {
+    try {
+        await savePackageMeta(packageName, {
+            name: packageName,
+            notFound: false,
+            cacheVersion: 0,  // Force version mismatch on next load
+            files: [],
+            clearedAt: Date.now()
+        });
+        return true;
+    } catch (e) {
+        return false;
+    }
 }
