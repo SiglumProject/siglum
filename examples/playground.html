@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Siglum Engine Playground</title>
+    <script type="importmap">
+    {
+      "imports": {
+        "@siglum/filesystem": "/node_modules/@siglum/filesystem/dist/index.js"
+      }
+    }
+    </script>
+    <style>
+        :root { --text: #1d1d1f; --muted: #888; --bg: #f5f5f7; --border: #ddd; --accent: #07f; }
+        * { box-sizing: border-box; }
+        body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 40px 20px; color: var(--text); }
+        h1 { font-size: 28px; font-weight: 600; margin-bottom: 8px; }
+        p { color: var(--muted); margin-bottom: 24px; }
+        h3 { font-size: 12px; font-weight: 500; color: var(--muted); text-transform: uppercase; margin-bottom: 12px; }
+        a { color: var(--accent); }
+        .container { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; height: 55vh; min-height: 400px; margin-bottom: 16px; }
+        .container > div { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+        textarea { flex: 1; width: 100%; font-family: ui-monospace, monospace; font-size: 13px; padding: 16px; border: 1px solid var(--border); resize: none; }
+        textarea:focus { border-color: var(--accent); outline: none; }
+        .pdf-container { flex: 1; position: relative; background: var(--bg); }
+        #pdfViewer { width: 100%; height: 100%; border: none; }
+        .pdf-placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+        .pdf-placeholder.hidden { display: none; }
+        .controls { margin-bottom: 20px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+        button { padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer; background: var(--accent); color: #fff; border: none; }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        button.secondary { background: var(--bg); color: var(--text); }
+        select { padding: 8px 12px; font-size: 13px; border: 1px solid var(--border); background: #fff; }
+        label { font-size: 13px; display: flex; align-items: center; gap: 6px; }
+        input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+        #status { margin-top: 16px; padding: 16px; background: var(--bg); font-family: ui-monospace, monospace; font-size: 11px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
+        .stats { padding: 12px 16px; background: var(--bg); font-size: 12px; margin-bottom: 16px; color: var(--muted); }
+        .stats strong { color: var(--text); }
+        #time { font-size: 13px; color: var(--muted); }
+        h1 a { color: inherit; text-decoration: none; }
+        h1 a:hover { color: var(--accent); }
+        footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+        .badge { display: inline-block; font-size: 11px; padding: 2px 8px; margin-left: 8px; vertical-align: middle; background: var(--bg); color: var(--muted); }
+        .badge.cdn { background: #0a0; color: #fff; }
+        .badge.local { background: #07f; color: #fff; }
+        .files-section { margin-top: 16px; padding: 16px; background: var(--bg); }
+        .files-section h4 { margin: 0 0 12px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; }
+        .file-entry { display: flex; gap: 8px; margin-bottom: 8px; }
+        .file-entry input { flex: 0 0 150px; padding: 6px 10px; font-size: 12px; border: 1px solid var(--border); font-family: ui-monospace, monospace; }
+        .file-entry textarea { flex: 1; height: 60px; padding: 6px 10px; font-size: 12px; border: 1px solid var(--border); font-family: ui-monospace, monospace; resize: vertical; }
+        .file-entry button { flex: 0 0 auto; padding: 6px 10px; font-size: 11px; }
+    </style>
+</head>
+<body>
+    <h1><a href="https://github.com/SiglumProject">Siglum</a> Engine Playground <span class="badge" id="modeBadge">Local</span></h1>
+    <p>In-browser LaTeX compilation with on-demand package loading.</p>
+
+    <div class="stats" id="stats">
+        <strong>Bundles:</strong> <span id="bundleCount">0</span> |
+        <strong>Bytes downloaded:</strong> <span id="bytesDownloaded">0</span> KB |
+        <strong>Cache hits:</strong> <span id="cacheHits">0</span> |
+        <strong>CTAN fetches:</strong> <span id="ctanCount">0</span> |
+        <strong>Status:</strong> <span id="compilerStatus">Not initialized</span>
+    </div>
+
+    <div class="controls">
+        <button id="compileBtn" disabled>Compile</button>
+        <select id="engineSelect">
+            <option value="auto">Auto-detect engine</option>
+            <option value="xelatex">XeLaTeX (Unicode/fonts)</option>
+            <option value="pdflatex">pdfLaTeX (simple docs)</option>
+        </select>
+        <select id="exampleSelect">
+            <option value="">— Load Example —</option>
+            <option value="hello">Hello World</option>
+            <option value="math">Math (amsmath)</option>
+            <option value="custom-style">Custom Style File</option>
+            <option value="tikz">TikZ Diagram</option>
+        </select>
+        <select id="modeSelect">
+            <option value="local">Local Dev Server</option>
+            <option value="cdn">CDN (cdn.siglum.org)</option>
+        </select>
+        <label>
+            <input type="checkbox" id="enableVerbose">
+            Verbose
+        </label>
+        <button id="clearCacheBtn" class="secondary">Clear Cache</button>
+        <span id="time"></span>
+    </div>
+
+    <div class="container">
+        <div>
+            <h3>LaTeX Source</h3>
+            <textarea id="source">\documentclass{article}
+\usepackage{amsmath}
+
+\begin{document}
+
+Hello, world!
+
+$E = mc^2$
+
+\end{document}</textarea>
+        </div>
+        <div>
+            <h3>PDF Preview</h3>
+            <div class="pdf-container">
+                <div class="pdf-placeholder" id="pdfPlaceholder">Click Compile to generate PDF</div>
+                <iframe id="pdfViewer"></iframe>
+            </div>
+        </div>
+    </div>
+
+    <div class="files-section" id="filesSection">
+        <h4>Additional Files <button id="addFileBtn" class="secondary" style="margin-left: 12px; padding: 4px 8px;">+ Add File</button></h4>
+        <div id="filesList"></div>
+        <p style="font-size: 11px; color: var(--muted); margin: 8px 0 0 0;">
+            Add custom .sty, .cls, or data files. These are available to your document during compilation.
+        </p>
+    </div>
+
+    <div id="status">Ready. Click "Compile" to start.</div>
+
+    <script type="module">
+        import { SiglumCompiler, detectEngine, createBatchedLogger } from '/src/index.js';
+
+        // Example templates
+        const examples = {
+            hello: {
+                source: `\\documentclass{article}
+
+\\begin{document}
+
+Hello, world!
+
+\\end{document}`,
+                files: {}
+            },
+            math: {
+                source: `\\documentclass{article}
+\\usepackage{amsmath}
+
+\\begin{document}
+
+\\section{Famous Equations}
+
+Einstein's mass-energy equivalence:
+\\[ E = mc^2 \\]
+
+Euler's identity:
+\\[ e^{i\\pi} + 1 = 0 \\]
+
+The quadratic formula:
+\\[ x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a} \\]
+
+\\end{document}`,
+                files: {}
+            },
+            'custom-style': {
+                source: `\\documentclass{article}
+\\usepackage{mystyle}
+
+\\begin{document}
+
+\\section{Using Custom Styles}
+
+This document uses a \\highlight{custom style file} provided via additionalFiles.
+
+\\note{This note command is defined in mystyle.sty}
+
+\\begin{important}
+This is a custom environment with colored text.
+\\end{important}
+
+\\end{document}`,
+                files: {
+                    'mystyle.sty': `\\ProvidesPackage{mystyle}
+\\RequirePackage{iftex}
+\\ifpdftex
+  \\PassOptionsToPackage{pdftex}{xcolor}
+\\fi
+\\RequirePackage{xcolor}
+\\definecolor{primary}{RGB}{0, 119, 255}
+\\definecolor{accent}{RGB}{255, 87, 51}
+
+\\newcommand{\\highlight}[1]{\\textcolor{primary}{\\textbf{#1}}}
+\\newcommand{\\note}[1]{\\textcolor{accent}{\\textit{Note: #1}}}
+
+\\newenvironment{important}{%
+  \\begin{quote}\\color{primary}%
+}{%
+  \\end{quote}%
+}`
+                }
+            },
+            tikz: {
+                source: `\\documentclass{article}
+\\usepackage{tikz}
+
+\\begin{document}
+
+\\section{TikZ Example}
+
+\\begin{center}
+\\begin{tikzpicture}
+  \\draw[thick,->] (0,0) -- (4,0) node[right] {$x$};
+  \\draw[thick,->] (0,0) -- (0,3) node[above] {$y$};
+  \\draw[blue,thick] (0,0) -- (3,2);
+  \\draw[red,thick] (0,2) .. controls (1,0) and (2,3) .. (3,1);
+  \\fill[green] (1.5,1) circle (3pt);
+\\end{tikzpicture}
+\\end{center}
+
+\\end{document}`,
+                files: {}
+            }
+        };
+
+        let compiler = null;
+        let currentPdfUrl = null;
+        let currentMode = 'local';
+
+        const log = createBatchedLogger((messages) => {
+            const status = document.getElementById('status');
+            status.textContent += messages.join('\n') + '\n';
+            status.scrollTop = status.scrollHeight;
+        });
+
+        function updateStatus(text) {
+            document.getElementById('compilerStatus').textContent = text;
+        }
+
+        function updateStats() {
+            if (!compiler) return;
+            const stats = compiler.getStats();
+            document.getElementById('bundleCount').textContent = stats.bundles.bundlesCached;
+            document.getElementById('bytesDownloaded').textContent = (stats.bundles.bytesDownloaded / 1024).toFixed(0);
+            document.getElementById('cacheHits').textContent = stats.bundles.cacheHits;
+            document.getElementById('ctanCount').textContent = stats.ctan.fetchCount;
+        }
+
+        function getConfig(mode) {
+            if (mode === 'cdn') {
+                const CDN_BASE = 'https://cdn.siglum.org/tl2025';
+                return {
+                    bundlesUrl: CDN_BASE + '/bundles',
+                    wasmUrl: CDN_BASE + '/busytex.wasm',
+                    ctanProxyUrl: 'http://localhost:8787', // Still need local proxy for CTAN
+                };
+            } else {
+                const API_BASE = 'http://localhost:8787';
+                return {
+                    bundlesUrl: API_BASE + '/bundles',
+                    wasmUrl: API_BASE + '/wasm/busytex.wasm',
+                    ctanProxyUrl: API_BASE,
+                };
+            }
+        }
+
+        async function init(mode) {
+            currentMode = mode;
+            const badge = document.getElementById('modeBadge');
+            badge.textContent = mode === 'cdn' ? 'CDN' : 'Local';
+            badge.className = 'badge ' + (mode === 'cdn' ? 'cdn' : 'local');
+
+            document.getElementById('compileBtn').disabled = true;
+            document.getElementById('status').textContent = '';
+            log('Initializing compiler (' + mode + ' mode)...');
+            updateStatus('Initializing...');
+
+            const config = getConfig(mode);
+            log('Bundles: ' + config.bundlesUrl);
+            log('WASM: ' + config.wasmUrl);
+
+            if (compiler) {
+                compiler.terminate();
+            }
+
+            compiler = new SiglumCompiler({
+                bundlesUrl: config.bundlesUrl,
+                wasmUrl: config.wasmUrl,
+                ctanProxyUrl: config.ctanProxyUrl,
+                xzwasmUrl: 'http://localhost:8787/xzwasm.js',
+                verbose: document.getElementById('enableVerbose').checked,
+                eagerBundles: { pdflatex: ['cm-super'] },
+                onLog: log,
+                onProgress: (stage, detail) => updateStatus(`${stage}: ${detail || ''}`),
+            });
+
+            await compiler.init();
+            updateStatus('Ready');
+            document.getElementById('compileBtn').disabled = false;
+            log('Compiler ready!');
+            updateStats();
+        }
+
+        function getAdditionalFiles() {
+            const files = {};
+            document.querySelectorAll('.file-entry').forEach(entry => {
+                const name = entry.querySelector('.file-name').value.trim();
+                const content = entry.querySelector('.file-content').value;
+                if (name) {
+                    files[name] = content;
+                }
+            });
+            return files;
+        }
+
+        function setAdditionalFiles(files) {
+            const list = document.getElementById('filesList');
+            list.innerHTML = '';
+            for (const [name, content] of Object.entries(files)) {
+                addFileEntry(name, content);
+            }
+        }
+
+        function addFileEntry(name = '', content = '') {
+            const list = document.getElementById('filesList');
+            const entry = document.createElement('div');
+            entry.className = 'file-entry';
+            entry.innerHTML = `
+                <input type="text" class="file-name" placeholder="filename.sty" value="${name}">
+                <textarea class="file-content" placeholder="File content...">${content}</textarea>
+                <button class="secondary remove-file">×</button>
+            `;
+            entry.querySelector('.remove-file').onclick = () => entry.remove();
+            list.appendChild(entry);
+        }
+
+        async function compile() {
+            const source = document.getElementById('source').value;
+            const engineSelect = document.getElementById('engineSelect').value;
+            const engine = engineSelect === 'auto' ? detectEngine(source) : engineSelect;
+
+            compiler.verbose = document.getElementById('enableVerbose').checked;
+
+            document.getElementById('compileBtn').disabled = true;
+            document.getElementById('status').textContent = '';
+            log('Compiling with ' + engine + '...');
+
+            const startTime = performance.now();
+
+            try {
+                const additionalFiles = getAdditionalFiles();
+                if (Object.keys(additionalFiles).length > 0) {
+                    log('Additional files: ' + Object.keys(additionalFiles).join(', '));
+                }
+
+                const result = await compiler.compile(source, { engine, additionalFiles });
+
+                const elapsed = performance.now() - startTime;
+                document.getElementById('time').textContent = `${elapsed.toFixed(0)}ms`;
+
+                if (result.success) {
+                    log('Compilation successful!');
+                    if (result.cached) log('(from cache)');
+                    if (currentPdfUrl) URL.revokeObjectURL(currentPdfUrl);
+                    const pdfCopy = new Uint8Array(result.pdf);
+                    const blob = new Blob([pdfCopy], { type: 'application/pdf' });
+                    currentPdfUrl = URL.createObjectURL(blob);
+                    document.getElementById('pdfViewer').src = currentPdfUrl;
+                    document.getElementById('pdfPlaceholder').classList.add('hidden');
+                } else {
+                    log('Compilation failed: ' + (result.error || 'Unknown error'));
+                    if (result.log) {
+                        log('--- TeX Log ---');
+                        log(result.log);
+                    }
+                }
+            } catch (e) {
+                log('Error: ' + e.message);
+                console.error(e);
+            }
+
+            document.getElementById('compileBtn').disabled = false;
+            updateStatus('Ready');
+            updateStats();
+        }
+
+        async function clearCache() {
+            if (compiler) {
+                await compiler.clearCache();
+                log('Cache cleared');
+                updateStats();
+            }
+        }
+
+        // Event listeners
+        document.getElementById('compileBtn').addEventListener('click', () => {
+            compile().catch(e => { log('Compile error: ' + e.message); console.error(e); });
+        });
+
+        document.getElementById('clearCacheBtn').addEventListener('click', () => {
+            clearCache().catch(e => { log('Clear cache error: ' + e.message); console.error(e); });
+        });
+
+        document.getElementById('modeSelect').addEventListener('change', async (e) => {
+            // Clear cache when switching modes to experience fresh latency
+            if (compiler) {
+                log('Clearing cache for mode switch...');
+                await compiler.clearCache();
+            }
+            init(e.target.value).catch(e => { log('Init error: ' + e.message); console.error(e); });
+        });
+
+        document.getElementById('exampleSelect').addEventListener('change', (e) => {
+            const example = examples[e.target.value];
+            if (example) {
+                document.getElementById('source').value = example.source;
+                setAdditionalFiles(example.files);
+            }
+            e.target.value = ''; // Reset dropdown
+        });
+
+        document.getElementById('addFileBtn').addEventListener('click', () => addFileEntry());
+
+        // Keyboard shortcut: Cmd/Ctrl+Enter to compile
+        document.addEventListener('keydown', (e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                e.preventDefault();
+                if (!document.getElementById('compileBtn').disabled) {
+                    compile().catch(console.error);
+                }
+            }
+        });
+
+        // Initialize
+        init('local').catch(e => { log('Init error: ' + e.message); console.error(e); });
+    </script>
+
+    <footer>
+        Built on <a href="https://github.com/busytex/busytex">BusyTeX</a>. Press <kbd>Cmd+Enter</kbd> to compile.
+    </footer>
+</body>
+</html>

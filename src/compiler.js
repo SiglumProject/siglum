@@ -1,6 +1,47 @@
-// Main SiglumCompiler class - orchestrates compilation
+/**
+ * @module @siglum/engine/compiler
+ * Main SiglumCompiler class - orchestrates LaTeX compilation in the browser.
+ */
 
 import { BundleManager, detectEngine, extractPreamble, hashPreamble } from './bundles.js';
+
+/**
+ * @typedef {Object} SiglumCompilerOptions
+ * @property {string} [bundlesUrl] - URL to bundles directory
+ * @property {string} [wasmUrl] - URL to busytex.wasm
+ * @property {string} [jsUrl] - URL to busytex.js (derived from wasmUrl if not provided)
+ * @property {string|null} [workerUrl] - URL to worker.js or null for embedded worker
+ * @property {string} [ctanProxyUrl] - CTAN proxy URL
+ * @property {string} [xzwasmUrl] - XZ decompression WASM URL
+ * @property {(msg: string) => void} [onLog] - Logging callback
+ * @property {(stage: string, detail: string) => void} [onProgress] - Progress callback
+ * @property {boolean} [enableCtan] - Enable CTAN fetching (default: true if ctanProxyUrl provided)
+ * @property {boolean} [enableLazyFS] - Enable lazy filesystem (default: true)
+ * @property {boolean} [enableDocCache] - Enable document cache (default: true)
+ * @property {number} [maxRetries] - Max fetch retries per compile (default: 15)
+ * @property {boolean} [verbose] - Log TeX stdout (default: false)
+ * @property {string[]|Object<string, string[]>} [eagerBundles] - Bundles to load eagerly
+ */
+
+/**
+ * @typedef {Object} CompileOptions
+ * @property {string} [engine] - 'pdflatex', 'xelatex', or 'lualatex'
+ * @property {boolean} [useCache] - Use document cache
+ * @property {Object<string, string|Uint8Array>} [additionalFiles] - Additional files for compilation
+ */
+
+/**
+ * @typedef {Object} CompileResult
+ * @property {boolean} success - Whether compilation succeeded
+ * @property {Uint8Array} [pdf] - Compiled PDF bytes
+ * @property {boolean} [pdfIsShared] - True if PDF is in SharedArrayBuffer
+ * @property {Object|null} [syncTexData] - SyncTeX data for source mapping
+ * @property {Object} [stats] - Compilation statistics
+ * @property {string} [log] - TeX compilation log
+ * @property {string} [error] - Error message if failed
+ * @property {number} [exitCode] - TeX exit code if failed
+ * @property {boolean} [cached] - True if result was from cache
+ */
 import { CTANFetcher } from './ctan.js';
 
 // Module-level tracking to prevent multiple workers across all instances
@@ -34,12 +75,20 @@ async function ensureFmtCacheMount() {
     }
 }
 
+/**
+ * Browser-based LaTeX compiler using WebAssembly.
+ * Handles bundle loading, CTAN fetching, and compilation orchestration.
+ */
 export class SiglumCompiler {
+    /**
+     * @param {SiglumCompilerOptions} [options] - Compiler options
+     */
     constructor(options = {}) {
         this.bundlesUrl = options.bundlesUrl || 'packages/bundles';
         this.wasmUrl = options.wasmUrl || 'busytex.wasm';
+        this.jsUrl = options.jsUrl || null; // Derived from wasmUrl if not provided
         this.workerUrl = options.workerUrl || null; // Will use embedded worker if not provided
-        this.ctanProxyUrl = options.ctanProxyUrl || 'http://localhost:8787';
+        this.ctanProxyUrl = options.ctanProxyUrl || null;
         this.xzwasmUrl = options.xzwasmUrl || './src/xzwasm.js';
 
         this.bundleManager = new BundleManager({
@@ -64,7 +113,8 @@ export class SiglumCompiler {
         this.onProgress = options.onProgress || (() => {});
 
         // Options
-        this.enableCtan = options.enableCtan !== false;
+        // Enable CTAN if explicitly set, otherwise default to true only if ctanProxyUrl is provided
+        this.enableCtan = options.enableCtan ?? (this.ctanProxyUrl !== null);
         this.enableLazyFS = options.enableLazyFS !== false;
         this.enableDocCache = options.enableDocCache !== false;
         this.maxRetries = options.maxRetries ?? 15;  // Max CTAN/bundle fetch retries per compile
@@ -184,6 +234,10 @@ export class SiglumCompiler {
         return this.workerReady && this.wasmModule !== undefined;
     }
 
+    /**
+     * Initialize the compiler. Loads WASM, manifests, and prepares the worker.
+     * @returns {Promise<void>}
+     */
     async init() {
         this._log('Initializing Siglum compiler...');
 
@@ -285,9 +339,11 @@ export class SiglumCompiler {
         this.worker.onmessage = (e) => this._handleWorkerMessage(e);
         this.worker.onerror = (e) => this._handleWorkerError(e);
 
-        // Get absolute URL for busytex.js - derive from wasmUrl
+        // Get absolute URL for busytex.js - use jsUrl if provided, otherwise derive from wasmUrl
         const wasmUrlObj = new URL(this.wasmUrl, window.location.href);
-        const busytexJsUrl = new URL('busytex.js', wasmUrlObj.href).href;
+        const busytexJsUrl = this.jsUrl
+            ? new URL(this.jsUrl, window.location.href).href
+            : new URL('busytex.js', wasmUrlObj.href).href;
 
         // NOTE: Memory snapshots are DISABLED - pdfTeX's internal globals cause assertion
         // failures when restored. Fast recompiles come from format caching (.fmt files).
@@ -673,6 +729,12 @@ export class SiglumCompiler {
         }
     }
 
+    /**
+     * Compile LaTeX source to PDF.
+     * @param {string} source - LaTeX source code
+     * @param {CompileOptions} [options] - Compilation options
+     * @returns {Promise<CompileResult>} Compilation result with PDF or error
+     */
     async compile(source, options = {}) {
         // Wait for any pending format generation to complete before checking cache
         // This ensures the format is available in cache for the current compile
@@ -917,6 +979,12 @@ export class SiglumCompiler {
         });
     }
 
+    /**
+     * Pre-generate a format file for faster subsequent compilations.
+     * @param {string} source - LaTeX source with preamble to cache
+     * @param {{engine?: string}} [options] - Options
+     * @returns {Promise<Uint8Array|null>} Format data or null if not supported
+     */
     async generateFormat(source, options = {}) {
         const engine = options.engine || 'pdflatex';
 
@@ -1026,6 +1094,10 @@ export class SiglumCompiler {
         return this.formatGenerationPromise;
     }
 
+    /**
+     * Clear all caches (CTAN packages, mounted files).
+     * @returns {Promise<void>}
+     */
     async clearCache() {
         this._log('Clearing CTAN cache...');
         await clearCTANCache();
@@ -1033,6 +1105,10 @@ export class SiglumCompiler {
         this._log('Cache cleared');
     }
 
+    /**
+     * Get compiler statistics.
+     * @returns {{bundles: Object, ctan: Object}} Statistics from bundle manager and CTAN fetcher
+     */
     getStats() {
         return {
             bundles: this.bundleManager.getStats(),
@@ -1040,6 +1116,9 @@ export class SiglumCompiler {
         };
     }
 
+    /**
+     * Terminate the worker. Call unload() for full cleanup.
+     */
     terminate() {
         if (this.worker) {
             this.worker.terminate();
@@ -1070,12 +1149,16 @@ export class SiglumCompiler {
     }
 
     /**
-     * Check if compiler is currently loaded
+     * Check if compiler is currently loaded.
+     * @returns {boolean}
      */
     isLoaded() {
         return this.worker !== null;
     }
 }
 
-// Backwards-compatible alias
+/**
+ * Backwards-compatible alias for SiglumCompiler.
+ * @type {typeof SiglumCompiler}
+ */
 export const BusyTeXCompiler = SiglumCompiler;
