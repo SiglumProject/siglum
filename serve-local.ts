@@ -481,14 +481,18 @@ Bun.serve({
       }
     }
 
-    // Demo page (with SharedArrayBuffer headers)
-    if (path === '/' || path === '/demo.html') {
-      const bunFile = Bun.file('./demo.html');
+    // Examples directory (with SharedArrayBuffer headers)
+    if (path.startsWith('/examples/') || path === '/') {
+      const file = path === '/' ? 'playground.html' : path.slice(10);
+      const bunFile = Bun.file(`./examples/${file}`);
       if (await bunFile.exists()) {
+        const contentType = file.endsWith('.html') ? 'text/html'
+          : file.endsWith('.ts') ? 'text/typescript'
+          : 'text/plain';
         return new Response(bunFile, {
           headers: {
             ...corsHeaders,
-            'Content-Type': 'text/html',
+            'Content-Type': contentType,
             'Cross-Origin-Opener-Policy': 'same-origin',
             'Cross-Origin-Embedder-Policy': 'require-corp',
           },
@@ -511,6 +515,8 @@ Bun.serve({
 });
 
 console.log('Local dev server: http://localhost:8787');
+console.log('  /             -> ./examples/playground.html');
+console.log('  /examples/*   -> ./examples/');
 console.log('  /bundles/*    -> ./packages/bundles/');
 console.log('  /wasm/*       -> ./busytex/build/wasm/');
 console.log('  /src/*        -> ./src/');

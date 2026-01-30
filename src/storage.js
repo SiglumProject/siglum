@@ -1,4 +1,8 @@
-// Storage module - uses @siglum/filesystem for all file operations
+/**
+ * @module @siglum/engine/storage
+ * Storage utilities for caching bundles, manifests, compiled PDFs, and CTAN packages.
+ * Uses @siglum/filesystem for persistent file operations.
+ */
 
 import { fileSystem } from '@siglum/filesystem';
 
@@ -48,6 +52,11 @@ async function openIDBCache() {
     });
 }
 
+/**
+ * Get metadata for a cached CTAN package.
+ * @param {string} packageName - Package name
+ * @returns {Promise<Object|null>} Package metadata or null
+ */
 export async function getPackageMeta(packageName) {
     try {
         const db = await openIDBCache();
@@ -63,6 +72,12 @@ export async function getPackageMeta(packageName) {
     }
 }
 
+/**
+ * Save metadata for a CTAN package.
+ * @param {string} packageName - Package name
+ * @param {Object} meta - Package metadata
+ * @returns {Promise<boolean>} True if saved successfully
+ */
 export async function savePackageMeta(packageName, meta) {
     try {
         const db = await openIDBCache();
@@ -78,7 +93,10 @@ export async function savePackageMeta(packageName, meta) {
     }
 }
 
-// List all cached CTAN packages and their file paths
+/**
+ * List all cached CTAN packages and their metadata.
+ * @returns {Promise<Object[]>} Array of package metadata objects
+ */
 export async function listAllCachedPackages() {
     try {
         const db = await openIDBCache();
@@ -128,6 +146,11 @@ async function ensureFmtCacheMounted() {
 
 // Mount for texlive/CTAN cache
 let texliveMounted = false;
+
+/**
+ * Ensure the /texlive filesystem is mounted for CTAN package storage.
+ * @returns {Promise<boolean>} True if mounted successfully
+ */
 export async function ensureTexliveMounted() {
     if (texliveMounted) return true;
     const fs = await getFileSystem();
@@ -177,6 +200,11 @@ async function ensureBundleCacheMounted() {
     }
 }
 
+/**
+ * Get a bundle from the cache.
+ * @param {string} bundleName - Bundle name
+ * @returns {Promise<ArrayBuffer|null>} Bundle data or null if not cached
+ */
 export async function getBundleFromCache(bundleName) {
     try {
         const fs = await getFileSystem();
@@ -189,6 +217,12 @@ export async function getBundleFromCache(bundleName) {
     }
 }
 
+/**
+ * Save a bundle to the cache.
+ * @param {string} bundleName - Bundle name
+ * @param {ArrayBuffer|SharedArrayBuffer} data - Bundle data
+ * @returns {Promise<boolean>} True if saved successfully
+ */
 export async function saveBundleToCache(bundleName, data) {
     try {
         const fs = await getFileSystem();
@@ -210,7 +244,11 @@ export async function saveBundleToCache(bundleName, data) {
     }
 }
 
-// Manifest cache
+/**
+ * Get a manifest from the cache.
+ * @param {string} name - Manifest name (without .json extension)
+ * @returns {Promise<Object|null>} Parsed manifest or null
+ */
 export async function getManifestFromCache(name) {
     try {
         const fs = await getFileSystem();
@@ -223,6 +261,12 @@ export async function getManifestFromCache(name) {
     }
 }
 
+/**
+ * Save a manifest to the cache.
+ * @param {string} name - Manifest name (without .json extension)
+ * @param {Object} data - Manifest data
+ * @returns {Promise<boolean>} True if saved successfully
+ */
 export async function saveManifestToCache(name, data) {
     try {
         const fs = await getFileSystem();
@@ -235,6 +279,10 @@ export async function saveManifestToCache(name, data) {
     }
 }
 
+/**
+ * Get the cached manifest version number.
+ * @returns {Promise<number>} Version number (0 if not set)
+ */
 export async function getManifestVersion() {
     try {
         const fs = await getFileSystem();
@@ -247,6 +295,11 @@ export async function getManifestVersion() {
     }
 }
 
+/**
+ * Save the manifest version number.
+ * @param {number} version - Version number
+ * @returns {Promise<boolean>} True if saved successfully
+ */
 export async function saveManifestVersion(version) {
     try {
         const fs = await getFileSystem();
@@ -282,6 +335,11 @@ async function openAuxCacheDb() {
     });
 }
 
+/**
+ * Get cached aux files for a preamble hash.
+ * @param {string} preambleHash - Hash of the document preamble
+ * @returns {Promise<{hash: string, files: Object, timestamp: number}|null>} Cached entry or null
+ */
 export async function getAuxCache(preambleHash) {
     if (auxMemoryCache.has(preambleHash)) {
         return auxMemoryCache.get(preambleHash);
@@ -304,6 +362,12 @@ export async function getAuxCache(preambleHash) {
     }
 }
 
+/**
+ * Save aux files for a preamble hash.
+ * @param {string} preambleHash - Hash of the document preamble
+ * @param {Object} auxFiles - Aux files to cache
+ * @returns {Promise<void>}
+ */
 export async function saveAuxCache(preambleHash, auxFiles) {
     const entry = { hash: preambleHash, files: auxFiles, timestamp: Date.now() };
     auxMemoryCache.set(preambleHash, entry);
@@ -342,6 +406,12 @@ async function openDocCacheDb() {
 // Re-export hashDocument from centralized hash module (BLAKE3-WASM)
 export { hashDocument } from './hash.js';
 
+/**
+ * Get a cached compiled PDF.
+ * @param {string} docHash - Document content hash
+ * @param {string} engine - Engine used ('pdflatex', 'xelatex', 'lualatex')
+ * @returns {Promise<Uint8Array|null>} PDF data or null if not cached
+ */
 export async function getCachedPdf(docHash, engine) {
     const key = docHash + '_' + engine;
     if (docMemoryCache.has(key)) {
@@ -367,6 +437,13 @@ export async function getCachedPdf(docHash, engine) {
     }
 }
 
+/**
+ * Save a compiled PDF to the cache.
+ * @param {string} docHash - Document content hash
+ * @param {string} engine - Engine used ('pdflatex', 'xelatex', 'lualatex')
+ * @param {Uint8Array} pdfData - PDF data
+ * @returns {Promise<void>}
+ */
 export async function saveCachedPdf(docHash, engine, pdfData) {
     const key = docHash + '_' + engine;
     docMemoryCache.set(key, pdfData);
@@ -385,13 +462,19 @@ export async function saveCachedPdf(docHash, engine, pdfData) {
     } catch (e) {}
 }
 
-// Format cache - format files stored at /fmt-cache/{fmtKey}.fmt
-
+/**
+ * Get the path for a format file.
+ * @param {string} fmtKey - Format key
+ * @returns {string} Path to format file
+ */
 export function getFmtPath(fmtKey) {
     return `fmt-cache/${fmtKey}.fmt`;
 }
 
-// Clear all CTAN cache
+/**
+ * Clear all cached CTAN package metadata.
+ * @returns {Promise<boolean>} True if cleared successfully
+ */
 export async function clearCTANCache() {
     try {
         const db = await openIDBCache();
@@ -432,8 +515,10 @@ async function openWasmCacheDb() {
     });
 }
 
-// Get cached WASM bytes from IndexedDB and compile to module
-// We cache bytes (not Module) because WebAssembly.Module can't be serialized to IndexedDB in Chrome/Safari
+/**
+ * Get cached WASM bytes and compile to WebAssembly.Module.
+ * @returns {Promise<WebAssembly.Module|null>} Compiled module or null
+ */
 export async function getCompiledWasmModule() {
     try {
         const db = await openWasmCacheDb();
@@ -462,7 +547,11 @@ export async function getCompiledWasmModule() {
     }
 }
 
-// Save WASM bytes to IndexedDB (not Module - Module can't be serialized)
+/**
+ * Save WASM bytes to IndexedDB for future compilation.
+ * @param {Uint8Array} bytes - WASM bytes
+ * @returns {Promise<boolean>} True if saved successfully
+ */
 export async function saveWasmBytes(bytes) {
     try {
         const db = await openWasmCacheDb();
@@ -488,9 +577,12 @@ const MEMORY_SNAPSHOT_META_PATH = '/wasm-cache/memory-snapshot-meta.json';
 // Prevent concurrent save operations (race condition protection)
 let snapshotSaveInProgress = false;
 
-// Save WASM memory snapshot after successful initialization
-// Accepts either a WebAssembly.Memory object or a Uint8Array directly
-// The snapshot is written to persistent storage for instant restore on next load
+/**
+ * Save WASM memory snapshot for instant restore on next load.
+ * @param {WebAssembly.Memory|Uint8Array} memoryOrSnapshot - Memory object or snapshot bytes
+ * @param {Object} [metadata] - Optional metadata to save with snapshot
+ * @returns {Promise<boolean>} True if saved successfully
+ */
 export async function saveWasmMemorySnapshot(memoryOrSnapshot, metadata = {}) {
     // Prevent concurrent saves - only one save operation at a time
     if (snapshotSaveInProgress) {
@@ -537,7 +629,14 @@ export async function saveWasmMemorySnapshot(memoryOrSnapshot, metadata = {}) {
     }
 }
 
-export {
-    CTAN_CACHE_VERSION,
-    MANIFEST_CACHE_VERSION,
-};
+/**
+ * Current CTAN cache version. Bump to invalidate cached packages.
+ * @type {number}
+ */
+export { CTAN_CACHE_VERSION };
+
+/**
+ * Current manifest cache version. Bump to invalidate cached manifests.
+ * @type {number}
+ */
+export { MANIFEST_CACHE_VERSION };

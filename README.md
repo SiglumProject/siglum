@@ -1,45 +1,46 @@
-# Siglum Engine
+# Siglum
 
 A browser-based LaTeX compiler. TeX Live 2025 running in WebAssembly, with lazy bundle loading and on-demand package fetching.
 
 On initialization, the engine downloads:
-- **WASM binary** (~29MB):  the TeX engine
+- **WASM binary** (~29MB): the TeX engine
 - **Core bundles** (~16MB for pdfLaTeX): format files, fonts, base packages
 
-Missing packages are fetched from the TexLive archvie and CTAN automatically during compilation. Everything is cached in the browser (OPFS/IndexedDB) for offline use.
+Common packages (amsmath, tikz, biblatex, etc.) are pre-bundled for fast loading. Less common packages are fetched from TexLive/CTAN automatically during compilation. Everything is cached in the browser for offline use.
 
-## Quick Start
+The full bundle is ~195MB to deploy, but clients only download what their documents need.
+
+**Guides:**
+- [Examples & Playground Tutorial](examples/README.md) — Build a LaTeX editor UI
+- [CTAN Proxy Guide](docs/CTAN_PROXY.md) — Self-host the package proxy for production
+
+## Quick Start (Local Demo)
+
+Clone the repo, download the WASM engine and pre-built bundles from [cdn.siglum.org](https://cdn.siglum.org) (or [GitHub Releases](https://github.com/SiglumProject/siglum-engine/releases)), then start the dev server.
 
 ```bash
 git clone git@github.com:SiglumProject/siglum-engine.git
 cd siglum-engine
 bun install
 
-# Download WASM files
+# Download WASM and bundles
 mkdir -p busytex/build/wasm
-curl -L -o busytex/build/wasm/busytex.wasm <release-url>/busytex.wasm
-curl -L -o busytex/build/wasm/busytex.js <release-url>/busytex.js
-
-# Download bundle files
-curl -L -o bundles.tar.gz <release-url>/bundles.tar.gz
-tar -xzf bundles.tar.gz -C packages/
-rm bundles.tar.gz
+curl -Lo busytex/build/wasm/busytex.wasm https://cdn.siglum.org/tl2025/busytex.wasm
+curl -Lo busytex/build/wasm/busytex.js https://cdn.siglum.org/tl2025/busytex.js
+curl -LO https://cdn.siglum.org/tl2025/siglum-bundles-v0.1.0.tar.gz
+tar -xzf siglum-bundles-v0.1.0.tar.gz -C packages/
 
 # Start dev server
 bun serve-local.ts
 ```
 
-Open http://localhost:8787 to try the demo.
+Open http://localhost:8787 to try the playground.
 
-The dev server caches packages in memory. For disk persistence across restarts, run the CTAN proxy in a separate terminal:
+For disk-persistent package caching, run the CTAN proxy in a separate terminal:
 
 ```bash
 bun packages/ctan-proxy.ts
 ```
-
-The dev server automatically uses it when available.
-
-Replace `<release-url>` with the URL from [GitHub Releases](https://github.com/SiglumProject/siglum-engine/releases).
 
 ## Installation
 
@@ -47,14 +48,38 @@ Replace `<release-url>` with the URL from [GitHub Releases](https://github.com/S
 npm install @siglum/engine
 ```
 
-Download WASM and bundle files from [GitHub Releases](https://github.com/SiglumProject/siglum-engine/releases) and place them in your public directory:
+### Download Runtime Assets
+
+Download WASM and bundles from [cdn.siglum.org](https://cdn.siglum.org) or [GitHub Releases](https://github.com/SiglumProject/siglum-engine/releases/tag/v0.1.0):
 
 ```bash
-# Download and extract to your public directory
-curl -L -o wasm.tar.gz <release-url>/wasm.tar.gz
-curl -L -o bundles.tar.gz <release-url>/bundles.tar.gz
-tar -xzf wasm.tar.gz -C public/
-tar -xzf bundles.tar.gz -C public/
+curl -LO https://cdn.siglum.org/tl2025/busytex.wasm
+curl -LO https://cdn.siglum.org/tl2025/busytex.js
+curl -LO https://cdn.siglum.org/tl2025/siglum-bundles-v0.1.0.tar.gz
+
+# Extract to your public directory
+tar -xzf siglum-bundles-v0.1.0.tar.gz -C public/
+mv busytex.wasm busytex.js public/
+```
+
+Then configure:
+
+```javascript
+import { SiglumCompiler } from '@siglum/engine';
+
+const compiler = new SiglumCompiler({
+    bundlesUrl: '/bundles',
+    wasmUrl: '/busytex.wasm',
+});
+```
+
+Or use the CDN directly (no self-hosting required):
+
+```javascript
+const compiler = new SiglumCompiler({
+    bundlesUrl: 'https://cdn.siglum.org/tl2025/bundles',
+    wasmUrl: 'https://cdn.siglum.org/tl2025/busytex.wasm',
+});
 ```
 
 ## Usage
@@ -91,11 +116,12 @@ const compiler = new SiglumCompiler({
     // URLs
     bundlesUrl: '/bundles',           // URL to bundle files
     wasmUrl: '/wasm/busytex.wasm',    // URL to WASM binary
-    ctanProxyUrl: null,               // CTAN proxy for missing packages (optional)
+    jsUrl: null,                      // URL to busytex.js (derived from wasmUrl if null)
+    ctanProxyUrl: null,               // CTAN proxy URL (enables CTAN fetching when set)
     workerUrl: null,                  // Custom worker URL (uses embedded worker if null)
 
     // Feature flags
-    enableCtan: true,                 // Fetch missing packages from CTAN
+    enableCtan: false,                // Auto-enabled when ctanProxyUrl is set
     enableLazyFS: true,               // Load files on-demand (faster startup)
     enableDocCache: true,             // Cache compiled documents by preamble hash
 
@@ -234,14 +260,15 @@ Use `engine: 'auto'` to auto-detect based on document content.
 
 ## Hosting / Production
 
-To self-host, you need:
+Download assets from [cdn.siglum.org](https://cdn.siglum.org) or [GitHub Releases](https://github.com/SiglumProject/siglum-engine/releases/tag/v0.1.0):
 
-1. **Static assets** (WASM + bundles) served with COOP/COEP headers
-2. **CTAN proxy** for on-demand package fetching
+| Asset | Size | Description |
+|-------|------|-------------|
+| `busytex.wasm` | 29 MB | WebAssembly TeX engine |
+| `busytex.js` | 292 KB | Emscripten glue code |
+| `siglum-bundles-v0.1.0.tar.gz` | ~195 MB | LaTeX packages & fonts |
 
-### Static Assets
-
-Serve the release assets with these headers (required for SharedArrayBuffer):
+Serve with these headers (required for SharedArrayBuffer):
 
 ```
 Cross-Origin-Opener-Policy: same-origin
@@ -250,42 +277,31 @@ Access-Control-Allow-Origin: *
 Cross-Origin-Resource-Policy: cross-origin
 ```
 
-Expected structure:
+Expected structure after extracting:
 
 ```
 your-server.com/
-├── wasm/
-│   ├── busytex.wasm
-│   └── busytex.js
+├── busytex.wasm
+├── busytex.js
 └── bundles/
     ├── bundles.json
     ├── file-manifest.json
-    ├── core.data.gz
-    ├── fmt-pdflatex.data.gz
-    └── ...
+    ├── file-to-package.json
+    ├── package-deps.json
+    └── *.data.gz (54 bundle files)
 ```
 
 ### CTAN Proxy
 
-The CTAN proxy fetches missing LaTeX packages on-demand and caches them to disk:
+The CTAN proxy fetches missing LaTeX packages on-demand:
 
 ```bash
 bun packages/ctan-proxy.ts
 ```
 
-Packages are cached permanently, CTAN is only contacted once per package. The proxy tries TexLive archives first, then falls back to CTAN mirrors.
+Packages are cached permanently. The proxy tries TexLive 2025 archives first, then falls back to CTAN mirrors.
 
 For configuration and deployment options, see **[docs/CTAN_PROXY.md](docs/CTAN_PROXY.md)**.
-
-### Configuration
-
-```javascript
-const compiler = new SiglumCompiler({
-    bundlesUrl: 'https://your-server.com/bundles',
-    wasmUrl: 'https://your-server.com/wasm/busytex.wasm',
-    ctanProxyUrl: 'https://your-ctan-proxy.com',  // Your CTAN proxy URL
-});
-```
 
 ## Browser Requirements
 

@@ -1,4 +1,7 @@
-// CTAN package fetching module
+/**
+ * @module @siglum/engine/ctan
+ * CTAN package fetching and caching.
+ */
 
 import { fileSystem } from '@siglum/filesystem';
 import {
@@ -105,7 +108,28 @@ const packageNameCache = new Map();
 let fileToPackageIndex = null;
 let fileToPackageLoading = null;
 
+/**
+ * @typedef {Object} CTANFetcherOptions
+ * @property {string} [proxyUrl] - CTAN proxy URL
+ * @property {string} [bundlesUrl] - Bundles URL
+ * @property {string} [xzwasmUrl] - XZ decompression WASM URL
+ * @property {(msg: string) => void} [onLog] - Logging callback
+ */
+
+/**
+ * @typedef {Object} PackageResult
+ * @property {Map<string, Uint8Array>} files - Map of file paths to contents
+ * @property {string[]} dependencies - Package dependencies
+ * @property {boolean} [notFound] - True if package was not found
+ */
+
+/**
+ * Fetches LaTeX packages from CTAN/TexLive archives.
+ */
 export class CTANFetcher {
+    /**
+     * @param {CTANFetcherOptions} [options] - Fetcher options
+     */
     constructor(options = {}) {
         this.proxyUrl = options.proxyUrl || 'http://localhost:8787';
         this.bundlesUrl = options.bundlesUrl || this.proxyUrl + '/bundles';
@@ -120,7 +144,10 @@ export class CTANFetcher {
         }
     }
 
-    // Load file-to-package index (maps filename.sty → package-name)
+    /**
+     * Load file-to-package index (maps filename.sty → package-name).
+     * @returns {Promise<Object<string, string>>} Index mapping filenames to packages
+     */
     async loadFileToPackageIndex() {
         if (fileToPackageIndex) return fileToPackageIndex;
         if (fileToPackageLoading) return fileToPackageLoading;
@@ -145,18 +172,30 @@ export class CTANFetcher {
         return fileToPackageLoading;
     }
 
-    // Look up package name for a file (e.g., "lingmacros.sty" → "tree-dvips")
+    /**
+     * Look up package name for a file.
+     * @param {string} fileName - File name (e.g., "lingmacros.sty")
+     * @returns {Promise<string|null>} Package name or null
+     */
     async lookupPackageForFile(fileName) {
         const index = await this.loadFileToPackageIndex();
         return index[fileName] || null;
     }
 
-    // Get all cached file contents (for passing to worker)
+    /**
+     * Get all cached file contents.
+     * @returns {Object<string, Uint8Array>} Map of file paths to contents
+     */
     // Only returns files that were loaded in this session (via fetchPackage)
     getCachedFiles() {
         return Object.fromEntries(this.fileCache);
     }
 
+    /**
+     * Load a package from cache.
+     * @param {string} packageName - Package name
+     * @returns {Promise<PackageResult|null>} Package result or null if not cached
+     */
     async loadPackageFromCache(packageName) {
         try {
             const meta = await getPackageMeta(packageName);
@@ -216,6 +255,12 @@ export class CTANFetcher {
         }
     }
 
+    /**
+     * Fetch a package from CTAN/TexLive.
+     * @param {string} packageName - Package name
+     * @param {{tlYear?: number}} [options] - Options
+     * @returns {Promise<PackageResult|null>} Package result or null if not found
+     */
     async fetchPackage(packageName, options = {}) {
         const { tlYear } = options;
         const yearLabel = tlYear ? ` (TL${tlYear})` : '';
@@ -696,10 +741,18 @@ export class CTANFetcher {
         return { fetched, failed, skipped };
     }
 
+    /**
+     * Get list of all mounted file paths.
+     * @returns {string[]} Array of file paths
+     */
     getMountedFiles() {
         return [...this.mountedFiles];
     }
 
+    /**
+     * Get fetcher statistics.
+     * @returns {{fetchCount: number, mountedFiles: number}} Stats object
+     */
     getStats() {
         return {
             fetchCount: this.fetchCount,
@@ -707,12 +760,20 @@ export class CTANFetcher {
         };
     }
 
+    /**
+     * Clear the mounted files set.
+     */
     clearMountedFiles() {
         this.mountedFiles.clear();
     }
 }
 
-// Helper to extract package name from missing file
+/**
+ * Extract package name from a missing file path.
+ * Handles special cases like EC/TC fonts (cm-super).
+ * @param {string} filename - File name (e.g., "lingmacros.sty")
+ * @returns {string} Package name
+ */
 export function getPackageFromFile(filename) {
     // Check for EC/TC fonts (cm-super)
     if (/^(ec|tc)[a-z]{2}\d+$/.test(filename)) {
@@ -722,7 +783,11 @@ export function getPackageFromFile(filename) {
     return filename.replace(/\.(sty|cls|def|clo|fd|cfg|tex)$/, '');
 }
 
-// Valid package name check
+/**
+ * Check if a string is a valid CTAN package name.
+ * @param {string} name - Package name to validate
+ * @returns {boolean} True if valid
+ */
 export function isValidPackageName(name) {
     if (!name || name.length < 2 || name.length > 50) return false;
     if (/[^a-zA-Z0-9_-]/.test(name)) return false;
@@ -732,7 +797,11 @@ export function isValidPackageName(name) {
     return true;
 }
 
-// Force clear a specific package from cache
+/**
+ * Force clear a specific package from cache (for version refresh).
+ * @param {string} packageName - Package name to clear
+ * @returns {Promise<boolean>} True if successful
+ */
 export async function forceRefreshPackage(packageName) {
     try {
         await savePackageMeta(packageName, {

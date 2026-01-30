@@ -1,4 +1,7 @@
-// Bundle loading and package resolution module
+/**
+ * @module @siglum/engine/bundles
+ * Bundle loading and package resolution for LaTeX compilation.
+ */
 
 import {
     getBundleFromCache,
@@ -39,7 +42,20 @@ async function decompress(compressed, format = 'gzip') {
     return data;
 }
 
+/**
+ * @typedef {Object} BundleManagerOptions
+ * @property {string} [bundleBase] - Base URL for bundles
+ * @property {(msg: string) => void} [onLog] - Logging callback
+ * @property {(stage: string, detail: string) => void} [onProgress] - Progress callback
+ */
+
+/**
+ * Manages LaTeX package bundles - loading, caching, and resolution.
+ */
 export class BundleManager {
+    /**
+     * @param {BundleManagerOptions} [options] - Manager options
+     */
     constructor(options = {}) {
         this.bundleBase = options.bundleBase || 'packages/bundles';
         this.bundleCache = new Map();  // In-memory bundle cache
@@ -78,6 +94,10 @@ export class BundleManager {
         return hash.toString(16);
     }
 
+    /**
+     * Load bundle manifests from cache or server.
+     * @returns {Promise<Object>} File manifest
+     */
     async loadManifest() {
         if (this.fileManifest) return this.fileManifest;
 
@@ -141,6 +161,10 @@ export class BundleManager {
         }
     }
 
+    /**
+     * Load bundle dependency information.
+     * @returns {Promise<Object>} Bundle dependencies
+     */
     async loadBundleDeps() {
         // Ensure manifest is loaded first (sets bundleDeps)
         if (!this.bundleDeps) {
@@ -177,10 +201,21 @@ export class BundleManager {
         return this.bundleDeps;
     }
 
+    /**
+     * Check if a bundle exists in the registry.
+     * @param {string} bundleName - Bundle name
+     * @returns {boolean}
+     */
     bundleExists(bundleName) {
         return this.bundleRegistry?.has(bundleName) ?? false;
     }
 
+    /**
+     * Resolve packages to their required bundles.
+     * @param {string[]} packages - Package names
+     * @param {string} [engine] - Engine name
+     * @returns {string[]} Bundle names
+     */
     resolveBundles(packages, engine = 'xelatex') {
         const bundles = new Set();
         const resolved = new Set();
@@ -235,6 +270,12 @@ export class BundleManager {
         return [...bundles].filter(b => this.bundleExists(b));
     }
 
+    /**
+     * Extract packages from LaTeX source and resolve to bundles.
+     * @param {string} source - LaTeX source
+     * @param {string} [engine] - Engine name
+     * @returns {{packages: string[], bundles: string[]}}
+     */
     checkPackages(source, engine = 'xelatex') {
         const packages = new Set();
 
@@ -374,8 +415,9 @@ export class BundleManager {
     }
 
     /**
-     * Load bundle blob
-     * Returns the full blob in memory
+     * Load a bundle by name.
+     * @param {string} bundleName - Bundle name
+     * @returns {Promise<ArrayBuffer|SharedArrayBuffer>} Bundle data
      */
     async loadBundle(bundleName) {
         // Check memory cache
@@ -414,6 +456,11 @@ export class BundleManager {
         return decompressed;
     }
 
+    /**
+     * Load multiple bundles in parallel.
+     * @param {string[]} bundleNames - Bundle names
+     * @returns {Promise<Object<string, ArrayBuffer|SharedArrayBuffer>>} Map of bundle data
+     */
     async loadBundles(bundleNames) {
         const bundleData = {};
         await Promise.all(bundleNames.map(async (name) => {
@@ -426,6 +473,10 @@ export class BundleManager {
         return bundleData;
     }
 
+    /**
+     * Get bundle loading statistics.
+     * @returns {{bytesDownloaded: number, cacheHits: number, bundlesCached: number}}
+     */
     getStats() {
         return {
             bytesDownloaded: this.bytesDownloaded,
@@ -443,7 +494,11 @@ export class BundleManager {
     }
 
 
-    // Preload all required bundles for an engine (call during init)
+    /**
+     * Preload all required bundles for an engine.
+     * @param {string} [engine] - Engine name
+     * @returns {Promise<void>}
+     */
     async preloadEngine(engine = 'pdflatex') {
         await this.loadBundleDeps();
         const engineDeps = this.bundleDeps?.engines?.[engine];
@@ -456,7 +511,11 @@ export class BundleManager {
     }
 }
 
-// Engine detection
+/**
+ * Detect the appropriate engine from LaTeX source.
+ * @param {string} source - LaTeX source
+ * @returns {'pdflatex'|'xelatex'} Detected engine
+ */
 export function detectEngine(source) {
     // XeLaTeX indicators
     if (source.includes('\\usepackage{fontspec}') ||
@@ -471,7 +530,11 @@ export function detectEngine(source) {
     return 'pdflatex';
 }
 
-// Preamble extraction for format generation
+/**
+ * Extract preamble from LaTeX source (everything before \begin{document}).
+ * @param {string} source - LaTeX source
+ * @returns {string} Preamble content
+ */
 export function extractPreamble(source) {
     const beginDocIdx = source.indexOf('\\begin{document}');
     if (beginDocIdx === -1) return '';

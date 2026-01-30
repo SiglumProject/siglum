@@ -1039,8 +1039,13 @@ async function initBusyTeX(wasmModule, jsUrl, memorySnapshot = null) {
     const startTime = performance.now();
 
     // Only load busytex.js once - it defines the global `busytex` function
+    // Use fetch + Blob URL to support cross-origin CDN loading (importScripts has stricter CORS)
     if (!busytexScriptLoaded) {
-        importScripts(jsUrl);
+        const response = await fetch(jsUrl);
+        if (!response.ok) throw new Error(`Failed to fetch busytex.js: ${response.status}`);
+        const code = await response.text();
+        const blob = new Blob([code], { type: 'application/javascript' });
+        importScripts(URL.createObjectURL(blob));
         busytexScriptLoaded = true;
     }
 

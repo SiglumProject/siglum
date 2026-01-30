@@ -1,9 +1,10 @@
 {
   "name": "@siglum/engine",
   "version": "0.1.0",
-  "description": "The fastest browser-based LaTeX compiler - TeX Live 2025 in WebAssembly with lazy loading and CTAN package resolution",
+  "description": "A browser-based LaTeX compiler. TeX Live 2025 running in WebAssembly, with lazy bundle loading and on-demand package fetching.",
   "type": "module",
   "main": "src/index.js",
+  "types": "types/index.d.ts",
   "exports": {
     ".": "./src/index.js",
     "./compiler": "./src/compiler.js",
@@ -12,13 +13,15 @@
     "./storage": "./src/storage.js"
   },
   "files": [
-    "src/"
+    "src/",
+    "types/"
   ],
   "scripts": {
     "dev": "bun serve-local.ts",
     "build:worker": "cp src/worker.js ../webtex/siglum-ui/app/public/worker.js && echo 'Copied worker.js to siglum-ui'",
-    "api": "cd cloudflare && bunx wrangler@3.114.16 dev --port 8787 --remote",
-    "proxy": "cd packages && bun run ctan-proxy.ts"
+    "proxy": "cd packages && bun run ctan-proxy.ts",
+    "build:types": "tsc",
+    "prepublishOnly": "tsc"
   },
   "repository": {
     "type": "git",
@@ -46,6 +49,7 @@
   },
   "devDependencies": {
     "fflate": "^0.8.2",
-    "jszip": "^3.10.1"
+    "jszip": "^3.10.1",
+    "typescript": "^5.0.0"
   }
 }
