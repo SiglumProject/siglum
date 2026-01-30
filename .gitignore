@@ -8,6 +8,7 @@ busytex.wasm
 
 # Build artifacts
 dist/
+types/
 *.log
 *.txt
 
