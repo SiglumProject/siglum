@@ -33,6 +33,11 @@ Thumbs.db
 *.swp
 *.swo
 
+# Bundles (download from CDN or releases)
+packages/bundles/*.data.gz
+packages/bundles/*.data.br
+packages/bundles/*.raw
+
 # CTAN cache (regeneratable)
 packages/cache/
 

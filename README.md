@@ -1,5 +1,8 @@
 # Siglum
 
+[![npm version](https://img.shields.io/npm/v/@siglum/engine)](https://www.npmjs.com/package/@siglum/engine)
+[![license](https://img.shields.io/npm/l/@siglum/engine)](https://github.com/SiglumProject/siglum-engine/blob/main/LICENSE)
+
 A browser-based LaTeX compiler. TeX Live 2025 running in WebAssembly, with lazy bundle loading and on-demand package fetching.
 
 On initialization, the engine downloads:
@@ -17,6 +20,14 @@ The full bundle is ~195MB to deploy, but clients only download what their docume
 ## Quick Start (Local Demo)
 
 Clone the repo, download the WASM engine and pre-built bundles from [cdn.siglum.org](https://cdn.siglum.org) (or [GitHub Releases](https://github.com/SiglumProject/siglum-engine/releases)), then start the dev server.
+
+We use [Bun](https://bun.sh) for development, it's faster than Node.js and runs TypeScript directly. Install it with:
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+Then:
 
 ```bash
 git clone git@github.com:SiglumProject/siglum-engine.git
