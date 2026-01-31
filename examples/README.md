@@ -69,9 +69,12 @@ await compiler.init();
 | `bundlesUrl` | required | URL to bundle files |
 | `wasmUrl` | required | URL to busytex.wasm |
 | `jsUrl` | derived | URL to busytex.js (auto-derived from wasmUrl) |
+| `workerUrl` | null | Worker URL (required for bundlers, see below) |
 | `ctanProxyUrl` | null | CTAN proxy for missing packages |
 | `verbose` | false | Log TeX stdout (slower) |
 | `eagerBundles` | {} | Bundles to preload (e.g., `['cm-super']`) |
+
+> **Bundler note:** If using Vite, Webpack, or similar, you must copy `node_modules/@siglum/engine/src/worker.js` to your public folder and pass `workerUrl`. See the main [README](../README.md#usage-with-bundlers-vite-webpack-etc) for details.
 
 ### 4. Compile a Document
 

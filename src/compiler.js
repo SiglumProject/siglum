@@ -10,7 +10,7 @@ import { BundleManager, detectEngine, extractPreamble, hashPreamble } from './bu
  * @property {string} [bundlesUrl] - URL to bundles directory
  * @property {string} [wasmUrl] - URL to busytex.wasm
  * @property {string} [jsUrl] - URL to busytex.js (derived from wasmUrl if not provided)
- * @property {string|null} [workerUrl] - URL to worker.js or null for embedded worker
+ * @property {string|null} [workerUrl] - URL to worker.js (required for bundlers like Vite/Webpack)
  * @property {string} [ctanProxyUrl] - CTAN proxy URL
  * @property {string} [xzwasmUrl] - XZ decompression WASM URL
  * @property {(msg: string) => void} [onLog] - Logging callback
@@ -320,7 +320,7 @@ export class SiglumCompiler {
             _globalActiveWorker = null;
         }
 
-        // Get worker code - use external URL or read from src/worker.js
+        // Get worker code - use external URL or fetch from package
         let workerUrl = this.workerUrl;
         if (!workerUrl) {
             // Fetch worker.js and create blob URL

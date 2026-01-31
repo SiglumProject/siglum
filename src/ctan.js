@@ -135,6 +135,7 @@ export class CTANFetcher {
         this.bundlesUrl = options.bundlesUrl || this.proxyUrl + '/bundles';
         this.mountedFiles = new Set();
         this.fileCache = new Map(); // Memory cache for file contents
+        this.loadedPackages = new Set(); // Track packages already loaded into memory
         this.fetchCount = 0;
         this.onLog = options.onLog || (() => {});
 
@@ -268,7 +269,7 @@ export class CTANFetcher {
 
         // Skip cache for version-specific requests - we want a different version
         if (!tlYear) {
-            // Check cache first
+            // Check persistent cache
             const cached = await this.loadPackageFromCache(packageName);
             if (cached) {
                 if (cached.notFound) {
@@ -288,6 +289,7 @@ export class CTANFetcher {
                     return null;
                 }
                 this.onLog(`[FETCH] ${packageName}: loaded from cache`);
+                this.loadedPackages.add(packageName);
                 return cached;
             }
         } else {
@@ -334,7 +336,7 @@ export class CTANFetcher {
             return this.fetchCtanPackage(packageName, tlYear);
         }
 
-        // Check cache first (same cache as CTAN)
+        // Check persistent cache (same cache as CTAN)
         const cached = await this.loadPackageFromCache(packageName);
         if (cached) {
             if (cached.notFound) {
@@ -342,6 +344,7 @@ export class CTANFetcher {
                 return null;
             }
             this.onLog(`Package ${packageName} loaded from cache (TexLive)`);
+            this.loadedPackages.add(packageName);
             return cached;
         }
 
@@ -526,6 +529,10 @@ export class CTANFetcher {
             }
 
             this.fetchCount++;
+            this.loadedPackages.add(packageName);
+            if (texlivePkg !== packageName) {
+                this.loadedPackages.add(texlivePkg);
+            }
             return { files, dependencies: [] };
         } catch (e) {
             this.onLog(`[TEXLIVE] EXTRACTION ERROR for ${packageName}: ${e.message}`);
@@ -638,6 +645,10 @@ export class CTANFetcher {
             }
 
             this.fetchCount++;
+            this.loadedPackages.add(packageName);
+            if (ctanPkg !== packageName) {
+                this.loadedPackages.add(ctanPkg);
+            }
             return {
                 files,
                 dependencies: data.dependencies || [],
@@ -695,14 +706,21 @@ export class CTANFetcher {
         const uniquePackages = [...new Set(packageNames)];
         const toFetch = [];
 
-        // Check cache first
+        // Check cache first - use memory cache to avoid filesystem reads on every recompile
         for (const pkgName of uniquePackages) {
+            // Skip filesystem check if package already loaded into memory this session
+            if (this.loadedPackages.has(pkgName)) {
+                skipped.push(pkgName);
+                continue;
+            }
+
             const cached = await this.loadPackageFromCache(pkgName);
             if (cached && cached.files && !cached.notFound) {
                 // Already cached and has files - populate memory cache
                 for (const [path, content] of cached.files) {
                     this.fileCache.set(path, content);
                 }
+                this.loadedPackages.add(pkgName);
                 skipped.push(pkgName);
             } else {
                 toFetch.push(pkgName);
@@ -728,6 +746,7 @@ export class CTANFetcher {
             for (const res of results) {
                 if (res.status === 'fulfilled' && res.value.result) {
                     fetched.push(res.value.pkgName);
+                    this.loadedPackages.add(res.value.pkgName);
                 } else {
                     const pkgName = res.status === 'fulfilled'
                         ? res.value.pkgName
@@ -761,10 +780,12 @@ export class CTANFetcher {
     }
 
     /**
-     * Clear the mounted files set.
+     * Clear the mounted files set and memory caches.
      */
     clearMountedFiles() {
         this.mountedFiles.clear();
+        this.fileCache.clear();
+        this.loadedPackages.clear();
     }
 }
 

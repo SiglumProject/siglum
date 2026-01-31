@@ -96,6 +96,8 @@ const compiler = new SiglumCompiler({
 
 ## Usage
 
+> **Note:** If using a bundler (Vite, Webpack, etc.), see [Usage with Bundlers](#usage-with-bundlers-vite-webpack-etc) for required setup.
+
 ```javascript
 import { SiglumCompiler } from '@siglum/engine';
 
@@ -130,7 +132,7 @@ const compiler = new SiglumCompiler({
     wasmUrl: '/wasm/busytex.wasm',    // URL to WASM binary
     jsUrl: null,                      // URL to busytex.js (derived from wasmUrl if null)
     ctanProxyUrl: null,               // CTAN proxy URL (enables CTAN fetching when set)
-    workerUrl: null,                  // Custom worker URL (uses embedded worker if null)
+    workerUrl: null,                  // Custom worker URL (required for bundlers)
 
     // Feature flags
     enableCtan: false,                // Auto-enabled when ctanProxyUrl is set
@@ -260,6 +262,29 @@ compiler.init(); // Fire and forget — bundles download in background
 // Later, when user clicks compile
 await compiler.compile(source); // Already warmed up
 ```
+
+## Usage with Bundlers (Vite, Webpack, etc.)
+
+Bundlers pre-bundle dependencies, which breaks the automatic worker loading. You need to copy the worker file and pass an explicit URL:
+
+```json
+// package.json
+{
+  "scripts": {
+    "postinstall": "cp node_modules/@siglum/engine/src/worker.js public/worker.js"
+  }
+}
+```
+
+```javascript
+const compiler = new SiglumCompiler({
+    bundlesUrl: '/bundles',
+    wasmUrl: '/busytex.wasm',
+    workerUrl: '/worker.js',  // Explicit path to copied worker
+});
+```
+
+The `postinstall` script runs automatically on `npm install`, keeping the worker in sync with the package version.
 
 ## Engines
 
