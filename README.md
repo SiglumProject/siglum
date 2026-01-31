@@ -15,7 +15,7 @@ The full bundle is ~195MB to deploy, but clients only download what their docume
 
 **Guides:**
 - [Examples & Playground Tutorial](examples/README.md) — Build a LaTeX editor UI
-- [CTAN Proxy Guide](docs/CTAN_PROXY.md) — Self-host the package proxy for production
+- [CTAN Proxy Guide](docs/ctan-proxy.md) — Self-host the package proxy for production
 
 ## Quick Start (Local Demo)
 
@@ -312,7 +312,7 @@ bun packages/ctan-proxy.ts
 
 Packages are cached permanently. The proxy tries TexLive 2025 archives first, then falls back to CTAN mirrors.
 
-For configuration and deployment options, see **[docs/CTAN_PROXY.md](docs/CTAN_PROXY.md)**.
+For configuration and deployment options, see **[docs/ctan-proxy.md](docs/ctan-proxy.md)**.
 
 ## Browser Requirements
 

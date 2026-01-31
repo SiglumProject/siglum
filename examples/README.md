@@ -8,7 +8,7 @@ bun serve-local.ts
 # Open http://localhost:8787
 ```
 
-> **See also:** [CTAN Proxy Guide](../docs/CTAN_PROXY.md) for self-hosting the package proxy in production.
+> **See also:** [CTAN Proxy Guide](../docs/ctan-proxy.md) for self-hosting the package proxy in production.
 
 ---
 

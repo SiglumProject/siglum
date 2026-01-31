@@ -1,38 +1,46 @@
 # TeX Bundles
 
-This directory contains pre-bundled TeX Live packages for lazy loading in the browser.
+Pre-bundled TeX Live 2025 packages for lazy loading in the browser.
+
+## Download
+
+Bundle data files are not checked into git. Download from CDN:
+
+```bash
+curl -LO https://cdn.siglum.org/tl2025/siglum-bundles-v0.1.0.tar.gz
+tar -xzf siglum-bundles-v0.1.0.tar.gz -C packages/
+```
+
+Or from [GitHub Releases](https://github.com/SiglumProject/siglum-engine/releases).
 
 ## Files
 
-### Bundle Data
-- `*.data.gz` - Gzipped bundle data files containing concatenated file contents
-- `*.meta.json` - Metadata for each bundle (file paths, offsets, sizes)
+### Bundle Data (downloaded)
+- `*.data.gz` — Gzipped bundle data containing concatenated file contents
 
-### Index Files
-- `bundles.json` - Main bundle registry listing all available bundles and their metadata
-- `file-manifest.json` - Maps full file paths to bundle name + byte offset
-- `file-to-package.json` - Maps filenames (e.g., `geometry.sty`) to CTAN package names
-- `package-deps.json` - Package dependency graph extracted from .sty files
+### Index Files (in git)
+- `bundles.json` — Bundle registry with metadata (sizes, file counts, hashes)
+- `file-manifest.json` — Maps file paths → bundle name + byte offset
+- `file-to-package.json` — Maps filenames (e.g., `geometry.sty`) → CTAN package names
+- `package-deps.json` — Package dependency graph extracted from .sty files
 
 ## Build Tools
 
 Bundles are generated using scripts in the parent `packages/` directory:
 
-- `update-bundles-tl2025.ts` - Main script to create bundles from TeX Live 2025
-- `split-bundle.ts` - Splits large bundles into smaller chunks
-- `bundle-cm-super.ts` - Creates the cm-super font bundle
-- `consolidate-metadata.cjs` - Consolidates metadata into bundles.json
+- `update-bundles-tl2025.ts` — Create bundles from TeX Live 2025
+- `split-bundle.ts` — Split large bundles into smaller chunks
+- `consolidate-metadata.cjs` — Consolidate metadata into bundles.json
 
 The `file-to-package.json` index is generated from the TeX Live package database:
 
 ```bash
-# Download TLPDB and build index
 curl -o /tmp/tlpdb.txt https://mirrors.ctan.org/systems/texlive/tlnet/tlpkg/texlive.tlpdb
 node scripts/build-file-index.js packages/bundles/file-to-package.json
 ```
 
 ## Path Convention
 
-All file paths in bundles start with `/texlive/` to match the TeX Live directory structure used by BusyTeX.
+All file paths start with `/texlive/` to match the TeX Live directory structure used by BusyTeX.
 
 Example: `/texlive/texmf-dist/tex/latex/geometry/geometry.sty`
