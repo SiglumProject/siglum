@@ -1,16 +1,31 @@
 {
   "name": "@siglum/engine",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A browser-based LaTeX compiler. TeX Live 2025 running in WebAssembly, with lazy bundle loading and on-demand package fetching.",
   "type": "module",
   "main": "src/index.js",
   "types": "types/index.d.ts",
   "exports": {
-    ".": "./src/index.js",
-    "./compiler": "./src/compiler.js",
-    "./bundles": "./src/bundles.js",
-    "./ctan": "./src/ctan.js",
-    "./storage": "./src/storage.js"
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./compiler": {
+      "types": "./types/compiler.d.ts",
+      "default": "./src/compiler.js"
+    },
+    "./bundles": {
+      "types": "./types/bundles.d.ts",
+      "default": "./src/bundles.js"
+    },
+    "./ctan": {
+      "types": "./types/ctan.d.ts",
+      "default": "./src/ctan.js"
+    },
+    "./storage": {
+      "types": "./types/storage.d.ts",
+      "default": "./src/storage.js"
+    }
   },
   "files": [
     "src/",
@@ -18,7 +33,6 @@
   ],
   "scripts": {
     "dev": "bun serve-local.ts",
-    "build:worker": "cp src/worker.js ../webtex/siglum-ui/app/public/worker.js && echo 'Copied worker.js to siglum-ui'",
     "proxy": "cd packages && bun run ctan-proxy.ts",
     "build:types": "tsc",
     "prepublishOnly": "tsc"
