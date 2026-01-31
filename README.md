@@ -16,6 +16,7 @@ The full bundle is ~195MB to deploy, but clients only download what their docume
 **Guides:**
 - [Examples & Playground Tutorial](examples/README.md) — Build a LaTeX editor UI
 - [CTAN Proxy Guide](docs/ctan-proxy.md) — Self-host the package proxy for production
+- [Building from Source](docs/building.md) — Build WASM engine and bundles
 
 ## Quick Start (Local Demo)
 

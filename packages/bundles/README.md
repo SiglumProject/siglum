@@ -24,15 +24,19 @@ Or from [GitHub Releases](https://github.com/SiglumProject/siglum-engine/release
 - `file-to-package.json` — Maps filenames (e.g., `geometry.sty`) → CTAN package names
 - `package-deps.json` — Package dependency graph extracted from .sty files
 
-## Build Tools
+## Building from Source
 
-Bundles are generated using scripts in the parent `packages/` directory:
+See **[docs/building.md](../../docs/building.md)** for complete build instructions.
 
-- `update-bundles-tl2025.ts` — Create bundles from TeX Live 2025
-- `split-bundle.ts` — Split large bundles into smaller chunks
-- `consolidate-metadata.cjs` — Consolidate metadata into bundles.json
+Quick reference — bundles are generated using scripts in the parent `packages/` directory:
 
-The `file-to-package.json` index is generated from the TeX Live package database:
+```bash
+cd packages
+bun run split-bundle.ts           # Split texlive-basic into bundles
+bun run update-bundles-tl2025.ts  # Update bundles from TeX Live archives
+```
+
+The `file-to-package.json` index maps filenames to CTAN packages:
 
 ```bash
 curl -o /tmp/tlpdb.txt https://mirrors.ctan.org/systems/texlive/tlnet/tlpkg/texlive.tlpdb
