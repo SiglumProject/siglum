@@ -35,7 +35,12 @@
     "dev": "bun serve-local.ts",
     "proxy": "cd packages && bun run ctan-proxy.ts",
     "build:types": "tsc",
-    "prepublishOnly": "tsc"
+    "prepublishOnly": "tsc",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:browser": "vitest --config vitest.browser.config.ts",
+    "test:browser:run": "vitest run --config vitest.browser.config.ts"
   },
   "repository": {
     "type": "git",
@@ -57,13 +62,18 @@
   },
   "homepage": "https://github.com/SiglumProject/siglum-engine#readme",
   "dependencies": {
-    "@siglum/filesystem": "^0.2.1",
+    "@siglum/filesystem": "file:../siglum-filesystem",
     "blake3-wasm": "2.1.5",
     "xzwasm": "^0.1.2"
   },
   "devDependencies": {
-    "fflate": "^0.8.2",
+    "@vitest/browser": "2.1.9",
+    "@vitest/coverage-v8": "^2.0.0",
+    "fflate": "0.8.2",
+    "happy-dom": "^15.0.0",
     "jszip": "^3.10.1",
-    "typescript": "^5.0.0"
+    "playwright": "^1.58.2",
+    "typescript": "^5.0.0",
+    "vitest": "^2.0.0"
   }
 }

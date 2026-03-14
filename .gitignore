@@ -37,6 +37,11 @@ Thumbs.db
 packages/bundles/*.data.gz
 packages/bundles/*.data.br
 packages/bundles/*.raw
+packages/bundles/*.meta.json
+packages/bundles/registry.json
+
+# One-off migration scripts
+packages/update-bundles-tl2026.ts
 
 # CTAN cache (regeneratable)
 packages/cache/

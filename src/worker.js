@@ -143,15 +143,17 @@ class VirtualFileSystem {
         }
         for (const dir of dirs) this._ensureDirectoryPath(dir);
 
-        // Track font files for later pdftex.map rewriting
-        const isFontBundle = bundleName === 'cm-super' || bundleName.startsWith('fonts-');
+        // Detect font bundles dynamically: any bundle containing .pfb, .enc, or font .map files
+        const isFontBundle = bundleFiles.some(([p]) =>
+            p.endsWith('.pfb') || p.endsWith('.enc') || (p.includes('/fonts/map/') && p.endsWith('.map'))
+        );
 
         for (const [path, info] of bundleFiles) {
             if (this.mountedFiles.has(path)) continue;
             if (this.lazyEnabled && !this._shouldEagerLoad(path)) {
                 this.mountLazy(path, bundleName, info.start, info.end, false);
             } else {
-                const content = new Uint8Array(bundleData.slice(info.start, info.end));
+                const content = this._copyFromBundle(bundleData, info.start, info.end);
                 this.mount(path, content, false);
             }
             mounted++;
@@ -161,6 +163,13 @@ class VirtualFileSystem {
                 const filename = path.substring(path.lastIndexOf('/') + 1);
                 this.fontFileLocations = this.fontFileLocations || new Map();
                 this.fontFileLocations.set(filename, path);
+            }
+            // Track font map files from external font bundles (e.g. cm-super) that
+            // aren't already aggregated into updmap's pdftex.map by the core bundle.
+            // These need to be appended during processFontMaps().
+            if (isFontBundle && bundleName !== 'core'
+                && path.includes('/fonts/map/dvips/') && path.endsWith('.map')) {
+                this.pendingFontMaps.add(path);
             }
         }
         this.onLog(`Mounted ${mounted} files from bundle ${bundleName}`);
@@ -347,13 +356,27 @@ class VirtualFileSystem {
         return obj && typeof obj === 'object' && obj[this.lazyMarkerSymbol] === true;
     }
 
+    /**
+     * Copy a byte range from bundle data into a new independent Uint8Array.
+     * Must be a copy (not a view) because the result is stored as FSNode.contents
+     * and a view would pin the entire bundle ArrayBuffer in memory.
+     * Handles both ArrayBuffer and Uint8Array (legacy main-thread path).
+     */
+    _copyFromBundle(bundleData, start, end) {
+        if (bundleData instanceof ArrayBuffer) {
+            return new Uint8Array(bundleData.slice(start, end));
+        }
+        // TypedArray — slice() copies into a new buffer
+        return bundleData.slice(start, end);
+    }
+
     resolveLazy(marker) {
         const bundleData = this.bundleCache.get(marker.bundleName);
         if (!bundleData) {
             this.onLog(`ERROR: Bundle not in cache: ${marker.bundleName}`);
             return new Uint8Array(0);
         }
-        return new Uint8Array(bundleData.slice(marker.start, marker.end));
+        return this._copyFromBundle(bundleData, marker.start, marker.end);
     }
 
     /**
@@ -363,8 +386,7 @@ class VirtualFileSystem {
     resolveDeferred(marker) {
         const bundleData = this.bundleCache.get(marker.bundleName);
         if (bundleData) {
-            // Bundle is now loaded - return the actual data
-            return new Uint8Array(bundleData.slice(marker.start, marker.end));
+            return this._copyFromBundle(bundleData, marker.start, marker.end);
         }
 
         // Check if file was already fetched individually via Range request
@@ -456,44 +478,60 @@ class VirtualFileSystem {
     }
 
     patchForLazyLoading() {
-        const vfs = this;
-        const ensureResolved = (node) => {
-            // Fast path: if already a Uint8Array, no resolution needed
-            const contents = node.contents;
-            if (contents instanceof Uint8Array) return;
+        // MEMORY SAFETY: MEMFS is a singleton shared across Module instances.
+        // Closures on stream_ops capture VFS → FS → Module scope → Wasm Memory.
+        // We use an indirection pattern: a mutable holder on MEMFS stores the
+        // current VFS reference. The wrapper closure captures only the holder
+        // (a tiny object), not the VFS itself. destroyModule nulls the holder
+        // to break the retention chain. Each new compile updates the holder.
+        if (!this.MEMFS._lazyVfs) {
+            this.MEMFS._lazyVfs = { vfs: null };
+            const holder = this.MEMFS._lazyVfs;
 
-            if (vfs.isLazyMarker(contents)) {
-                const resolved = vfs.resolveLazy(contents);
-                node.contents = resolved;
-                node.usedBytes = resolved.length;
-            } else if (vfs.isDeferredMarker(contents)) {
-                const resolved = vfs.resolveDeferred(contents);
-                // Always replace marker with resolved data (even if empty)
-                // This is required because MEMFS.read expects node.contents to be a Uint8Array
-                // The bundle tracking happens inside resolveDeferred() before returning empty
-                node.contents = resolved;
-                node.usedBytes = resolved.length;
+            // Inline MEMFS read logic — avoids capturing the original read closure
+            // (which lives in the Emscripten module scope and pins wasmMemory).
+            // This is the standard Emscripten MEMFS.stream_ops.read implementation.
+            const resolve = (node) => {
+                const v = holder.vfs;
+                if (!v) return;
+                const contents = node.contents;
+                if (contents instanceof Uint8Array) return;
+                if (v.isLazyMarker(contents)) {
+                    const resolved = v.resolveLazy(contents);
+                    node.contents = resolved;
+                    node.usedBytes = resolved.length;
+                } else if (v.isDeferredMarker(contents)) {
+                    const resolved = v.resolveDeferred(contents);
+                    node.contents = resolved;
+                    node.usedBytes = resolved.length;
+                }
+            };
+
+            this.MEMFS.stream_ops.read = function(stream, buffer, offset, length, position) {
+                resolve(stream.node);
+                var contents = stream.node.contents;
+                if (position >= stream.node.usedBytes) return 0;
+                var size = Math.min(stream.node.usedBytes - position, length);
+                if (size > 8 && contents.subarray) {
+                    buffer.set(contents.subarray(position, position + size), offset);
+                } else {
+                    for (var i = 0; i < size; i++) buffer[offset + i] = contents[position + i];
+                }
+                return size;
+            };
+
+            if (this.MEMFS.ops_table?.file?.stream?.read) {
+                this.MEMFS.ops_table.file.stream.read = this.MEMFS.stream_ops.read;
             }
-        };
-        const originalRead = this.MEMFS.stream_ops.read;
-        this.MEMFS.stream_ops.read = function(stream, buffer, offset, length, position) {
-            ensureResolved(stream.node);
-            return originalRead.call(this, stream, buffer, offset, length, position);
-        };
-        if (this.MEMFS.ops_table?.file?.stream?.read) {
-            const originalTableRead = this.MEMFS.ops_table.file.stream.read;
-            this.MEMFS.ops_table.file.stream.read = function(stream, buffer, offset, length, position) {
-                ensureResolved(stream.node);
-                return originalTableRead.call(this, stream, buffer, offset, length, position);
-            };
+
+            // mmap delegates to stream_ops.read internally, so our read patch
+            // handles lazy resolution. No need to patch mmap separately.
         }
-        if (this.MEMFS.stream_ops.mmap) {
-            const originalMmap = this.MEMFS.stream_ops.mmap;
-            this.MEMFS.stream_ops.mmap = function(stream, length, position, prot, flags) {
-                ensureResolved(stream.node);
-                return originalMmap.call(this, stream, length, position, prot, flags);
-            };
-        }
+
+        // Update the holder to point to the current VFS instance.
+        // Previous VFS becomes unreachable → old FS → old Module scope can be GC'd.
+        this.MEMFS._lazyVfs.vfs = this;
+
         this.lazyEnabled = true;
         this.onLog('VFS: Lazy loading enabled');
     }
@@ -614,13 +652,79 @@ function ensureManifestIndexed(manifest) {
     workerLog(`Indexed manifest: ${filesByBundle.size} bundles, ${fontFileToBundle.size} font files`);
 }
 
-// SharedArrayBuffer support - check once at startup
-const sharedArrayBufferAvailable = typeof SharedArrayBuffer !== 'undefined';
+// Note: SharedArrayBuffer intentionally NOT used - causes memory leaks in V8
+// (SABs become "strong roots" that persist even after worker termination)
 
-// Global Module instance - reused across compilations to avoid memory leaks
-// Each initBusyTeX call creates a 512MB WASM heap; we want only ONE
+// Global Module instance - track for cleanup before creating new one
 let globalModule = null;
 let globalModulePromise = null;
+// Track whether the current globalModule has been used for a compile.
+// When false, getOrCreateModule() reuses it instead of destroying+recreating.
+// This allows eager pre-instantiation during init to speed up the first compile.
+let globalModuleUsed = false;
+
+/**
+ * Properly destroy an Emscripten Module to free WASM memory.
+ * Must be called before creating a new Module to prevent memory accumulation.
+ *
+ * @param {Object} module - The Emscripten Module to destroy
+ */
+function destroyModule(module) {
+    if (!module) return;
+
+    self.postMessage({ type: 'log', message: '[MEMORY] destroyModule called' });
+
+    // 1. Terminate any pthread workers (prevents GC blocking)
+    if (module.PThread) {
+        try { module.PThread.terminateAllThreads(); } catch (e) {}
+    }
+
+    // 2. Clear the filesystem to release file data from memory
+    // Must happen BEFORE nulling MEMFS stream_ops (unmount needs them)
+    if (module.FS) {
+        try {
+            const root = module.FS.root;
+            if (root && root.mount && root.mount.mounts) {
+                for (const mount of [...root.mount.mounts]) {
+                    try { module.FS.unmount(mount.mountpoint); } catch (e) {}
+                }
+            }
+        } catch (e) {}
+    }
+
+    // 3. Null the lazy VFS holder to break the closure chain:
+    //    stream_ops.read closure → holder.vfs → old VFS → old FS → old Module scope → Wasm Memory
+    // The wrapper closure remains on stream_ops (it only captures the holder object,
+    // not the VFS directly), so stream_ops.read stays functional for the next Module.
+    try {
+        const memfs = module.FS?.filesystems?.MEMFS;
+        if (memfs?._lazyVfs) {
+            memfs._lazyVfs.vfs = null;
+        }
+    } catch (e) {}
+
+    // 4. Null out HEAP typed array views — these reference the Wasm Memory buffer
+    // and keep it alive even after the Module object is otherwise unreachable.
+    // Explicit list ensures non-enumerable Emscripten internals are covered.
+    const heapKeys = ['HEAPU8', 'HEAPU16', 'HEAPU32', 'HEAP8', 'HEAP16', 'HEAP32',
+                      'HEAPF32', 'HEAPF64', 'buffer', 'wasmMemory', 'wasmExports', 'asm'];
+    for (const key of heapKeys) {
+        try { module[key] = null; } catch (e) {}
+    }
+
+    // 5. Delete ALL remaining properties to break reference chains
+    for (const key of Object.keys(module)) {
+        try {
+            module[key] = null;
+            delete module[key];
+        } catch (e) {}
+    }
+
+    // 6. Clear prototype chain references
+    try { Object.setPrototypeOf(module, null); } catch (e) {}
+
+    self.postMessage({ type: 'log', message: '[MEMORY] Module destroyed successfully' });
+}
 
 // Pending requests
 const pendingCtanRequests = new Map();
@@ -640,6 +744,178 @@ function workerLog(msg) {
 
 function workerProgress(stage, detail) {
     self.postMessage({ type: 'progress', stage, detail });
+}
+
+// ============ Worker-Direct OPFS Bundle Loading ============
+
+// OPFS bundle cache path (matches storage.js)
+const BUNDLE_CACHE_PATH = 'bundle-cache/bundles';
+
+// Capability flag (set during init)
+let canUseWorkerOPFS = false;
+
+// Cached bundlesUrl from init
+let workerBundlesUrl = null;
+
+// Worker-level memory cache for bundles (persists across compiles)
+// This avoids re-reading from OPFS on every compile
+// NOT evicted automatically — bundle set is bounded by the document's dependencies.
+// Use the 'cleanup' message to release explicitly when idle.
+const workerBundleCache = new Map();
+
+/**
+ * Load bundle from OPFS cache directly (bypasses main thread)
+ * @param {string} bundleName
+ * @returns {Promise<ArrayBuffer|null>}
+ */
+async function loadBundleFromOPFS(bundleName) {
+    if (!canUseWorkerOPFS) return null;
+
+    try {
+        const root = await navigator.storage.getDirectory();
+
+        // Navigate to bundle-cache/bundles directory
+        const bundleCacheDir = await root.getDirectoryHandle('bundle-cache', { create: false });
+        const bundlesDir = await bundleCacheDir.getDirectoryHandle('bundles', { create: false });
+        const fileHandle = await bundlesDir.getFileHandle(`${bundleName}.data`, { create: false });
+
+        // Read file content
+        const file = await fileHandle.getFile();
+        const data = await file.arrayBuffer();
+
+        if (data && data.byteLength > 0) {
+            workerLog(`  From OPFS: ${bundleName} (${(data.byteLength / 1024 / 1024).toFixed(1)}MB)`);
+            return data;
+        }
+    } catch (e) {
+        // Not cached or OPFS error - fall through to network
+    }
+    return null;
+}
+
+/**
+ * Fetch bundle from network, save to OPFS
+ * @param {string} bundleName
+ * @param {string} bundlesUrl
+ * @returns {Promise<ArrayBuffer>}
+ */
+async function fetchBundleFromNetwork(bundleName, bundlesUrl) {
+    const url = `${bundlesUrl}/${bundleName}.data.gz`;
+    workerLog(`  Fetching: ${bundleName}`);
+
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const compressed = await response.arrayBuffer();
+
+    // Decompress - only skip if Brotli (browser already decompressed)
+    // Note: Content-Encoding: gzip means transport compression, not file format
+    const encoding = response.headers.get('Content-Encoding');
+    let decompressed;
+    if (encoding === 'br') {
+        // Brotli: browser already decompressed the gzip content
+        decompressed = compressed;
+    } else {
+        // Decompress gzip (file is .data.gz)
+        const ds = new DecompressionStream('gzip');
+        const stream = new Blob([compressed]).stream().pipeThrough(ds);
+        decompressed = await new Response(stream).arrayBuffer();
+    }
+
+    workerLog(`  Fetched: ${bundleName} (${(decompressed.byteLength / 1024 / 1024).toFixed(1)}MB)`);
+
+    // Cache to OPFS (fire-and-forget)
+    if (canUseWorkerOPFS) {
+        saveBundleToOPFS(bundleName, decompressed).catch(() => {});
+    }
+
+    return decompressed;
+}
+
+/**
+ * Save bundle to OPFS cache
+ * @param {string} bundleName
+ * @param {ArrayBuffer} data
+ */
+async function saveBundleToOPFS(bundleName, data) {
+    try {
+        const root = await navigator.storage.getDirectory();
+
+        // Create directories if needed
+        const bundleCacheDir = await root.getDirectoryHandle('bundle-cache', { create: true });
+        const bundlesDir = await bundleCacheDir.getDirectoryHandle('bundles', { create: true });
+        const fileHandle = await bundlesDir.getFileHandle(`${bundleName}.data`, { create: true });
+
+        // Write using writable stream
+        const writable = await fileHandle.createWritable();
+        await writable.write(new Uint8Array(data));
+        await writable.close();
+
+        workerLog(`  Cached to OPFS: ${bundleName}`);
+    } catch (e) {
+        // Ignore caching errors - data still usable
+    }
+}
+
+/**
+ * Load bundle: memory cache first, then OPFS, then network, then main thread fallback
+ * @param {string} bundleName
+ * @param {string} bundlesUrl
+ * @returns {Promise<ArrayBuffer>}
+ */
+async function loadBundleInWorker(bundleName, bundlesUrl) {
+    // Fast path: check worker memory cache first (instant, no async)
+    const memCached = workerBundleCache.get(bundleName);
+    if (memCached) {
+        workerLog(`  From memory: ${bundleName}`);
+        return memCached;
+    }
+
+    // Try OPFS cache
+    const opfsCached = await loadBundleFromOPFS(bundleName);
+    if (opfsCached) {
+        workerBundleCache.set(bundleName, opfsCached);
+        return opfsCached;
+    }
+
+    // Try network fetch
+    try {
+        const fetched = await fetchBundleFromNetwork(bundleName, bundlesUrl);
+        workerBundleCache.set(bundleName, fetched);
+        return fetched;
+    } catch (e) {
+        workerLog(`  Network failed for ${bundleName}: ${e.message}`);
+    }
+
+    // Fallback: request from main thread (Safari or network errors)
+    const result = await requestBundleFetch(bundleName);
+    if (result.success) {
+        workerBundleCache.set(bundleName, result.bundleData);
+        return result.bundleData;
+    }
+    throw new Error(`Failed to load ${bundleName}`);
+}
+
+/**
+ * Detect if worker can use OPFS directly
+ * Safari doesn't support createSyncAccessHandle in workers,
+ * but we only need async file access for bundle loading
+ */
+async function detectWorkerOPFS() {
+    try {
+        // Check if OPFS is available
+        if (typeof navigator === 'undefined' || !navigator.storage?.getDirectory) {
+            return false;
+        }
+
+        // Try to access OPFS root
+        const root = await navigator.storage.getDirectory();
+        if (!root) return false;
+
+        return true;
+    } catch (e) {
+        return false;
+    }
 }
 
 // ============ External Fetch Requests ============
@@ -718,10 +994,10 @@ function injectMicrotypeWorkaround(source) {
     if (!source.includes('microtype')) return source;
     const documentclassMatch = source.match(/\\documentclass/);
     if (!documentclassMatch) return source;
+    // Insert on same line as \documentclass to preserve line numbers
     const insertPos = documentclassMatch.index;
-    const workaround = '% Siglum: Disable microtype font expansion\n\\PassOptionsToPackage{expansion=false}{microtype}\n';
     workerLog('Injecting microtype expansion=false workaround');
-    return source.slice(0, insertPos) + workaround + source.slice(insertPos);
+    return source.slice(0, insertPos) + '\\PassOptionsToPackage{expansion=false}{microtype}' + source.slice(insertPos);
 }
 
 // Compatibility shims for package version issues
@@ -905,30 +1181,10 @@ function injectAutoShims(source, undefinedCommands) {
         }
     }
 
+    // Insert all stubs inline after \documentclass to preserve line numbers
     const insertPos = documentclassMatch.index + documentclassMatch[0].length;
-    const shimBlock = `
-% Siglum: Auto-generated stubs for undefined commands
-${stubs.join('%\n')}%
-`;
     workerLog(`Auto-shimming ${undefinedCommands.size} commands: ${cmdList.join(', ')}`);
-    return source.slice(0, insertPos) + shimBlock + source.slice(insertPos);
-}
-
-function injectPdfMapFileCommands(source, mapFilePaths) {
-    if (mapFilePaths.length === 0) return source;
-    const newMaps = mapFilePaths.filter(p => !source.includes(p));
-    if (newMaps.length === 0) return source;
-
-    const mapCommands = newMaps.map(p => '\\pdfmapfile{+' + p + '}').join('\n');
-    const documentclassMatch = source.match(/\\documentclass(\[[^\]]*\])?\{[^}]+\}/);
-
-    if (documentclassMatch) {
-        const insertPos = documentclassMatch.index + documentclassMatch[0].length;
-        const preambleInsert = '\n% Font maps injected by Siglum\n' + mapCommands + '\n';
-        workerLog('Injecting ' + newMaps.length + ' \\pdfmapfile commands');
-        return source.slice(0, insertPos) + preambleInsert + source.slice(insertPos);
-    }
-    return source;
+    return source.slice(0, insertPos) + stubs.join('') + source.slice(insertPos);
 }
 
 // ============ Missing File Detection ============
@@ -941,10 +1197,10 @@ function extractMissingFile(logContent, alreadyFetched) {
 // Extract ALL missing files from log (for parallel fetching)
 function extractAllMissingFiles(logContent, alreadyFetched) {
     const patterns = [
-        /! LaTeX Error: File `([^']+)' not found/g,
-        /! I can't find file `([^']+)'/g,
-        /LaTeX Warning:.*File `([^']+)' not found/g,
-        /Package .* Error:.*`([^']+)' not found/g,
+        /! LaTeX Error: File [`'\u2018]([^'\u2019]+)['\u2019] not found/g,
+        /! I can't find file [`'\u2018]([^'\u2019]+)['\u2019]/g,
+        /LaTeX Warning:.*File [`'\u2018]([^'\u2019]+)['\u2019] not found/g,
+        /Package .* Error:.*[`'\u2018]([^'\u2019]+)['\u2019] not found/g,
         /! Font [^=]+=([a-z0-9-]+) at .* not loadable: Metric \(TFM\) file/g,
         /!pdfTeX error:.*\(file ([a-z0-9-]+)\): Font .* not found/g,
         /! Font ([a-z0-9-]+) at [0-9]+ not found/g,
@@ -1154,15 +1410,34 @@ async function initBusyTeX(wasmModule, jsUrl, memorySnapshot = null) {
  * We create fresh each time because pdfTeX has internal C globals
  * (glyph_unicode_tree, etc.) that don't reset between invocations,
  * causing assertion failures and memory issues.
- *
- * With memory snapshot, fresh Module creation is fast (~300ms vs ~3s).
  */
 async function getOrCreateModule() {
-    // NOTE: Memory snapshots are DISABLED
-    // pdfTeX has internal C globals (glyph_unicode_tree) that cause assertion failures
-    // when restored from a post-compilation snapshot. Fast recompiles come from
-    // format caching (.fmt files) instead, which properly handles TeX state.
-    return await initBusyTeX(cachedWasmModule, busytexJsUrl, null);
+    // Destroy previous module to free WASM memory (prevents 900MB accumulation).
+    // Skip if the module hasn't been used yet (e.g. just pre-instantiated during init) —
+    // this lets the first compile reuse the eagerly-created module instead of paying
+    // ~150ms for a redundant destroy+reinstantiate.
+    if (globalModule && globalModuleUsed) {
+        self.postMessage({ type: 'log', message: '[MEMORY] Destroying previous module before creating new one' });
+        destroyModule(globalModule);
+        globalModule = null;
+    }
+
+    if (!globalModule) {
+        // Wait for any in-flight background pre-instantiation
+        if (globalModulePromise) {
+            await globalModulePromise;
+            globalModulePromise = null;
+        }
+
+        // Still null if pre-instantiation failed or wasn't started
+        if (!globalModule) {
+            globalModule = await initBusyTeX(cachedWasmModule, busytexJsUrl, null);
+            self.postMessage({ type: 'log', message: '[MEMORY] New module created' });
+        }
+    }
+
+    globalModuleUsed = true;
+    return globalModule;
 }
 
 /**
@@ -1275,7 +1550,7 @@ function hashAuxFiles(auxFiles) {
 // ============ Compilation ============
 
 async function handleCompile(request) {
-    const { id, source, engine, options, bundleData, bundleNames, ctanFiles, cachedFormat, cachedAuxFiles, deferredBundleNames } = request;
+    const { id, source, engine, options, bundleData, bundleNames, bundlesUrl, ctanFiles, cachedFormat, cachedAuxFiles, deferredBundleNames } = request;
 
     // Allow runtime verbose toggle via compile options
     if (options?.verbose !== undefined) {
@@ -1283,7 +1558,6 @@ async function handleCompile(request) {
     }
 
     workerLog('=== Compilation Started ===');
-    const totalStart = performance.now();
 
     // Fallback to bundleDeps.deferred if not passed in message (for older compilers)
     const effectiveDeferredBundles = deferredBundleNames || bundleDeps?.deferred || [];
@@ -1292,9 +1566,34 @@ async function handleCompile(request) {
     if (!fileManifest) throw new Error('fileManifest not set');
 
     // Track accumulated resources across retries
-    const bundleDataMap = bundleData instanceof Map ? bundleData : new Map(Object.entries(bundleData || {}));
+    const bundleDataMap = new Map();
     const bundleMetaMap = new Map(); // Store bundle metadata for dynamically loaded bundles
     const accumulatedCtanFiles = new Map();
+
+    // Load bundles from OPFS/network if names provided (worker-direct loading)
+    // This avoids main thread memory usage for bundle data
+    // Done BEFORE totalStart — bundle I/O is setup, not compilation.
+    if (bundleNames && bundleNames.length > 0) {
+        workerLog(`Loading ${bundleNames.length} bundles (worker-direct)...`);
+        const effectiveUrl = bundlesUrl || workerBundlesUrl;
+
+        await Promise.all(bundleNames.map(async (name) => {
+            try {
+                const data = await loadBundleInWorker(name, effectiveUrl);
+                if (data) bundleDataMap.set(name, data);
+            } catch (e) {
+                workerLog(`Failed to load ${name}: ${e.message}`);
+            }
+        }));
+        workerLog(`Loaded ${bundleDataMap.size}/${bundleNames.length} bundles`);
+    }
+    // Backward compat - bundles sent directly in message (legacy path)
+    else if (bundleData) {
+        const data = bundleData instanceof Map ? bundleData : new Map(Object.entries(bundleData || {}));
+        for (const [name, d] of data) bundleDataMap.set(name, d);
+    }
+
+    const totalStart = performance.now();
 
     // Bundles to load on-demand (e.g., font bundles like cm-super)
     const deferredBundles = new Set(effectiveDeferredBundles);
@@ -1313,6 +1612,7 @@ async function handleCompile(request) {
     const fetchedPackages = new Set();
     // Use global cache for Range-fetched files (persists across compiles)
     let lastExitCode = -1;
+    let texLog = '';
     let Module = null;
     let FS = null;
 
@@ -1354,10 +1654,9 @@ async function handleCompile(request) {
                 fetchedFilesCache: globalFetchedFilesCache  // Persist across compiles
             });
 
-            // Only patch for lazy loading once (on first use)
-            if (options.enableLazyFS && !Module._lazyPatchApplied) {
+            // Register this VFS for lazy loading (updates the holder each compile)
+            if (options.enableLazyFS) {
                 vfs.patchForLazyLoading();
-                Module._lazyPatchApplied = true;
             }
 
             // Mount all bundles (regular and deferred)
@@ -1404,7 +1703,13 @@ async function handleCompile(request) {
                     fmtPath = '/custom.fmt';
                     workerLog('Using custom format');
                     const beginDocIdx = source.indexOf('\\begin{document}');
-                    if (beginDocIdx !== -1) docSource = source.substring(beginDocIdx);
+                    if (beginDocIdx !== -1) {
+                        // Pad stripped preamble with comment lines so TeX line numbers
+                        // stay aligned with the editor (no offset correction needed)
+                        let n = 0;
+                        for (let i = 0; i < beginDocIdx; i++) if (source.charCodeAt(i) === 10) n++;
+                        docSource = '%\n'.repeat(n) + source.substring(beginDocIdx);
+                    }
                 } else {
                     workerLog('Custom format buffer is detached, using default format');
                 }
@@ -1421,8 +1726,6 @@ async function handleCompile(request) {
             if (shimmedCommands.size > 0) {
                 docSource = injectAutoShims(docSource, shimmedCommands);
             }
-
-            // Font maps are now handled by VFS.processFontMaps() - no need to inject \pdfmapfile commands
 
             FS.writeFile('/document.tex', docSource);
 
@@ -1450,6 +1753,7 @@ async function handleCompile(request) {
             }
 
             lastExitCode = result.exit_code;
+            texLog = result.stdout || '';
 
             if (result.exit_code === 0) {
                 try {
@@ -1523,9 +1827,8 @@ async function handleCompile(request) {
                             fetchedFilesCache: globalFetchedFilesCache
                         });
 
-                        if (options.enableLazyFS && !Module._lazyPatchApplied) {
+                        if (options.enableLazyFS) {
                             rerunVfs.patchForLazyLoading();
-                            Module._lazyPatchApplied = true;
                         }
 
                         // Remount all bundles
@@ -1917,52 +2220,51 @@ async function handleCompile(request) {
     // we try to restore a post-compilation snapshot. Fast recompiles come from format
     // caching (.fmt files with pre-compiled preambles) instead.
 
-    // Help GC by clearing references we no longer need
-    // The Module/FS will be recreated on next compile anyway
+    // Sample WASM memory size BEFORE clearing Module reference
+    // This is the primary metric: measures WebAssembly.Memory directly,
+    // which V8 cannot GC (the root cause of the memory leak).
+    // Works in ALL browsers (standard ArrayBuffer.byteLength).
+    let wasmMemoryBytes = 0;
+    try {
+        // Emscripten exposes WASM memory as Module.HEAPU8 (Uint8Array view)
+        // Also try Module.wasmMemory for alternative Emscripten configs
+        const buf = Module?.HEAPU8?.buffer || Module?.wasmMemory?.buffer;
+        if (buf) wasmMemoryBytes = buf.byteLength;
+    } catch (e) { /* defensive */ }
+
+    // Module cleanup happens in getOrCreateModule() before next compile
+    // Just clear local references here
     Module = null;
     FS = null;
 
-    // Build response message once, share between paths
-    const stats = { compileTimeMs: totalTime, bundlesUsed: [...bundleDataMap.keys()] };
+    // Build response message
+    const stats = {
+        compileTimeMs: totalTime,
+        bundlesUsed: [...bundleDataMap.keys()],
+        wasmHeapBytes: wasmMemoryBytes,
+    };
 
-    // Use SharedArrayBuffer for zero-copy PDF transfer when available
-    // SharedArrayBuffer: allows main thread to access PDF data directly without serialization
-    // ArrayBuffer transfer: efficient but transfers ownership (receiver gets the buffer)
-    if (pdfData && sharedArrayBufferAvailable) {
-        const sharedBuffer = new SharedArrayBuffer(pdfData.byteLength);
-        new Uint8Array(sharedBuffer).set(pdfData);
-
-        self.postMessage({
-            type: 'compile-response',
-            id,
-            success: compileSuccess,
-            pdfData: sharedBuffer,
-            pdfDataIsShared: true,
-            syncTexData,
-            exitCode: lastExitCode,
-            auxFilesToCache: auxFiles,
-            stats
-        });
-    } else {
-        // Fallback to transferable ArrayBuffer
-        self.postMessage({
-            type: 'compile-response',
-            id,
-            success: compileSuccess,
-            pdfData: pdfData ? pdfData.buffer : null,
-            pdfDataIsShared: false,
-            syncTexData,
-            exitCode: lastExitCode,
-            auxFilesToCache: auxFiles,
-            stats
-        }, pdfData ? [pdfData.buffer] : []);
-    }
+    // Use transferable ArrayBuffer for PDF (NOT SharedArrayBuffer)
+    // SharedArrayBuffer causes memory leaks - V8 keeps SABs as "strong roots" even after
+    // worker termination, preventing GC. Transfer moves ownership cleanly.
+    self.postMessage({
+        type: 'compile-response',
+        id,
+        success: compileSuccess,
+        pdfData: pdfData ? pdfData.buffer : null,
+        pdfDataIsShared: false,
+        syncTexData,
+        exitCode: lastExitCode,
+        auxFilesToCache: auxFiles,
+        stats,
+        log: texLog,
+    }, pdfData ? [pdfData.buffer] : []);
 }
 
 // ============ Format Generation ============
 
 async function handleFormatGenerate(request) {
-    const { id, preambleContent, engine, manifest, packageMapData, bundleDepsData, bundleRegistryData, bundleData, ctanFiles, maxRetries: maxRetriesOption } = request;
+    const { id, preambleContent, engine, manifest, packageMapData, bundleDepsData, bundleRegistryData, bundleData, bundleNames, bundlesUrl, ctanFiles, maxRetries: maxRetriesOption } = request;
 
     workerLog('=== Format Generation Started ===');
     const startTime = performance.now();
@@ -1972,8 +2274,30 @@ async function handleFormatGenerate(request) {
     bundleDeps = bundleDepsData;
     bundleRegistry = new Set(bundleRegistryData);
 
-    const bundleDataMap = bundleData instanceof Map ? bundleData : new Map(Object.entries(bundleData));
+    const bundleDataMap = new Map();
     const bundleMetaMap = new Map(); // Store bundle metadata for dynamically loaded bundles
+
+    // NEW: Load bundles from OPFS/network if names provided (worker-direct loading)
+    if (bundleNames && bundleNames.length > 0) {
+        workerLog(`Loading ${bundleNames.length} bundles (worker-direct)...`);
+        const effectiveUrl = bundlesUrl || workerBundlesUrl;
+
+        await Promise.all(bundleNames.map(async (name) => {
+            try {
+                const data = await loadBundleInWorker(name, effectiveUrl);
+                if (data) bundleDataMap.set(name, data);
+            } catch (e) {
+                workerLog(`Failed to load ${name}: ${e.message}`);
+            }
+        }));
+        workerLog(`Loaded ${bundleDataMap.size}/${bundleNames.length} bundles`);
+    }
+    // OLD: Backward compat - bundles sent directly in message (legacy path)
+    else if (bundleData) {
+        const data = bundleData instanceof Map ? bundleData : new Map(Object.entries(bundleData));
+        for (const [name, d] of data) bundleDataMap.set(name, d);
+    }
+
     const accumulatedCtanFiles = new Map();
 
     if (ctanFiles) {
@@ -2152,10 +2476,36 @@ self.onmessage = async function(e) {
                 ensureManifestIndexed(fileManifest);
             }
             cachedWasmModule = msg.wasmModule;
+
+            // Store bundlesUrl for worker-direct network fetches
+            workerBundlesUrl = msg.bundlesUrl || null;
+
+            // Detect OPFS capability (async, but don't block ready message)
+            detectWorkerOPFS().then(available => {
+                canUseWorkerOPFS = available;
+                workerLog(`Worker OPFS: ${canUseWorkerOPFS ? 'available' : 'not available (will use main thread)'}`);
+            });
+
+            // Eagerly pre-instantiate WASM module in background.
+            // First compile will reuse this instead of paying ~150ms for instantiation.
+            // getOrCreateModule() awaits globalModulePromise if a compile arrives before this finishes.
+            globalModulePromise = initBusyTeX(cachedWasmModule, busytexJsUrl, null)
+                .then(mod => {
+                    globalModule = mod;
+                    globalModuleUsed = false;
+                    globalModulePromise = null;
+                    workerLog('[MEMORY] WASM module pre-instantiated');
+                })
+                .catch(e => {
+                    globalModulePromise = null;
+                    workerLog('[MEMORY] WASM pre-instantiation failed (will retry on compile): ' + e.message);
+                });
+
             self.postMessage({ type: 'ready' });
             break;
 
         case 'compile':
+            workerLog('[DEBUG] Received compile message, id=' + msg.id);
             // Queue compile operations to prevent concurrent execution
             operationQueue = operationQueue.then(() => handleCompile(msg)).catch(e => {
                 workerLog(`Compile queue error: ${e.message}`);
@@ -2208,6 +2558,19 @@ self.onmessage = async function(e) {
                 if (msg.success) pendingFileRange.resolve(msg);
                 else pendingFileRange.reject(new Error(msg.error || 'File range fetch failed'));
             }
+            break;
+
+        case 'cleanup':
+            // Release caches to free memory when compiler is idle
+            // Bundles will be re-read from OPFS on next compile
+            workerBundleCache.clear();
+            globalFetchedFilesCache.clear();
+            if (globalModule) {
+                destroyModule(globalModule);
+                globalModule = null;
+                globalModuleUsed = false;
+            }
+            workerLog('[MEMORY] Caches cleared');
             break;
     }
 };

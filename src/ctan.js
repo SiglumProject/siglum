@@ -457,22 +457,22 @@ export class CTANFetcher {
             }
 
             // Process files (similar to CTAN fetch)
-            const texExtensions = ['.sty', '.cls', '.def', '.cfg', '.tex', '.fd', '.clo', '.ltx'];
-            const fontExtensions = ['.pfb', '.pfm', '.afm', '.tfm', '.vf', '.map', '.enc'];
             const files = new Map();
             const cacheWrites = [];
 
             await ensureTexliveMounted();
 
             for (const [tarPath, content] of tarFiles) {
-                // Skip docs and source
+                // Skip docs and source directories
                 if (tarPath.includes('/doc/') || tarPath.startsWith('doc/')) continue;
                 if (tarPath.includes('/source/') || tarPath.startsWith('source/')) continue;
 
                 const ext = tarPath.substring(tarPath.lastIndexOf('.')).toLowerCase();
                 const fileName = tarPath.split('/').pop();
 
-                if (texExtensions.includes(ext) || fontExtensions.includes(ext)) {
+                // Include all non-doc/source files — packages may contain
+                // arbitrary data files (.csv, .lua, .html, etc.)
+                if (fileName && ext.startsWith('.')) {
                     // Map to texlive path structure
                     // Note: tar paths may or may not have leading slash
                     let targetPath;

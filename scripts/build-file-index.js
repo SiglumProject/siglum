@@ -8,8 +8,8 @@ const fileToPackage = {};
 let currentPkg = null;
 let inRunfiles = false;
 
-// Extensions to index: LaTeX packages, classes, defs, and TikZ/PGF library files
-const indexedExtensions = /\.(sty|cls|def|fd|cfg|clo|ltx|code\.tex)$/;
+// Extensions to index: LaTeX packages, classes, defs, data files, and TikZ/PGF library files
+const indexedExtensions = /\.(sty|cls|def|fd|cfg|clo|ltx|code\.tex|csv|lua|ldf|ini|html|dat|luc)$/;
 
 for (const line of lines) {
     if (line.startsWith('name ')) {

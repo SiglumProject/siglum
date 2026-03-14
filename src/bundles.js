@@ -15,31 +15,19 @@ import {
 
 import { hashPreamble } from './hash.js';
 
-// Check if SharedArrayBuffer is available (requires COOP/COEP headers)
-const sharedArrayBufferSupported = typeof SharedArrayBuffer !== 'undefined';
-
 // Decompression using native CompressionStream
-// Returns SharedArrayBuffer when available for zero-copy sharing with workers
+// Returns regular ArrayBuffer - SharedArrayBuffer causes memory leaks due to V8 GC issues
+// (SABs sent to workers become "strong roots" that persist even after worker termination)
 async function decompress(compressed, format = 'gzip') {
     // If format is 'none', return as-is (already decompressed by browser)
-    let data;
     if (format === 'none') {
-        data = compressed;
-    } else {
-        const ds = new DecompressionStream(format);
-        const blob = new Blob([compressed]);
-        const stream = blob.stream().pipeThrough(ds);
-        data = await new Response(stream).arrayBuffer();
+        return compressed;
     }
 
-    // Convert to SharedArrayBuffer for zero-copy worker access
-    if (sharedArrayBufferSupported) {
-        const shared = new SharedArrayBuffer(data.byteLength);
-        new Uint8Array(shared).set(new Uint8Array(data));
-        return shared;
-    }
-
-    return data;
+    const ds = new DecompressionStream(format);
+    const blob = new Blob([compressed]);
+    const stream = blob.stream().pipeThrough(ds);
+    return await new Response(stream).arrayBuffer();
 }
 
 /**
@@ -348,6 +336,13 @@ export class BundleManager {
             while ((match = loadClassRegex.exec(text)) !== null) {
                 packages.add(match[1]);
             }
+
+            // \DocumentMetadata{...} requires latex-lab support files
+            if (/\\DocumentMetadata/.test(text)) {
+                packages.add('latex-lab');
+                packages.add('pdfmanagement-testphase');
+                packages.add('tagpdf');
+            }
         };
 
         // Scan main source
@@ -417,7 +412,7 @@ export class BundleManager {
     /**
      * Load a bundle by name.
      * @param {string} bundleName - Bundle name
-     * @returns {Promise<ArrayBuffer|SharedArrayBuffer>} Bundle data
+     * @returns {Promise<ArrayBuffer>} Bundle data
      */
     async loadBundle(bundleName) {
         // Check memory cache
@@ -459,7 +454,7 @@ export class BundleManager {
     /**
      * Load multiple bundles in parallel.
      * @param {string[]} bundleNames - Bundle names
-     * @returns {Promise<Object<string, ArrayBuffer|SharedArrayBuffer>>} Map of bundle data
+     * @returns {Promise<Object<string, ArrayBuffer>>} Map of bundle data
      */
     async loadBundles(bundleNames) {
         const bundleData = {};

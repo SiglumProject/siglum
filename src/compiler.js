@@ -56,8 +56,6 @@ import {
     hashDocument,
     getFmtPath,
     clearCTANCache,
-    getCompiledWasmModule,
-    saveWasmBytes,
     saveWasmMemorySnapshot,
 } from './storage.js';
 
@@ -267,29 +265,56 @@ export class SiglumCompiler {
         this._log('Loading WASM...');
         const startTime = performance.now();
 
-        try {
-            // Try loading cached compiled module first (skips fetch + compile)
-            const cachedModule = await getCompiledWasmModule();
-            if (cachedModule) {
-                this.wasmModule = cachedModule;
-                const elapsed = (performance.now() - startTime).toFixed(0);
-                this._log('WASM loaded from cache in ' + elapsed + 'ms');
-                return;
-            }
+        // Primary path: Cache API + compileStreaming()
+        // V8 automatically caches compiled machine code when compileStreaming is used.
+        // On subsequent loads, it deserializes native code instead of recompiling from bytes.
+        if (typeof WebAssembly.compileStreaming === 'function' && typeof caches !== 'undefined') {
+            try {
+                const cache = await caches.open('siglum-wasm-v1');
+                let response = await cache.match(this.wasmUrl);
+                if (response) {
+                    try {
+                        this.wasmModule = await WebAssembly.compileStreaming(response);
+                        const elapsed = (performance.now() - startTime).toFixed(0);
+                        this._log(`WASM loaded from cache + compileStreaming in ${elapsed}ms`);
+                        return;
+                    } catch (e) {
+                        // Cached response may be corrupt or stale — delete and fall through
+                        this._log('Cached WASM compile failed, evicting: ' + e.message);
+                        cache.delete(this.wasmUrl).catch(() => {});
+                    }
+                }
 
-            // Fetch WASM as bytes (not streaming compile - we need bytes for caching)
+                // Not cached (or cache evicted) — fetch from network
+                response = await fetch(this.wasmUrl);
+                if (response.ok) {
+                    // Clone before consuming — only cache after compile succeeds
+                    const responseToCache = response.clone();
+                    this.wasmModule = await WebAssembly.compileStreaming(response);
+                    cache.put(this.wasmUrl, responseToCache).catch(() => {});
+                    const elapsed = (performance.now() - startTime).toFixed(0);
+                    this._log(`WASM fetched + compileStreaming in ${elapsed}ms`);
+                    return;
+                }
+                // Non-ok response — fall through to fallback (don't re-fetch)
+            } catch (e) {
+                this._log('compileStreaming path failed, falling back: ' + e.message);
+            }
+        }
+
+        // Fallback: fetch + compile (no V8 code caching, but works everywhere)
+        try {
             const response = await fetch(this.wasmUrl);
+            if (!response.ok) {
+                throw new Error(`WASM fetch failed: ${response.status} ${response.statusText}`);
+            }
             const wasmBytes = new Uint8Array(await response.arrayBuffer());
             const fetchElapsed = (performance.now() - startTime).toFixed(0);
 
-            // Compile from bytes
             const compileStart = performance.now();
             this.wasmModule = await WebAssembly.compile(wasmBytes);
             const compileElapsed = (performance.now() - compileStart).toFixed(0);
-            this._log(`WASM fetched in ${fetchElapsed}ms, compiled in ${compileElapsed}ms`);
-
-            // Cache the bytes for future loads (Module can't be serialized to IndexedDB)
-            saveWasmBytes(wasmBytes).catch(() => {});
+            this._log(`WASM fetched in ${fetchElapsed}ms, compiled in ${compileElapsed}ms (fallback)`);
         } catch (e) {
             this._log('WASM load failed: ' + e.message);
             throw e;
@@ -375,6 +400,7 @@ export class SiglumCompiler {
                 bundleDepsData: this.bundleManager.bundleDeps,
                 bundleRegistryData: this.bundleManager.bundleRegistry ? [...this.bundleManager.bundleRegistry] : [],
                 verbose: this.verbose,
+                bundlesUrl: this.bundlesUrl,  // For worker-direct OPFS/network bundle loading
             };
 
             // Include memory snapshot if available (transfer for efficiency)
@@ -493,14 +519,24 @@ export class SiglumCompiler {
                 return;
             }
 
+            // Copy file buffers for transfer (original stays in cache)
+            const files = {};
+            const transferList = [];
+            for (const [path, data] of result.files) {
+                if (data && data.buffer) {
+                    const copy = data.buffer.slice(0);
+                    files[path] = new Uint8Array(copy);
+                    transferList.push(copy);
+                }
+            }
             this.worker.postMessage({
                 type: 'ctan-fetch-response',
                 requestId,
                 packageName,
                 success: true,
-                files: Object.fromEntries(result.files),
+                files,
                 dependencies: result.dependencies || [],
-            });
+            }, transferList);
         } catch (e) {
             this._log('CTAN fetch error: ' + e.message);
             this.worker.postMessage({
@@ -521,27 +557,16 @@ export class SiglumCompiler {
 
             const bundleData = await this.bundleManager.loadBundle(bundleName);
 
-            // SharedArrayBuffer: send directly (automatically shared, no transfer list)
-            // ArrayBuffer: copy before transfer so original stays valid in cache
-            const isShared = typeof SharedArrayBuffer !== 'undefined' && bundleData instanceof SharedArrayBuffer;
-            if (isShared) {
-                this.worker.postMessage({
-                    type: 'bundle-fetch-response',
-                    requestId,
-                    bundleName,
-                    success: true,
-                    bundleData,
-                });
-            } else {
-                const copy = bundleData.slice(0);
-                this.worker.postMessage({
-                    type: 'bundle-fetch-response',
-                    requestId,
-                    bundleName,
-                    success: true,
-                    bundleData: copy,
-                }, [copy]);
-            }
+            // Copy and transfer to worker (original stays in cache)
+            // Note: SharedArrayBuffer intentionally not used - causes V8 memory leaks
+            const copy = bundleData.slice(0);
+            this.worker.postMessage({
+                type: 'bundle-fetch-response',
+                requestId,
+                bundleName,
+                success: true,
+                bundleData: copy,
+            }, [copy]);
         } catch (e) {
             this._log('Bundle fetch error: ' + e.message);
             this.worker.postMessage({
@@ -808,42 +833,26 @@ export class SiglumCompiler {
             this._log('Required bundles: ' + bundles.join(', '));
         }
 
-        // Prepare bundle data for worker (SharedArrayBuffer for zero-copy, or regular ArrayBuffer with transfer)
-        this.onProgress('loading', 'Loading bundles...');
+        // Worker-direct bundle loading: send names only, worker loads from OPFS/network
+        // This eliminates main thread memory usage for bundle data (300MB+ savings)
+        this.onProgress('loading', 'Preparing compilation...');
 
-        let bundleData = {};
+        const bundleNames = allBundles;  // Just pass names - worker loads directly
         let transferList = [];
 
-        // Load bundle blobs
-        const loadedBundles = await this.bundleManager.loadBundles(allBundles);
-        let totalBytes = 0;
-        let usingSharedArrayBuffer = false;
-
-        for (const [name, data] of Object.entries(loadedBundles)) {
-            if (data) {
-                // Check if data is SharedArrayBuffer (zero-copy) or regular ArrayBuffer (needs transfer)
-                const isShared = typeof SharedArrayBuffer !== 'undefined' && data instanceof SharedArrayBuffer;
-                if (isShared) {
-                    // SharedArrayBuffer: no copy needed, worker reads same memory
-                    bundleData[name] = data;
-                    usingSharedArrayBuffer = true;
-                } else {
-                    // Regular ArrayBuffer: copy for transfer (original stays in cache)
-                    const copy = data.slice(0);
-                    bundleData[name] = copy;
-                    transferList.push(copy);
-                }
-                totalBytes += data.byteLength;
-            }
-        }
-        if (usingSharedArrayBuffer) {
-            this._log(`Sharing ${Object.keys(bundleData).length} bundles via SharedArrayBuffer (${(totalBytes/1024/1024).toFixed(1)}MB, zero-copy)`);
-        } else {
-            this._log(`Transferring ${Object.keys(bundleData).length} bundles (${(totalBytes/1024/1024).toFixed(1)}MB)`);
-        }
+        this._log(`Bundles: ${bundleNames.join(', ')} (worker-direct loading)`);
 
         // Get CTAN files from memory cache (populated by previous fetches)
-        const ctanFiles = this.ctanFetcher.getCachedFiles();
+        // Copy files for transfer (original stays in cache)
+        const ctanFilesRaw = this.ctanFetcher.getCachedFiles();
+        const ctanFiles = {};
+        for (const [path, data] of Object.entries(ctanFilesRaw)) {
+            if (data && data.buffer) {
+                const copy = data.buffer.slice(0);
+                ctanFiles[path] = new Uint8Array(copy);
+                transferList.push(copy);
+            }
+        }
         const ctanFileCount = Object.keys(ctanFiles).length;
         if (ctanFileCount > 0) {
             this._log(`Passing ${ctanFileCount} cached CTAN files to worker`);
@@ -856,8 +865,10 @@ export class SiglumCompiler {
             const data = typeof content === 'string'
                 ? new TextEncoder().encode(content)
                 : content;
-            // Mount in current directory (will be found by TeX)
-            ctanFiles['/' + filename] = data;
+            // Copy buffer for transfer
+            const copy = data.buffer.slice(0);
+            ctanFiles['/' + filename] = new Uint8Array(copy);
+            transferList.push(copy);
         }
 
         // Check for cached format (in-memory first, then filesystem)
@@ -868,7 +879,10 @@ export class SiglumCompiler {
 
         // Check in-memory cache first (fast path)
         if (this._fmtMemCache?.key === fmtKey && this._fmtMemCache?.data?.buffer?.byteLength > 0) {
-            cachedFormat = { fmtName: fmtKey, fmtData: this._fmtMemCache.data };
+            // Copy format data for transfer (original stays in memory cache)
+            const fmtCopy = this._fmtMemCache.data.buffer.slice(0);
+            cachedFormat = { fmtName: fmtKey, fmtData: new Uint8Array(fmtCopy) };
+            transferList.push(fmtCopy);
             this._log('Using cached format (memory)');
         } else {
             // Fall back to filesystem cache - path is deterministic from fmtKey
@@ -876,9 +890,14 @@ export class SiglumCompiler {
             await ensureFmtCacheMount();
             const fmtData = await fileSystem.readBinary(fmtPath).catch(() => null);
             if (fmtData && fmtData.byteLength > 0) {
+                // Normalize to Uint8Array if needed (readBinary may return ArrayBuffer or Uint8Array)
+                const fmtArray = fmtData instanceof Uint8Array ? fmtData : new Uint8Array(fmtData);
                 // Cache in memory for subsequent compiles
-                this._fmtMemCache = { key: fmtKey, data: fmtData.slice() };
-                cachedFormat = { fmtName: fmtKey, fmtData: this._fmtMemCache.data };
+                this._fmtMemCache = { key: fmtKey, data: new Uint8Array(fmtArray) };
+                // Copy ArrayBuffer for transfer (must be ArrayBuffer, not Uint8Array)
+                const fmtCopy = fmtArray.buffer.slice(fmtArray.byteOffset, fmtArray.byteOffset + fmtArray.byteLength);
+                cachedFormat = { fmtName: fmtKey, fmtData: new Uint8Array(fmtCopy) };
+                transferList.push(fmtCopy);
                 this._log('Using cached format (filesystem)');
             }
         }
@@ -957,25 +976,36 @@ export class SiglumCompiler {
                 },
             };
 
-            this.worker.postMessage({
-                type: 'compile',
-                id: compileId,
-                source,
-                engine,
-                options: {
-                    enableLazyFS: this.enableLazyFS,
-                    enableCtan: this.enableCtan,
-                    maxRetries: this.maxRetries,
-                    verbose: this.verbose,
-                },
-                bundleData,
-                ctanFiles,
-                cachedFormat,
-                cachedAuxFiles: auxCache?.files || null,
-                // Deferred bundles minus any that are eagerly loaded
-                deferredBundleNames: (this.bundleManager.bundleDeps?.deferred || [])
-                    .filter(b => !eagerBundles.includes(b)),
-            }, transferList);
+            this._log(`[DEBUG] Sending compile, transferList: ${transferList.length} items, ${transferList.reduce((s,b) => s + b.byteLength, 0)} bytes`);
+            try {
+                this.worker.postMessage({
+                    type: 'compile',
+                    id: compileId,
+                    source,
+                    engine,
+                    options: {
+                        enableLazyFS: this.enableLazyFS,
+                        enableCtan: this.enableCtan,
+                        maxRetries: this.maxRetries,
+                        verbose: this.verbose,
+                    },
+                    bundleNames,         // Worker-direct: send names only
+                    bundlesUrl: this.bundlesUrl,  // Worker loads from OPFS/network
+                    ctanFiles,
+                    cachedFormat,
+                    cachedAuxFiles: auxCache?.files || null,
+                    // Deferred bundles minus any that are eagerly loaded
+                    deferredBundleNames: (this.bundleManager.bundleDeps?.deferred || [])
+                        .filter(b => !eagerBundles.includes(b)),
+                }, transferList);
+                // Verify buffers were detached (transferred)
+                const detachedCount = transferList.filter(b => b.byteLength === 0).length;
+                this._log(`[DEBUG] postMessage sent, ${detachedCount}/${transferList.length} buffers detached`);
+            } catch (e) {
+                this._log('[DEBUG] postMessage FAILED: ' + e.message);
+                reject(e);
+                return;
+            }
         });
     }
 
@@ -1028,11 +1058,20 @@ export class SiglumCompiler {
             }
         }
 
-        const allBundles = [...new Set([...bundles, ...depBundles])];
-        const bundleData = await this.bundleManager.loadBundles(allBundles);
+        // Worker-direct bundle loading: send names only
+        const bundleNames = [...new Set([...bundles, ...depBundles])];
+        const transferList = [];
 
-        // Get CTAN files from memory cache
-        const ctanFiles = this.ctanFetcher.getCachedFiles();
+        // Get CTAN files from memory cache - copy for transfer
+        const ctanFilesRaw = this.ctanFetcher.getCachedFiles();
+        const ctanFiles = {};
+        for (const [path, data] of Object.entries(ctanFilesRaw)) {
+            if (data && data.buffer) {
+                const copy = data.buffer.slice(0);
+                ctanFiles[path] = new Uint8Array(copy);
+                transferList.push(copy);
+            }
+        }
 
         this._log('Generating format file...');
         this.onProgress('format', 'Generating format...');
@@ -1083,10 +1122,11 @@ export class SiglumCompiler {
                 packageMapData: this.bundleManager.packageMap,
                 bundleDepsData: this.bundleManager.bundleDeps,
                 bundleRegistryData: [...this.bundleManager.bundleRegistry],
-                bundleData,
+                bundleNames,           // Worker-direct: send names only
+                bundlesUrl: this.bundlesUrl,  // Worker loads from OPFS/network
                 ctanFiles,
                 maxRetries: this.maxRetries,
-            });
+            }, transferList);
         }).finally(() => {
             this.formatGenerationPromise = null;
         });
@@ -1103,6 +1143,15 @@ export class SiglumCompiler {
         await clearCTANCache();
         this.ctanFetcher.clearMountedFiles();
         this._log('Cache cleared');
+    }
+
+    /**
+     * Clear bundle memory cache to free RAM.
+     * Bundles are still cached on disk (OPFS) and will reload quickly.
+     * Call this after compile to reduce main thread memory usage.
+     */
+    clearBundleMemoryCache() {
+        this.bundleManager.clearCache();
     }
 
     /**
