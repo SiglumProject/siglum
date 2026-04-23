@@ -926,7 +926,10 @@ export class SiglumCompiler {
                         // Do this in background to not block the compile result
                         // Skip for xelatex - XeTeX can't dump formats with native fonts
                         if (!cachedFormat && preamble && engine !== 'xelatex') {
-                            this.generateFormat(source, { engine }).then(async () => {
+                            this.generateFormat(source, {
+                                engine,
+                                additionalFiles: options.additionalFiles || {},
+                            }).then(async () => {
                                 // Populate memory cache from the newly generated format
                                 await ensureFmtCacheMount();
                                 const data = await fileSystem.readBinary('/' + getFmtPath(fmtKey)).catch(() => null);
@@ -982,11 +985,12 @@ export class SiglumCompiler {
     /**
      * Pre-generate a format file for faster subsequent compilations.
      * @param {string} source - LaTeX source with preamble to cache
-     * @param {{engine?: string}} [options] - Options
+     * @param {{engine?: string, additionalFiles?: Object<string, string|Uint8Array>}} [options] - Options
      * @returns {Promise<Uint8Array|null>} Format data or null if not supported
      */
     async generateFormat(source, options = {}) {
         const engine = options.engine || 'pdflatex';
+        const additionalFiles = options.additionalFiles || {};
 
         // XeTeX can't dump formats with native fonts (fontspec)
         if (engine === 'xelatex') {
@@ -1022,7 +1026,7 @@ export class SiglumCompiler {
         // Get dependency bundles from prescan (e.g., utils for environ)
         let depBundles = [];
         if (this.enableCtan) {
-            const { additionalBundles } = this.bundleManager.prescanForCtanPackages(source, engine, {});
+            const { additionalBundles } = this.bundleManager.prescanForCtanPackages(source, engine, additionalFiles);
             if (additionalBundles && additionalBundles.length > 0) {
                 depBundles = additionalBundles;
             }
@@ -1033,6 +1037,12 @@ export class SiglumCompiler {
 
         // Get CTAN files from memory cache
         const ctanFiles = this.ctanFetcher.getCachedFiles();
+        for (const [filename, content] of Object.entries(additionalFiles)) {
+            const data = typeof content === 'string'
+                ? new TextEncoder().encode(content)
+                : content;
+            ctanFiles['/' + filename] = data;
+        }
 
         this._log('Generating format file...');
         this.onProgress('format', 'Generating format...');
