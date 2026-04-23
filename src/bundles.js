@@ -353,11 +353,23 @@ export class BundleManager {
         // Scan main source
         scanSource(source);
 
-        // Scan additional files (for multi-file documents)
-        const texFiles = Object.entries(additionalFiles).filter(([f]) => f.endsWith('.tex'));
-        if (texFiles.length > 0) {
+        // Scan additional LaTeX sources referenced by the workspace, not just
+        // .tex files. Local .sty/.cls files often declare package dependencies
+        // that should be resolved before the TeX run starts.
+        const latexLikeFiles = Object.entries(additionalFiles).filter(([f]) =>
+            /\.(tex|sty|cls|clo|def|cfg)$/i.test(f)
+        );
+        const localPackageNames = new Set(
+            latexLikeFiles
+                .map(([f]) => {
+                    const base = f.split('/').pop() || f;
+                    return base.replace(/\.(tex|sty|cls|clo|def|cfg)$/i, '');
+                })
+                .filter(Boolean)
+        );
+        if (latexLikeFiles.length > 0) {
             const decoder = new TextDecoder(); // Reuse for all files
-            for (const [, content] of texFiles) {
+            for (const [, content] of latexLikeFiles) {
                 const text = typeof content === 'string' ? content : decoder.decode(content);
                 scanSource(text);
             }
@@ -396,6 +408,10 @@ export class BundleManager {
         const additionalBundles = new Set();
 
         for (const pkg of expanded) {
+            // Local workspace files should satisfy their own package/class
+            // references; prefetching them from CTAN creates bogus 404s.
+            if (localPackageNames.has(pkg)) continue;
+
             const bundleName = this.packageMap?.[pkg];
             if (bundleName && this.bundleExists(bundleName)) {
                 if (directBundles.has(bundleName)) {
