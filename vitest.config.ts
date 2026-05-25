@@ -5,6 +5,9 @@ export default defineConfig({
         environment: 'happy-dom',
         setupFiles: ['./tests/setup/vitest.setup.ts'],
         include: ['tests/**/*.test.ts'],
+        // tests/browser/** require a real browser (WASM + Workers); they run under
+        // vitest.browser.config.ts, not this node/happy-dom config.
+        exclude: ['tests/browser/**', 'node_modules/**'],
         coverage: {
             provider: 'v8',
             reporter: ['text', 'json', 'html'],

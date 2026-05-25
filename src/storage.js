@@ -619,3 +619,17 @@ export { CTAN_CACHE_VERSION };
  * @type {number}
  */
 export { MANIFEST_CACHE_VERSION };
+
+/**
+ * Reset all module-level mount flags and in-memory caches. These are process-wide
+ * singletons, so without a reset a mounted flag set by one test would short-circuit
+ * the mount logic in the next. Intended for tests only; no-op effect in production.
+ */
+export function __resetStorageStateForTests() {
+    wasmCacheMounted = ctanCacheMounted = manifestsMounted = fmtCacheMounted =
+        texliveMounted = bundleCacheMounted = auxCacheMounted = docCacheMounted = false;
+    wasmCacheMounting = ctanCacheMounting = manifestsMounting = fmtCacheMounting =
+        texliveMounting = bundleCacheMounting = auxCacheMounting = docCacheMounting = null;
+    auxMemoryCache.clear();
+    docMemoryCache.clear();
+}

@@ -2675,7 +2675,6 @@ self.onmessage = async function(e) {
             break;
 
         case 'compile':
-            workerLog('[DEBUG] Received compile message, id=' + msg.id);
             // Queue compile operations to prevent concurrent execution
             operationQueue = operationQueue.then(() => handleCompile(msg)).catch(e => {
                 workerLog(`Compile queue error: ${e.message}`);

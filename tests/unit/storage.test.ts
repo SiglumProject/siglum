@@ -35,12 +35,16 @@ import {
     saveWasmMemorySnapshot,
     CTAN_CACHE_VERSION,
     MANIFEST_CACHE_VERSION,
+    __resetStorageStateForTests,
 } from '../../src/storage.js';
 
 describe('storage module', () => {
     beforeEach(() => {
         resetMockFileSystem();
         vi.clearAllMocks();
+        // Mount flags/caches are module-level singletons; reset so each test starts
+        // clean (otherwise a flag set by an earlier test short-circuits mountAuto).
+        __resetStorageStateForTests();
     });
 
     afterEach(() => {
@@ -158,9 +162,8 @@ describe('storage module', () => {
                 await saveBundleToCache('mybundle', data);
 
                 expect(mockFileSystem.writeBinary).toHaveBeenCalledWith(
-                    '/bundle-cache/mybundle.bundle',
-                    expect.any(Uint8Array),
-                    expect.any(Object)
+                    '/bundle-cache/bundles/mybundle.data',
+                    expect.any(Uint8Array)
                 );
             });
 

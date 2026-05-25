@@ -1,7 +1,7 @@
 {
   "name": "@siglum/engine",
-  "version": "0.1.4",
-  "description": "A browser-based LaTeX compiler. TeX Live 2025 running in WebAssembly, with lazy bundle loading and on-demand package fetching.",
+  "version": "0.2.0",
+  "description": "A browser-based LaTeX compiler. TeX Live 2026 running in WebAssembly, with lazy bundle loading and on-demand package fetching.",
   "type": "module",
   "main": "src/index.js",
   "types": "types/index.d.ts",

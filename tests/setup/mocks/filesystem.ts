@@ -240,10 +240,23 @@ export const mockFileSystem = {
     }),
 };
 
+// Capture each method's implementation at module load. The global afterEach in
+// vitest.setup.ts calls vi.restoreAllMocks(), which strips the implementation
+// from these module-level vi.fn() mocks. Without re-installing them, every test
+// after the first would get a mock that returns undefined (e.g. readBinary()
+// returning undefined → `.catch` throwing). resetMockFileSystem() re-applies them.
+const _impls = Object.fromEntries(
+    Object.entries(mockFileSystem).map(([key, fn]) => [key, (fn as ReturnType<typeof vi.fn>).getMockImplementation()])
+) as Record<string, (...args: any[]) => any>;
+
 export function resetMockFileSystem(): void {
     root = createDirectory();
     mountedPaths.clear();
     vi.clearAllMocks();
+    // Re-install implementations in case a prior afterEach restored/stripped them.
+    for (const [key, impl] of Object.entries(_impls)) {
+        (mockFileSystem as Record<string, ReturnType<typeof vi.fn>>)[key].mockImplementation(impl);
+    }
 }
 
 // Helper to set up test data

@@ -264,6 +264,10 @@ describe('Compilation Flow Integration', () => {
     });
 
     afterEach(() => {
+        // Restore real timers first: a fake-timer test that throws before its own
+        // useRealTimers() would otherwise leave every later test deadlocked on
+        // setTimeout-based waits.
+        vi.useRealTimers();
         // Manual cleanup of global stubs
         for (const stub of globalStubs) {
             delete (globalThis as any)[stub];
@@ -406,6 +410,9 @@ describe('Compilation Flow Integration', () => {
         it('should pre-fetch CTAN packages before compile', async () => {
             await initCompiler();
 
+            // CTAN pre-fetch only runs when CTAN is enabled (off by default with no proxy).
+            compiler.enableCtan = true;
+
             // Override prescanForCtanPackages to return CTAN packages
             compiler.bundleManager.prescanForCtanPackages = vi.fn().mockReturnValue({
                 bundledPackages: [],
@@ -473,6 +480,9 @@ describe('Compilation Flow Integration', () => {
         it('should handle compilation errors gracefully', async () => {
             await initCompiler();
 
+            // Disable auto-success so our explicit failure response drives the result.
+            workerInstances[0]?.setHandler('compile', () => null);
+
             const compilePromise = compiler.compile('\\invalid{latex}');
             await new Promise(r => setTimeout(r, 20));
 
@@ -494,6 +504,9 @@ describe('Compilation Flow Integration', () => {
         it('should handle worker errors', async () => {
             await initCompiler();
 
+            // Disable auto-success so the worker error is what settles the compile.
+            workerInstances[0]?.setHandler('compile', () => null);
+
             const compilePromise = compiler.compile(SIMPLE_DOCUMENT);
             await new Promise(r => setTimeout(r, 20));
 
@@ -503,15 +516,19 @@ describe('Compilation Flow Integration', () => {
         });
 
         it('should handle timeout', async () => {
-            vi.useFakeTimers();
-
+            // Init under real timers; fake timers freeze initCompiler()'s waits.
             await initCompiler();
 
+            // Stop the mock worker from auto-responding so only the timeout fires.
+            workerInstances[0]?.setHandler('compile', () => null);
+
+            vi.useFakeTimers();
             const compilePromise = compiler.compile(SIMPLE_DOCUMENT);
-
-            vi.advanceTimersByTime(130000); // 130 seconds > 120 second timeout
-
-            await expect(compilePromise).rejects.toThrow('timeout');
+            // Attach the rejection handler before advancing the clock to avoid an
+            // unhandled rejection when the timeout fires.
+            const assertion = expect(compilePromise).rejects.toThrow('timeout');
+            await vi.advanceTimersByTimeAsync(130000); // 130s > 120s timeout
+            await assertion;
 
             vi.useRealTimers();
         });
@@ -520,6 +537,9 @@ describe('Compilation Flow Integration', () => {
     describe('Statistics', () => {
         it('should return compilation stats', async () => {
             await initCompiler();
+
+            // Disable auto-success so our explicit stats payload drives the result.
+            workerInstances[0]?.setHandler('compile', () => null);
 
             const compilePromise = compiler.compile(SIMPLE_DOCUMENT);
             await new Promise(r => setTimeout(r, 20));

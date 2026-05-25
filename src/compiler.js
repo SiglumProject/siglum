@@ -105,6 +105,7 @@ export class SiglumCompiler {
         this.workerReady = false;
         this.wasmModule = null;
         this._initWorkerPromise = null;
+        this._initPromise = null;
         this.pendingCompile = null;
         this.formatGenerationPromise = null;
 
@@ -237,7 +238,20 @@ export class SiglumCompiler {
      * Initialize the compiler. Loads WASM, manifests, and prepares the worker.
      * @returns {Promise<void>}
      */
-    async init() {
+    init() {
+        // Memoize so concurrent callers share one in-flight init (avoids a second
+        // WASM fetch/compile + worker). Returns the same promise object until it
+        // settles; on failure the memo is cleared so a later call can retry.
+        if (!this._initPromise) {
+            this._initPromise = this._doInit().catch(e => {
+                this._initPromise = null;
+                throw e;
+            });
+        }
+        return this._initPromise;
+    }
+
+    async _doInit() {
         this._log('Initializing Siglum compiler...');
 
         // Load manifests + WASM in parallel
@@ -991,7 +1005,6 @@ export class SiglumCompiler {
                 },
             };
 
-            this._log(`[DEBUG] Sending compile, transferList: ${transferList.length} items, ${transferList.reduce((s,b) => s + b.byteLength, 0)} bytes`);
             try {
                 this.worker.postMessage({
                     type: 'compile',
@@ -1014,11 +1027,8 @@ export class SiglumCompiler {
                     deferredBundleNames: (this.bundleManager.bundleDeps?.deferred || [])
                         .filter(b => !eagerBundles.includes(b)),
                 }, transferList);
-                // Verify buffers were detached (transferred)
-                const detachedCount = transferList.filter(b => b.byteLength === 0).length;
-                this._log(`[DEBUG] postMessage sent, ${detachedCount}/${transferList.length} buffers detached`);
             } catch (e) {
-                this._log('[DEBUG] postMessage FAILED: ' + e.message);
+                this._log('Failed to post compile message to worker: ' + e.message);
                 reject(e);
                 return;
             }
@@ -1194,6 +1204,8 @@ export class SiglumCompiler {
             this.worker = null;
             this.workerReady = false;
         }
+        // Clear the memoized init so a subsequent init() re-runs from scratch.
+        this._initPromise = null;
     }
 
     /**

@@ -24,10 +24,14 @@ import {
 } from '../setup/fixtures/latex-samples';
 import { mockFileSystem, resetMockFileSystem } from '../setup/mocks/filesystem';
 
-// Mock the @siglum/filesystem module
-vi.mock('@siglum/filesystem', () => ({
-    fileSystem: mockFileSystem,
-}));
+// Mock the @siglum/filesystem module. Use an async factory with a dynamic import
+// rather than referencing the top-level mockFileSystem binding: vi.mock is hoisted
+// above the imports, so referencing it directly can throw "Cannot access
+// '__vi_import__' before initialization".
+vi.mock('@siglum/filesystem', async () => {
+    const { mockFileSystem } = await import('../setup/mocks/filesystem');
+    return { fileSystem: mockFileSystem };
+});
 
 // Mock storage module
 vi.mock('../../src/storage.js', async () => {
@@ -493,7 +497,12 @@ describe('bundles module', () => {
                         });
                     }
                     if (url.includes('.data.gz')) {
-                        const bundleData = createMockBundleData('base');
+                        const bundleName = url.match(/\/([^\/]+)\.data\.gz/)?.[1] || 'unknown';
+                        // Simulate a missing bundle so the 404 path can be exercised.
+                        if (bundleName === 'nonexistent') {
+                            return Promise.resolve({ ok: false, status: 404 });
+                        }
+                        const bundleData = createMockBundleData(bundleName);
                         return Promise.resolve({
                             ok: true,
                             headers: new Headers({ 'Content-Encoding': 'br' }), // Pretend brotli so no decompress
@@ -551,6 +560,10 @@ describe('bundles module', () => {
                     }
                     if (url.includes('.data.gz')) {
                         const bundleName = url.match(/\/([^\/]+)\.data\.gz/)?.[1] || 'unknown';
+                        // Simulate a missing bundle to exercise partial-failure handling.
+                        if (bundleName === 'nonexistent') {
+                            return Promise.resolve({ ok: false, status: 404 });
+                        }
                         const bundleData = createMockBundleData(bundleName);
                         return Promise.resolve({
                             ok: true,

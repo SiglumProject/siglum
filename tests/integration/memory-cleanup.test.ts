@@ -220,6 +220,10 @@ describe('Memory Cleanup Integration', () => {
     });
 
     afterEach(() => {
+        // Restore real timers first: a fake-timer test that throws before its own
+        // useRealTimers() would otherwise leave every later test deadlocked on
+        // setTimeout-based waits.
+        vi.useRealTimers();
         // Manual cleanup of global stubs
         for (const stub of globalStubs) {
             delete (globalThis as any)[stub];
@@ -548,15 +552,19 @@ describe('Memory Cleanup Integration', () => {
         });
 
         it('should cleanup pending compile on timeout', async () => {
-            vi.useFakeTimers();
-
+            // Init under real timers; fake timers freeze initCompiler()'s waits.
             await initCompiler();
 
+            // Stop the mock worker from auto-responding so only the timeout fires.
+            workerInstances[0]?.setHandler('compile', () => null);
+
+            vi.useFakeTimers();
             const compilePromise = compiler.compile('test');
-
-            vi.advanceTimersByTime(130000);
-
-            await expect(compilePromise).rejects.toThrow('timeout');
+            // Attach the rejection handler before advancing the clock to avoid an
+            // unhandled rejection when the timeout fires.
+            const assertion = expect(compilePromise).rejects.toThrow('timeout');
+            await vi.advanceTimersByTimeAsync(130000);
+            await assertion;
 
             vi.useRealTimers();
         }, 35000);

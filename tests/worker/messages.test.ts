@@ -610,6 +610,9 @@ describe('Worker Message Protocol', () => {
                     }
                 }, 5000);
             });
+            // Attach a handler so the timeout rejection isn't reported as unhandled
+            // when advanceTimersByTime fires it below.
+            promise.catch(() => {});
 
             vi.advanceTimersByTime(6000);
 

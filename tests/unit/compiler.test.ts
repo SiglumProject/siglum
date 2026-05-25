@@ -228,6 +228,10 @@ describe('compiler module', () => {
     });
 
     afterEach(() => {
+        // Always restore real timers: a test that enables fake timers and then
+        // throws/times out before its own useRealTimers() would otherwise poison
+        // every subsequent test (their setTimeout-based waits would never fire).
+        vi.useRealTimers();
         vi.unstubAllGlobals();
         vi.restoreAllMocks();
         compiler?.terminate();
@@ -431,6 +435,9 @@ describe('compiler module', () => {
         it('should handle compilation failure', async () => {
             await initCompiler();
 
+            // Disable the auto-success handler so our explicit failure response drives the result.
+            workerInstances[0]?.setHandler('compile', () => null);
+
             const compilePromise = compiler.compile(SIMPLE_DOCUMENT);
             await new Promise(r => setTimeout(r, 20));
 
@@ -473,18 +480,22 @@ describe('compiler module', () => {
         });
 
         it('should timeout after 120 seconds', async () => {
-            vi.useFakeTimers();
-
+            // Init under real timers — initCompiler() relies on setTimeout-based
+            // waits and the mock worker's async response, which fake timers freeze.
             await initCompiler();
 
             // Disable default compile handler so it doesn't auto-respond
             workerInstances[0]?.setHandler('compile', () => null);
 
+            vi.useFakeTimers();
             const compilePromise = compiler.compile(SIMPLE_DOCUMENT);
-
-            vi.advanceTimersByTime(121000);
-
-            await expect(compilePromise).rejects.toThrow('timeout');
+            // Attach the rejection handler before advancing the clock, otherwise the
+            // timeout rejection fires with no handler attached → unhandled rejection.
+            const assertion = expect(compilePromise).rejects.toThrow('timeout');
+            // Async variant flushes the compile()'s setup microtasks between ticks
+            // so the 120s timeout is actually armed before we advance past it.
+            await vi.advanceTimersByTimeAsync(121000);
+            await assertion;
 
             vi.useRealTimers();
         });
@@ -544,19 +555,23 @@ describe('compiler module', () => {
 
             await initCompiler();
 
+            // Disable the auto-responder so our explicit response provides the format bytes.
+            workerInstances[0]?.setHandler('generate-format', () => null);
+
             const generatePromise = compiler.generateFormat(SIMPLE_DOCUMENT);
             await new Promise(r => setTimeout(r, 20));
 
+            const fmtBytes = new TextEncoder().encode('FMT-DATA');
             workerInstances[0]?.sendResponse({
-                type: 'format-result',
-                result: {
-                    success: true,
-                    fmtPath: 'fmt-cache/test.fmt',
-                },
+                type: 'format-generate-response',
+                success: true,
+                formatData: fmtBytes.buffer,
             });
 
+            // generateFormat resolves with the format file bytes (Uint8Array).
             const result = await generatePromise;
-            expect(result).toBe('fmt-cache/test.fmt');
+            expect(result).toBeInstanceOf(Uint8Array);
+            expect(new TextDecoder().decode(result)).toBe('FMT-DATA');
         });
     });
 
@@ -675,18 +690,22 @@ describe('compiler module', () => {
         it('should handle CTAN fetch requests', async () => {
             await initCompiler();
 
+            // Don't auto-complete the compile; we want to observe the in-flight CTAN request.
+            workerInstances[0]?.setHandler('compile', () => null);
+
             const compilePromise = compiler.compile(SIMPLE_DOCUMENT);
             await new Promise(r => setTimeout(r, 20));
 
+            // The worker requests a single package by name (see _handleCtanFetchRequest).
             workerInstances[0]?.sendResponse({
                 type: 'ctan-fetch-request',
                 requestId: 'req1',
-                packages: ['fancyhdr'],
+                packageName: 'fancyhdr',
             });
 
             await new Promise(r => setTimeout(r, 20));
 
-            expect(compiler.ctanFetcher.batchFetchPackages).toHaveBeenCalledWith(['fancyhdr']);
+            expect(compiler.ctanFetcher.fetchPackage).toHaveBeenCalledWith('fancyhdr', { tlYear: undefined });
 
             // Complete the compile to clean up
             workerInstances[0]?.sendResponse({
@@ -701,18 +720,22 @@ describe('compiler module', () => {
         it('should handle bundle fetch requests', async () => {
             await initCompiler();
 
+            // Don't auto-complete the compile; we want to observe the in-flight bundle request.
+            workerInstances[0]?.setHandler('compile', () => null);
+
             const compilePromise = compiler.compile(SIMPLE_DOCUMENT);
             await new Promise(r => setTimeout(r, 20));
 
+            // The worker requests a single bundle by name (see _handleBundleFetchRequest).
             workerInstances[0]?.sendResponse({
                 type: 'bundle-fetch-request',
                 requestId: 'req1',
-                bundles: ['amsmath'],
+                bundleName: 'amsmath',
             });
 
             await new Promise(r => setTimeout(r, 20));
 
-            expect(compiler.bundleManager.loadBundles).toHaveBeenCalledWith(['amsmath']);
+            expect(compiler.bundleManager.loadBundle).toHaveBeenCalledWith('amsmath');
 
             // Complete the compile
             workerInstances[0]?.sendResponse({
@@ -743,6 +766,9 @@ describe('compiler module', () => {
         it('should handle worker errors', async () => {
             await initCompiler();
 
+            // Disable auto-success so the worker error is what settles the compile.
+            workerInstances[0]?.setHandler('compile', () => null);
+
             const compilePromise = compiler.compile(SIMPLE_DOCUMENT);
             await new Promise(r => setTimeout(r, 20));
 
@@ -759,9 +785,14 @@ describe('compiler module', () => {
                 { start: 0, end: 100 },
                 { start: 100, end: 200 },
             ];
-            const coalesced = compiler['_coalesceRanges'](ranges, 1000);
+            // _coalesceRanges groups requests that fall within the gap threshold;
+            // each returned element is the group of original requests to fetch together.
+            const coalesced = compiler['_coalesceRanges'](ranges);
             expect(coalesced).toHaveLength(1);
-            expect(coalesced[0]).toEqual({ start: 0, end: 200 });
+            expect(coalesced[0]).toEqual([
+                { start: 0, end: 100 },
+                { start: 100, end: 200 },
+            ]);
         });
 
         it('should merge nearby ranges within gap threshold', () => {
