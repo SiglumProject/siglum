@@ -526,6 +526,59 @@ export function detectEngine(source) {
 }
 
 /**
+ * Extract fontspec font *family names* requested by name in the source.
+ * These are not caught by the \usepackage pre-scan, yet each needs its TeX Live
+ * font package fetched so fontconfig can resolve the name at compile time.
+ *
+ * Handles: \setmainfont \setsansfont \setmonofont \setmathfont \setromanfont
+ * \fontspec, and \newfontface/\newfontfamily (which take a control sequence
+ * before the name). Names that are actually file references (containing a path
+ * separator or a font extension) are skipped — those resolve via kpathsea.
+ *
+ * @param {string} source - Main LaTeX source
+ * @param {Object} [additionalFiles] - Optional map of filename → content
+ * @returns {string[]} Unique font family names
+ */
+export function extractFontNames(source, additionalFiles = {}) {
+    const names = new Set();
+
+    // \setmainfont[opts]{Name}, \fontspec[opts]{Name}, etc. The name is the
+    // first brace group, optionally preceded by a bracket option group.
+    const directRegex =
+        /\\(?:setmainfont|setsansfont|setmonofont|setmathfont|setromanfont|fontspec)\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g;
+
+    // \newfontface\Cmd[opts]{Name} / \newfontfamily[opts]\Cmd{Name}: a control
+    // sequence sits between the macro and the name.
+    const newFontRegex =
+        /\\newfontf(?:ace|amily)\s*(?:\[[^\]]*\])?\s*\\[A-Za-z@]+\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g;
+
+    const looksLikeFile = (n) => /[\\/]/.test(n) || /\.(otf|ttf|ttc|pfb|pfa)$/i.test(n);
+
+    const scan = (text) => {
+        let m;
+        for (const re of [directRegex, newFontRegex]) {
+            re.lastIndex = 0;
+            while ((m = re.exec(text)) !== null) {
+                const name = m[1].trim();
+                if (name && !looksLikeFile(name)) names.add(name);
+            }
+        }
+    };
+
+    scan(source);
+
+    const texFiles = Object.entries(additionalFiles).filter(([f]) => f.endsWith('.tex'));
+    if (texFiles.length > 0) {
+        const decoder = new TextDecoder();
+        for (const [, content] of texFiles) {
+            scan(typeof content === 'string' ? content : decoder.decode(content));
+        }
+    }
+
+    return [...names];
+}
+
+/**
  * Extract preamble from LaTeX source (everything before \begin{document}).
  * @param {string} source - LaTeX source
  * @returns {string} Preamble content

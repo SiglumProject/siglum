@@ -305,7 +305,60 @@ class VirtualFileSystem {
         this.processFontMaps();
         this.rewritePdftexMapPaths();
         this.generateLsR();
+        this.writeFontconfig();
         this.onLog(`VFS finalized: ${this.mountedFiles.size} files`);
+    }
+
+    // Write the fontconfig config into /texlive AFTER bundles are mounted there,
+    // so it isn't shadowed by the texmf mount. fontconfig (FONTCONFIG_FILE) reads
+    // this at XeTeX startup; without it the engine falls back to a built-in config
+    // that doesn't point at the texmf font tree, so no font is ever found.
+    writeFontconfig() {
+        try {
+            this.FS.writeFile('/texlive/fonts.conf', FONTS_CONF);
+        } catch (e) {
+            this.onLog(`[fontconfig] failed to write fonts.conf: ${e.message}`);
+        }
+    }
+
+    // Paths produced/modified by finalize(). Their final contents are deterministic
+    // for a given mounted bundle set, so they can be cached and replayed (see 4A).
+    static get PDFTEX_MAP_PATH() {
+        return '/texlive/texmf-dist/texmf-var/fonts/map/pdftex/updmap/pdftex.map';
+    }
+    static get LSR_PATH() {
+        return '/texlive/texmf-dist/ls-R';
+    }
+
+    /**
+     * Snapshot the (JS-heap-owned) bytes of the two files finalize() produces.
+     * Copies out of MEMFS so the result survives the WASM module being destroyed.
+     */
+    captureFinalizeOutput() {
+        const out = { pdftexMap: null, lsR: null };
+        try { out.pdftexMap = new Uint8Array(this.FS.readFile(VirtualFileSystem.PDFTEX_MAP_PATH)); } catch (e) {}
+        try { out.lsR = new Uint8Array(this.FS.readFile(VirtualFileSystem.LSR_PATH)); } catch (e) {}
+        return out;
+    }
+
+    /**
+     * Replay a cached finalize() output instead of recomputing it. This skips
+     * processFontMaps() — ~200ms of deterministic FS.analyzePath font probing —
+     * plus the pdftex.map rewrite and ls-R generation.
+     */
+    applyFinalizeOutput(cached) {
+        // Avoid a later accidental processFontMaps() re-appending to the map.
+        this.pendingFontMaps.clear();
+        if (cached.pdftexMap) {
+            const dir = VirtualFileSystem.PDFTEX_MAP_PATH.substring(0, VirtualFileSystem.PDFTEX_MAP_PATH.lastIndexOf('/'));
+            this._ensureDirectoryPath(dir);
+            this.FS.writeFile(VirtualFileSystem.PDFTEX_MAP_PATH, cached.pdftexMap);
+        }
+        if (cached.lsR) {
+            this.FS.writeFile(VirtualFileSystem.LSR_PATH, cached.lsR);
+        }
+        this.writeFontconfig();
+        this.onLog(`VFS finalized (cached): ${this.mountedFiles.size} files`);
     }
 
     rewritePdftexMapPaths() {
@@ -598,7 +651,38 @@ function configureTexEnvironment(ENV) {
     ENV['VFFONTS'] = '.:/texlive/texmf-dist/fonts/vf//';
     ENV['TEXFONTMAPS'] = '.:/texlive/texmf-dist/fonts/map/dvips//:/texlive/texmf-dist/fonts/map/pdftex//:/texlive/texmf-dist/texmf-var/fonts/map//';
     ENV['TEXPSHEADERS'] = '.:/texlive/texmf-dist/dvips//:/texlive/texmf-dist/fonts/enc//:/texlive/texmf-dist/fonts/type1//:/texlive/texmf-dist/fonts/type42//';
+
+    // fontconfig: XeTeX/LuaTeX resolve fonts requested by name (\setmainfont{...})
+    // through fontconfig. Without a config it aborts during font-DB init
+    // ("Cannot load default config file"). FONTCONFIG_PATH is the directory
+    // holding fonts.conf (written into the VFS by setupFontconfig).
+    ENV['FONTCONFIG_PATH'] = '/texlive';
+    ENV['FONTCONFIG_FILE'] = '/texlive/fonts.conf';
+
+    // Reproducible PDF output: pin the timestamp pdfTeX/xdvipdfmx embed in the PDF
+    // /CreationDate, /ModDate and /ID so identical input yields byte-identical output.
+    // This enables safe output caching and stable hashing. We deliberately do NOT set
+    // FORCE_SOURCE_DATE, so \today / \year still reflect the real date in the document.
+    ENV['SOURCE_DATE_EPOCH'] = '1577836800'; // 2020-01-01T00:00:00Z — fixed reference
 }
+
+// fontconfig config written into the VFS. <dir> entries point at the texmf font
+// tree (only fetched/bundled fonts are ever present, so the runtime scan is
+// naturally bounded). fontconfig scans these dirs and matches a requested family
+// name to a mounted file by reading each font's name table — the authoritative
+// name→file resolution, mirroring a native install. No <cachedir> is set: the
+// VFS is recreated per compile, so a cache could not persist anyway, and the
+// engine's built-in fallback config (used if this file is absent) does not point
+// at the texmf tree, which is why writing this post-mount is essential.
+const FONTS_CONF = `<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <dir>/texlive/texmf-dist/fonts/opentype</dir>
+  <dir>/texlive/texmf-dist/fonts/truetype</dir>
+  <dir>/texlive/texmf-dist/fonts/type1</dir>
+</fontconfig>
+`;
+
 
 // ============ Worker Code ============
 
@@ -621,6 +705,15 @@ let filesByBundle = null;
 // Enables dynamic font bundle resolution for any font in any bundle
 let fontFileToBundle = null;
 
+// Document-file index: basename (e.g., "pdftex.def") → bundle name.
+// Authoritative for routing a missing .sty/.cls/.def/etc. to the bundle that
+// actually ships it. Needed because getPackageFromFile() only strips the
+// extension to guess a package name, which is wrong for files whose basename
+// differs from their package (e.g. pdftex.def lives in package graphics-def,
+// bundle "graphics", not package "pdftex").
+let docFileToBundle = null;
+const DOC_FILE_EXT = /\.(sty|cls|def|clo|fd|cfg|ldf)$/;
+
 /**
  * Index manifest by bundle name for fast lookup.
  * Also builds font file index for dynamic font resolution.
@@ -631,6 +724,7 @@ function ensureManifestIndexed(manifest) {
 
     filesByBundle = new Map();
     fontFileToBundle = new Map();
+    docFileToBundle = new Map();
 
     for (const [path, info] of Object.entries(manifest)) {
         const bundle = info.bundle;
@@ -640,16 +734,22 @@ function ensureManifestIndexed(manifest) {
         }
         filesByBundle.get(bundle).push([path, info]);
 
+        const basename = path.substring(path.lastIndexOf('/') + 1);
         // Index font files by basename for dynamic lookup
         if (path.endsWith('.pfb') || path.endsWith('.tfm')) {
-            const basename = path.substring(path.lastIndexOf('/') + 1);
             // Only store first occurrence (some fonts may be in multiple bundles)
             if (!fontFileToBundle.has(basename)) {
                 fontFileToBundle.set(basename, bundle);
             }
+        } else if (DOC_FILE_EXT.test(basename)) {
+            // Index .sty/.cls/.def/etc. by basename so a missing file routes to
+            // the bundle that actually ships it (first occurrence wins).
+            if (!docFileToBundle.has(basename)) {
+                docFileToBundle.set(basename, bundle);
+            }
         }
     }
-    workerLog(`Indexed manifest: ${filesByBundle.size} bundles, ${fontFileToBundle.size} font files`);
+    workerLog(`Indexed manifest: ${filesByBundle.size} bundles, ${fontFileToBundle.size} font files, ${docFileToBundle.size} doc files`);
 }
 
 // Note: SharedArrayBuffer intentionally NOT used - causes memory leaks in V8
@@ -733,6 +833,28 @@ const pendingFileRangeRequests = new Map();
 
 // Global cache for Range-fetched files (persists across compiles)
 const globalFetchedFilesCache = new Map();
+
+// Caches finalize() output (pdftex.map + ls-R bytes) keyed by the mounted-bundle
+// signature. finalize()'s processFontMaps() does ~200ms of FS.analyzePath font
+// probing that is fully deterministic for a given bundle set, so we compute it once
+// and replay the bytes on warm recompiles (4A). Cleared on hot-swap / cache clear.
+const globalFinalizeCache = new Map();
+
+/**
+ * Finalize a VFS, using the deterministic-output cache when a signature is given.
+ * On a cache hit we skip the heavy font-map processing entirely; on a miss we run
+ * the real finalize() and store its output for next time.
+ */
+function finalizeVfsCached(vfs, signature) {
+    if (signature && globalFinalizeCache.has(signature)) {
+        vfs.applyFinalizeOutput(globalFinalizeCache.get(signature));
+        return;
+    }
+    vfs.finalize();
+    if (signature) {
+        globalFinalizeCache.set(signature, vfs.captureFinalizeOutput());
+    }
+}
 
 // Operation queue to serialize compile and format-generate operations
 // (async onmessage doesn't block new messages from being processed concurrently)
@@ -1263,11 +1385,16 @@ function getPackageFromFile(filename) {
 
 // ============ Aux File Handling ============
 
+// Main document base path on the VFS (no extension). Set per-compile from
+// options.mainFile so on-disk files and TeX log/error messages use the real
+// name. Defaults to '/document' to preserve legacy behavior.
+let docBase = '/document';
+
 function collectAuxFiles(FS) {
     const auxExtensions = ['.aux', '.toc', '.lof', '.lot', '.out', '.nav', '.snm', '.bbl', '.blg'];
     const files = {};
     for (const ext of auxExtensions) {
-        const path = '/document' + ext;
+        const path = docBase + ext;
         try {
             files[ext] = FS.readFile(path, { encoding: 'utf8' });
         } catch (e) {}
@@ -1279,7 +1406,7 @@ function restoreAuxFiles(FS, auxFiles) {
     let restored = 0;
     for (const [ext, content] of Object.entries(auxFiles)) {
         try {
-            FS.writeFile('/document' + ext, content);
+            FS.writeFile(docBase + ext, content);
             restored++;
         } catch (e) {}
     }
@@ -1448,7 +1575,7 @@ function resetFS(FS) {
     // Remove /texlive entirely and recreate structure
     try {
         // Remove dynamically created directories
-        const dirsToClean = ['/texlive', '/document.pdf', '/document.log', '/document.aux'];
+        const dirsToClean = ['/texlive', docBase + '.pdf', docBase + '.log', docBase + '.aux'];
         for (const path of dirsToClean) {
             try {
                 const stat = FS.stat(path);
@@ -1550,7 +1677,12 @@ function hashAuxFiles(auxFiles) {
 // ============ Compilation ============
 
 async function handleCompile(request) {
-    const { id, source, engine, options, bundleData, bundleNames, bundlesUrl, ctanFiles, cachedFormat, cachedAuxFiles, deferredBundleNames } = request;
+    const { id, source, engine, options, bundleData, bundleNames, bundlesUrl, ctanFiles, cachedFormat, cachedAuxFiles, deferredBundleNames, mainFile } = request;
+
+    // Derive the on-disk base name for this compile from the caller-supplied main
+    // file name (basename only; default keeps legacy '/document'). Reused by every
+    // FS path below, the aux-cache helpers, and resetFS via the module-level docBase.
+    docBase = '/' + (((mainFile || 'document.tex').split('/').pop() || 'document.tex').replace(/\.tex$/i, '') || 'document');
 
     // Allow runtime verbose toggle via compile options
     if (options?.verbose !== undefined) {
@@ -1626,6 +1758,16 @@ async function handleCompile(request) {
         workerLog('Single-pass mode: no cross-references detected');
     }
 
+    // Signature for the finalize() output cache. Only safe to cache when no CTAN
+    // files or version-fallback overrides are in play (those mutate the texlive tree
+    // in ways the bundle-name set alone doesn't capture). Recomputed each use because
+    // bundleDataMap can grow across retries (dynamic bundle loading).
+    const computeFinalizeSig = () =>
+        (accumulatedCtanFiles.size === 0 && packageTLVersions.size === 0)
+            ? 'b:' + [...bundleDataMap.keys()].sort().join(',') +
+              '|d:' + [...deferredBundles].sort().join(',')
+            : null;
+
     // Auto-shim tracking for undefined control sequences
     // Map<commandName, argCount>
     const shimmedCommands = new Map();
@@ -1640,12 +1782,16 @@ async function handleCompile(request) {
         }
 
         try {
+            // [PERF] Phase-2 cost attribution markers (worker-side, same clock as totalStart)
+            const _pModuleStart = performance.now();
             // Get or create global WASM instance (reused to avoid memory leaks)
             Module = await getOrCreateModule();
             FS = Module.FS;
+            const _pModuleEnd = performance.now();
 
             // Reset filesystem for clean compilation
             resetFS(FS);
+            const _pResetEnd = performance.now();
 
             // Create VFS with unified mount handling
             const vfs = new VirtualFileSystem(FS, {
@@ -1687,8 +1833,11 @@ async function handleCompile(request) {
                 if (restored > 0) workerLog(`Restored ${restored} aux files`);
             }
 
-            // Finalize VFS - processes font maps, generates ls-R
-            vfs.finalize();
+            const _pMountEnd = performance.now();
+
+            // Finalize VFS - processes font maps, generates ls-R (cached when safe)
+            finalizeVfsCached(vfs, computeFinalizeSig());
+            const _pFinalizeEnd = performance.now();
 
             // Prepare document source
             let docSource = source;
@@ -1727,29 +1876,35 @@ async function handleCompile(request) {
                 docSource = injectAutoShims(docSource, shimmedCommands);
             }
 
-            FS.writeFile('/document.tex', docSource);
+            FS.writeFile(docBase + '.tex', docSource);
 
             // Run compilation
             workerProgress('compile', `Running ${engine}...`);
+            const _pCallStart = performance.now();
             let result;
 
             if (engine === 'pdflatex') {
                 result = Module.callMainWithRedirects([
                     'pdflatex', '--no-shell-escape', '--interaction=nonstopmode',
-                    '--halt-on-error', '--synctex=-1', '--fmt=' + fmtPath, '/document.tex'
+                    '--halt-on-error', '--synctex=-1', '--fmt=' + fmtPath, docBase + '.tex'
                 ]);
             } else {
                 result = Module.callMainWithRedirects([
                     'xelatex', '--no-shell-escape', '--interaction=nonstopmode',
                     '--halt-on-error', '--synctex=-1', '--no-pdf',
                     '--fmt=/texlive/texmf-dist/texmf-var/web2c/xetex/xelatex.fmt',
-                    '/document.tex'
+                    docBase + '.tex'
                 ]);
                 if (result.exit_code === 0) {
                     result = Module.callMainWithRedirects([
-                        'xdvipdfmx', '-o', '/document.pdf', '/document.xdv'
+                        'xdvipdfmx', '-o', docBase + '.pdf', docBase + '.xdv'
                     ]);
                 }
+            }
+
+            const _pCallEnd = performance.now();
+            if (verboseLogging) {
+                workerLog(`[PERF] module=${(_pModuleEnd - _pModuleStart).toFixed(0)}ms reset=${(_pResetEnd - _pModuleEnd).toFixed(0)}ms mount=${(_pMountEnd - _pResetEnd).toFixed(0)}ms finalize=${(_pFinalizeEnd - _pMountEnd).toFixed(0)}ms callMain=${(_pCallEnd - _pCallStart).toFixed(0)}ms`);
             }
 
             lastExitCode = result.exit_code;
@@ -1757,14 +1912,14 @@ async function handleCompile(request) {
 
             if (result.exit_code === 0) {
                 try {
-                    pdfData = FS.readFile('/document.pdf');
+                    pdfData = FS.readFile(docBase + '.pdf');
                     compileSuccess = true;
                     workerLog('Compilation successful!');
 
                     // Read SyncTeX data for source/PDF synchronization
                     // --synctex=-1 generates uncompressed .synctex file
                     try {
-                        const syncTexBytes = FS.readFile('/document.synctex');
+                        const syncTexBytes = FS.readFile(docBase + '.synctex');
                         syncTexData = new TextDecoder().decode(syncTexBytes);
                         workerLog(`SyncTeX data: ${(syncTexBytes.byteLength / 1024).toFixed(1)}KB`);
                     } catch (e) {
@@ -1784,7 +1939,7 @@ async function handleCompile(request) {
                         // Check if log suggests rerun is needed
                         let logSaysRerun = false;
                         try {
-                            const logContent = FS.readFile('/document.log', { encoding: 'utf8' });
+                            const logContent = FS.readFile(docBase + '.log', { encoding: 'utf8' });
                             logSaysRerun = rerunPattern.test(logContent);
                         } catch (e) {}
 
@@ -1853,11 +2008,11 @@ async function handleCompile(request) {
                         // Restore aux files from previous pass (critical for TOC/refs)
                         restoreAuxFiles(FS, rerunAuxFiles);
 
-                        // Finalize VFS
-                        rerunVfs.finalize();
+                        // Finalize VFS (cached when safe)
+                        finalizeVfsCached(rerunVfs, computeFinalizeSig());
 
                         // Rewrite document source
-                        FS.writeFile('/document.tex', docSource);
+                        FS.writeFile(docBase + '.tex', docSource);
 
                         // Mount custom format if used
                         if (fmtPath === '/custom.fmt' && cachedFormat?.fmtData?.buffer?.byteLength > 0) {
@@ -1869,28 +2024,34 @@ async function handleCompile(request) {
                         if (engine === 'pdflatex') {
                             rerunResult = Module.callMainWithRedirects([
                                 'pdflatex', '--no-shell-escape', '--interaction=nonstopmode',
-                                '--halt-on-error', '--synctex=-1', '--fmt=' + fmtPath, '/document.tex'
+                                '--halt-on-error', '--synctex=-1', '--fmt=' + fmtPath, docBase + '.tex'
                             ]);
                         } else {
                             // XeLaTeX: two-step process (xelatex -> xdvipdfmx)
                             rerunResult = Module.callMainWithRedirects([
                                 'xelatex', '--no-shell-escape', '--interaction=nonstopmode',
                                 '--halt-on-error', '--synctex=-1', '--no-pdf',
-                                '--fmt=' + fmtPath, '/document.tex'
+                                '--fmt=' + fmtPath, docBase + '.tex'
                             ]);
                             if (rerunResult.exit_code === 0) {
                                 rerunResult = Module.callMainWithRedirects([
-                                    'xdvipdfmx', '-o', '/document.pdf', '/document.xdv'
+                                    'xdvipdfmx', '-o', docBase + '.pdf', docBase + '.xdv'
                                 ]);
                             }
                         }
 
                         if (rerunResult.exit_code === 0) {
-                            pdfData = FS.readFile('/document.pdf');
+                            pdfData = FS.readFile(docBase + '.pdf');
+                            // Reflect the final pass in the returned log: the first-pass
+                            // transcript still contains the (now-resolved) "undefined
+                            // references" warning, which would otherwise surface as a
+                            // spurious warning in the UI and mask convergence.
+                            texLog = rerunResult.stdout || texLog;
+                            lastExitCode = rerunResult.exit_code;
                             workerLog(`Rerun ${rerunPass} successful`);
                             // Update SyncTeX data
                             try {
-                                const syncTexBytes = FS.readFile('/document.synctex');
+                                const syncTexBytes = FS.readFile(docBase + '.synctex');
                                 syncTexData = new TextDecoder().decode(syncTexBytes);
                             } catch (e) {}
                         } else {
@@ -2007,7 +2168,7 @@ async function handleCompile(request) {
                 workerLog(`[RETRY] enableCtan=${options.enableCtan}`);
                 if (options.enableCtan) {
                     let logContent = '';
-                    try { logContent = new TextDecoder().decode(FS.readFile('/document.log')); } catch (e) {}
+                    try { logContent = new TextDecoder().decode(FS.readFile(docBase + '.log')); } catch (e) {}
                     const allOutput = logContent + ' ' + (result.stdout || '') + ' ' + (result.stderr || '');
 
                     // Extract ALL missing files for parallel fetching
@@ -2022,9 +2183,17 @@ async function handleCompile(request) {
                         for (const missingFile of missingFiles) {
                             const pkgName = getPackageFromFile(missingFile);
 
+                            // Prefer the authoritative manifest lookup: a missing
+                            // .sty/.cls/.def/etc. is routed to the bundle that
+                            // actually ships it (e.g. pdftex.def → "graphics").
+                            // getPackageFromFile() only strips the extension, which
+                            // mis-attributes files whose basename ≠ their package
+                            // (pdftex.def is in package graphics-def, not "pdftex").
+                            const basename = missingFile.substring(missingFile.lastIndexOf('/') + 1);
                             // Check if pkgName is already a bundle name (from font index lookup)
                             // or if it maps to a bundle via packageMap
-                            let bundleName = bundleRegistry?.has(pkgName) ? pkgName : packageMap?.[pkgName];
+                            let bundleName = docFileToBundle?.get(basename)
+                                || (bundleRegistry?.has(pkgName) ? pkgName : packageMap?.[pkgName]);
 
                             if (bundleName && !bundleDataMap.has(bundleName)) {
                                 bundlesToFetch.push({ missingFile, pkgName, bundleName });
@@ -2242,6 +2411,8 @@ async function handleCompile(request) {
         compileTimeMs: totalTime,
         bundlesUsed: [...bundleDataMap.keys()],
         wasmHeapBytes: wasmMemoryBytes,
+        // Nested form expected by the perf gate / memory invariant (#5).
+        memory: { wasmHeapBytes: wasmMemoryBytes },
     };
 
     // Use transferable ArrayBuffer for PDF (NOT SharedArrayBuffer)
@@ -2252,7 +2423,6 @@ async function handleCompile(request) {
         id,
         success: compileSuccess,
         pdfData: pdfData ? pdfData.buffer : null,
-        pdfDataIsShared: false,
         syncTexData,
         exitCode: lastExitCode,
         auxFilesToCache: auxFiles,
@@ -2565,6 +2735,7 @@ self.onmessage = async function(e) {
             // Bundles will be re-read from OPFS on next compile
             workerBundleCache.clear();
             globalFetchedFilesCache.clear();
+            globalFinalizeCache.clear();
             if (globalModule) {
                 destroyModule(globalModule);
                 globalModule = null;

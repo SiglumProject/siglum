@@ -32,7 +32,16 @@ import {
     getPackageFromFile,
     isValidPackageName,
     forceRefreshPackage,
+    normalizeFontName,
 } from '../../src/ctan.js';
+import { extractFontNames } from '../../src/bundles.js';
+
+const SAMPLE_FONT_INDEX = {
+    ebgaramond: 'ebgaramond',
+    texgyrechorus: 'tex-gyre',
+    texgyrepagella: 'tex-gyre',
+    fira: 'fira',
+};
 
 describe('ctan module', () => {
     describe('getPackageFromFile', () => {
@@ -250,6 +259,41 @@ describe('ctan module', () => {
             it('should return null for unknown file', async () => {
                 const pkg = await fetcher.lookupPackageForFile('unknown.sty');
                 expect(pkg).toBeNull();
+            });
+        });
+
+        describe('font-name resolution', () => {
+            beforeEach(() => {
+                fetchMock.mockResolvedValue({
+                    ok: true,
+                    json: () => Promise.resolve(SAMPLE_FONT_INDEX),
+                });
+            });
+
+            it('normalizeFontName collapses case and separators', () => {
+                expect(normalizeFontName('TeX Gyre Chorus')).toBe('texgyrechorus');
+                expect(normalizeFontName('EB Garamond')).toBe('ebgaramond');
+                expect(normalizeFontName('Fira-Sans')).toBe('firasans');
+            });
+
+            it('lookupPackageForFontName resolves a known family', async () => {
+                expect(await fetcher.lookupPackageForFontName('EB Garamond')).toBe('ebgaramond');
+                expect(await fetcher.lookupPackageForFontName('TeX Gyre Chorus')).toBe('tex-gyre');
+            });
+
+            it('lookupPackageForFontName returns null for unknown family', async () => {
+                expect(await fetcher.lookupPackageForFontName('No Such Font')).toBeNull();
+            });
+
+            it('resolveFontPackages dedupes packages and reports unresolved', async () => {
+                const { packages, unresolved } = await fetcher.resolveFontPackages([
+                    'EB Garamond',
+                    'TeX Gyre Chorus',
+                    'TeX Gyre Pagella', // same package as Chorus → deduped
+                    'Made Up Font',
+                ]);
+                expect(packages.sort()).toEqual(['ebgaramond', 'tex-gyre']);
+                expect(unresolved).toEqual(['Made Up Font']);
             });
         });
 
@@ -527,6 +571,35 @@ describe('ctan module', () => {
                 );
                 expect(hasYearParam).toBe(true);
             });
+        });
+    });
+
+    describe('extractFontNames', () => {
+        it('extracts names from fontspec selection commands', () => {
+            const src = `
+                \\setmainfont{EB Garamond}
+                \\setsansfont[Scale=0.9]{Fira Sans}
+                \\newfontface\\ChorusFont{TeX Gyre Chorus}
+                \\fontspec{TeX Gyre Pagella}
+            `;
+            expect(extractFontNames(src).sort()).toEqual([
+                'EB Garamond',
+                'Fira Sans',
+                'TeX Gyre Chorus',
+                'TeX Gyre Pagella',
+            ]);
+        });
+
+        it('skips font file references and paths', () => {
+            const src = `
+                \\setmainfont{Some Font.otf}
+                \\setmonofont{/abs/path/Mono.ttf}
+            `;
+            expect(extractFontNames(src)).toEqual([]);
+        });
+
+        it('returns empty for documents with no named fonts', () => {
+            expect(extractFontNames('\\documentclass{article}\\usepackage{fontspec}')).toEqual([]);
         });
     });
 });

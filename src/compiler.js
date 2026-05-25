@@ -3,7 +3,7 @@
  * Main SiglumCompiler class - orchestrates LaTeX compilation in the browser.
  */
 
-import { BundleManager, detectEngine, extractPreamble, hashPreamble } from './bundles.js';
+import { BundleManager, detectEngine, extractPreamble, extractFontNames, hashPreamble } from './bundles.js';
 
 /**
  * @typedef {Object} SiglumCompilerOptions
@@ -28,13 +28,14 @@ import { BundleManager, detectEngine, extractPreamble, hashPreamble } from './bu
  * @property {string} [engine] - 'pdflatex', 'xelatex', or 'lualatex'
  * @property {boolean} [useCache] - Use document cache
  * @property {Object<string, string|Uint8Array>} [additionalFiles] - Additional files for compilation
+ * @property {string} [mainFile] - Main source file name (basename, e.g. 'thesis.tex'); sets on-disk
+ *                                 filenames and the names shown in TeX log/error output. Default 'document.tex'.
  */
 
 /**
  * @typedef {Object} CompileResult
  * @property {boolean} success - Whether compilation succeeded
- * @property {Uint8Array} [pdf] - Compiled PDF bytes
- * @property {boolean} [pdfIsShared] - True if PDF is in SharedArrayBuffer
+ * @property {Uint8Array<ArrayBuffer>} [pdf] - Compiled PDF bytes (ArrayBuffer-backed, Blob-safe)
  * @property {Object|null} [syncTexData] - SyncTeX data for source mapping
  * @property {Object} [stats] - Compilation statistics
  * @property {string} [log] - TeX compilation log
@@ -807,6 +808,25 @@ export class SiglumCompiler {
                 depBundles = additionalBundles;
             }
 
+            // Resolve fontspec named fonts (\setmainfont{EB Garamond}, etc.) to
+            // their TeX Live packages so fontconfig can find them at runtime.
+            // Only relevant for engines that use fontconfig (xelatex/lualatex).
+            if (engine === 'xelatex' || engine === 'lualatex') {
+                const fontNames = extractFontNames(source, additionalFilesMap);
+                if (fontNames.length > 0) {
+                    const { packages, unresolved } = await this.ctanFetcher.resolveFontPackages(fontNames);
+                    if (packages.length > 0) {
+                        this._log(`Fonts: ${fontNames.length} named, resolved to packages: ${packages.join(', ')}`);
+                        for (const pkg of packages) {
+                            if (!ctanPackages.includes(pkg)) ctanPackages.push(pkg);
+                        }
+                    }
+                    if (unresolved.length > 0) {
+                        this._log(`Fonts: unresolved (relying on bundled/system fonts): ${unresolved.join(', ')}`);
+                    }
+                }
+            }
+
             if (ctanPackages.length > 0) {
                 this._log(`Pre-scan: ${ctanPackages.length} potential CTAN packages`);
                 const prescanStart = performance.now();
@@ -923,17 +943,13 @@ export class SiglumCompiler {
                     clearTimeout(timeout);
 
                     if (result.success) {
-                        // Create Uint8Array view - works for both SharedArrayBuffer and ArrayBuffer
-                        // Both are zero-copy views, just pointing to different backing memory
+                        // PDF comes back as a transferred (regular) ArrayBuffer
                         const pdfData = result.pdfData ? new Uint8Array(result.pdfData) : null;
 
-                        // Cache the PDF (IndexedDB requires regular ArrayBuffer, not SharedArrayBuffer)
+                        // Cache the PDF
                         if (useCache && pdfData) {
                             const docHash = hashDocument(source);
-                            const cacheBuffer = result.pdfDataIsShared
-                                ? result.pdfData.slice(0)  // Copy SharedArrayBuffer to regular ArrayBuffer
-                                : result.pdfData;          // Already regular ArrayBuffer
-                            await saveCachedPdf(docHash, engine, cacheBuffer);
+                            await saveCachedPdf(docHash, engine, result.pdfData);
                         }
 
                         // Cache aux files (use same key that includes format state)
@@ -956,7 +972,6 @@ export class SiglumCompiler {
                         resolve({
                             success: true,
                             pdf: pdfData,
-                            pdfIsShared: result.pdfDataIsShared || false, // Pass flag to consumer
                             syncTexData: result.syncTexData || null, // SyncTeX data for source/PDF synchronization
                             stats: result.stats,
                             log: result.log,
@@ -983,6 +998,7 @@ export class SiglumCompiler {
                     id: compileId,
                     source,
                     engine,
+                    mainFile: options.mainFile,
                     options: {
                         enableLazyFS: this.enableLazyFS,
                         enableCtan: this.enableCtan,
