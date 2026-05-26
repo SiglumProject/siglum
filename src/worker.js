@@ -189,6 +189,7 @@ class VirtualFileSystem {
                 ? (content.startsWith('base64:') ? this._decodeBase64(content.slice(7)) : new TextEncoder().encode(content))
                 : content;
             this.mount(path, data, true);  // Track font maps for CTAN packages
+            this._mirrorCustomFontForFontconfig(path, data);
 
             if (alreadyMounted) {
                 overridden++;
@@ -202,6 +203,30 @@ class VirtualFileSystem {
             this.onLog(`Mounted ${mounted} CTAN files`);
         }
         return mounted + overridden;
+    }
+
+    /**
+     * Mirror a user-supplied font into a fontconfig-scanned dir.
+     *
+     * additionalFiles (custom fonts) land at the VFS root, which fontconfig does
+     * not scan (FONTS_CONF only covers the texmf opentype/truetype/type1 trees).
+     * So `\setmainfont{Family Name}` can't find them — only filename/Path-based
+     * references work. We copy any root-level font into the matching texmf font
+     * dir so fontconfig indexes it by its internal name table, exactly like an
+     * installed font. The original path stays put for filename references.
+     */
+    _mirrorCustomFontForFontconfig(path, data) {
+        // CTAN/bundle fonts already live under .../fonts/...; only mirror fonts
+        // that don't (i.e. user files dropped at the VFS root).
+        if (path.includes('/fonts/')) return;
+        const ext = path.toLowerCase().match(/\.(otf|ttf|ttc|pfb)$/);
+        if (!ext) return;
+        const subdir = ext[1] === 'otf' ? 'opentype' : ext[1] === 'pfb' ? 'type1' : 'truetype';
+        const fileName = path.split('/').pop();
+        const dest = `/texlive/texmf-dist/fonts/${subdir}/custom/${fileName}`;
+        if (this.mountedFiles.has(dest)) return;
+        this.mount(dest, data, false);
+        this.onLog(`Custom font ${fileName} mirrored to ${subdir} tree for fontconfig name lookup`);
     }
 
     processFontMaps() {
@@ -1390,6 +1415,54 @@ function getPackageFromFile(filename) {
 // name. Defaults to '/document' to preserve legacy behavior.
 let docBase = '/document';
 
+// Top-level VFS dirs to skip when snapshotting the working tree for preamble
+// side-effect detection: the mounted texmf tree (huge, not document output) and
+// the Emscripten system dirs. Everything else is document/package output.
+const SNAPSHOT_PRUNE_DIRS = new Set(['texlive', 'bin', 'dev', 'proc', 'tmp', 'home', 'sys', 'lib', 'etc']);
+
+// Set of absolute file paths in the working tree, excluding the pruned dirs.
+// Recursive so files a preamble writes into subdirectories are seen too.
+function snapshotWorkTree(FS) {
+    const files = new Set();
+    const walk = (dir) => {
+        let entries;
+        try { entries = FS.readdir(dir); } catch (e) { return; }
+        for (const name of entries) {
+            if (name === '.' || name === '..') continue;
+            if (dir === '/' && SNAPSHOT_PRUNE_DIRS.has(name)) continue;
+            const path = dir === '/' ? '/' + name : dir + '/' + name;
+            let mode;
+            try { mode = FS.stat(path).mode; } catch (e) { continue; }
+            if (FS.isDir(mode)) walk(path);
+            else files.add(path);
+        }
+    };
+    walk('/');
+    return files;
+}
+
+// Restore captured preamble side-effect files (keyed by absolute path) into the
+// VFS, creating parent directories as needed. Used on cached-format reuse.
+function restoreSideEffectFiles(FS, sideEffectFiles) {
+    if (!sideEffectFiles) return 0;
+    let n = 0;
+    for (const [path, data] of Object.entries(sideEffectFiles)) {
+        try {
+            const slash = path.lastIndexOf('/');
+            if (slash > 0) {
+                let cur = '';
+                for (const part of path.slice(0, slash).split('/').filter(Boolean)) {
+                    cur += '/' + part;
+                    try { FS.mkdir(cur); } catch (e) { /* exists */ }
+                }
+            }
+            FS.writeFile(path, data instanceof Uint8Array ? data : new Uint8Array(data));
+            n++;
+        } catch (e) { workerLog(`Failed to restore side-effect file ${path}: ${e.message}`); }
+    }
+    return n;
+}
+
 function collectAuxFiles(FS) {
     const auxExtensions = ['.aux', '.toc', '.lof', '.lot', '.out', '.nav', '.snm', '.bbl', '.blg'];
     const files = {};
@@ -1851,6 +1924,11 @@ async function handleCompile(request) {
                     FS.writeFile('/custom.fmt', cachedFormat.fmtData);
                     fmtPath = '/custom.fmt';
                     workerLog('Using custom format');
+                    // Restore files the preamble wrote during format precompilation
+                    // (e.g. insdljs' .djs). Reusing the format skips the preamble,
+                    // so without this the body's \input of them would fail.
+                    const nRestored = restoreSideEffectFiles(FS, cachedFormat.sideEffectFiles);
+                    if (nRestored > 0) workerLog(`Restored ${nRestored} preamble side-effect file(s) for cached format`);
                     const beginDocIdx = source.indexOf('\\begin{document}');
                     if (beginDocIdx !== -1) {
                         // Pad stripped preamble with comment lines so TeX line numbers
@@ -2017,6 +2095,10 @@ async function handleCompile(request) {
                         // Mount custom format if used
                         if (fmtPath === '/custom.fmt' && cachedFormat?.fmtData?.buffer?.byteLength > 0) {
                             FS.writeFile('/custom.fmt', cachedFormat.fmtData);
+                            // Re-restore preamble side-effect files in case the rerun
+                            // rebuilt the VFS (the cached format skips the preamble that
+                            // would otherwise regenerate them).
+                            restoreSideEffectFiles(FS, cachedFormat.sideEffectFiles);
                         }
 
                         // Run compilation (use same format path as initial compilation)
@@ -2504,6 +2586,14 @@ async function handleFormatGenerate(request) {
             const shimmedPreamble = injectKernelCompatShim(preambleContent);
             FS.writeFile('/myformat.ini', shimmedPreamble + '\n\\dump\n');
 
+            // Snapshot the working tree so we can detect files the preamble writes
+            // as a side effect during the dump (e.g. insdljs' .djs via \openout).
+            // These must travel with the cached format and be restored on reuse,
+            // since reusing the format skips the preamble that produced them.
+            // Recursive (not just root) so writes into subdirectories are caught;
+            // the mounted texmf tree and system dirs are pruned (see snapshot fn).
+            const filesBefore = snapshotWorkTree(FS);
+
             // Use the correct engine for format generation
             let formatArgs;
             if (engine === 'xelatex') {
@@ -2525,9 +2615,28 @@ async function handleFormatGenerate(request) {
                 const formatData = FS.readFile('/myformat.fmt');
                 workerLog(`Format generated: ${(formatData.byteLength / 1024 / 1024).toFixed(1)}MB in ${(performance.now() - startTime).toFixed(0)}ms`);
 
+                // Collect any files the preamble created anywhere in the working
+                // tree, excluding the format job's own outputs (myformat.*). Keyed
+                // by absolute path so subdirectory writes round-trip faithfully.
+                const sideEffectFiles = {};
+                const transfer = [formatData.buffer];
+                for (const path of snapshotWorkTree(FS)) {
+                    if (filesBefore.has(path)) continue;
+                    if (path.replace(/^\//, '').startsWith('myformat.')) continue;
+                    try {
+                        const data = FS.readFile(path); // Uint8Array
+                        const buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+                        sideEffectFiles[path] = buf;
+                        transfer.push(buf);
+                    } catch (e) { /* skip unreadable */ }
+                }
+                if (Object.keys(sideEffectFiles).length > 0) {
+                    workerLog(`Captured ${Object.keys(sideEffectFiles).length} preamble side-effect file(s): ${Object.keys(sideEffectFiles).join(', ')}`);
+                }
+
                 self.postMessage({
-                    type: 'format-generate-response', id, success: true, formatData: formatData.buffer
-                }, [formatData.buffer]);
+                    type: 'format-generate-response', id, success: true, formatData: formatData.buffer, sideEffectFiles
+                }, transfer);
                 return;
             }
 

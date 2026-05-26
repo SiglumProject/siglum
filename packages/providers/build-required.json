@@ -1,0 +1,4 @@
+{
+  "_comment": "Curated list of build-required packages to pre-normalize offline. These cannot be fetched ready-to-use (source-only .ins/.dtx, .tds.zip, self-extracting .dtx), so scripts/prebuild-packages.js fetches each from CTAN, runs the busytex docstrip/build, and commits the normalized artifact to packages/bundles/prebuilt/. The prebuild also auto-includes every overrides.json entry whose provider is 'ins' or 'dtx', so this file only needs packages NOT already pinned there.",
+  "packages": []
+}

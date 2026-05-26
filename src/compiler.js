@@ -60,6 +60,24 @@ import {
     saveWasmMemorySnapshot,
 } from './storage.js';
 
+// Base64 helpers for persisting small binary blobs (preamble side-effect files)
+// in a JSON cache entry. Chunked to avoid call-stack limits on large inputs.
+function bytesToBase64(bytes) {
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+}
+
+function base64ToBytes(b64) {
+    const binary = atob(b64);
+    const out = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+    return out;
+}
+
 // Ensure fmt-cache mount exists
 let fmtCacheMounted = false;
 async function ensureFmtCacheMount() {
@@ -911,12 +929,20 @@ export class SiglumCompiler {
         const preambleHash = hashPreamble(preamble);
         const fmtKey = preambleHash + '_' + engine;
 
+        // Files the preamble writes as a side effect during format precompilation
+        // (e.g. insdljs' .djs, written via \openout and read back at
+        // \begin{document}). A cached format skips the preamble on reuse, so these
+        // must be captured at format-build time and restored here, or they go
+        // missing. Loaded alongside the format below and shipped to the worker.
+        let formatSideEffectFiles = null;
+
         // Check in-memory cache first (fast path)
         if (this._fmtMemCache?.key === fmtKey && this._fmtMemCache?.data?.buffer?.byteLength > 0) {
             // Copy format data for transfer (original stays in memory cache)
             const fmtCopy = this._fmtMemCache.data.buffer.slice(0);
             cachedFormat = { fmtName: fmtKey, fmtData: new Uint8Array(fmtCopy) };
             transferList.push(fmtCopy);
+            formatSideEffectFiles = this._fmtMemCache.sideEffectFiles || null;
             this._log('Using cached format (memory)');
         } else {
             // Fall back to filesystem cache - path is deterministic from fmtKey
@@ -926,14 +952,29 @@ export class SiglumCompiler {
             if (fmtData && fmtData.byteLength > 0) {
                 // Normalize to Uint8Array if needed (readBinary may return ArrayBuffer or Uint8Array)
                 const fmtArray = fmtData instanceof Uint8Array ? fmtData : new Uint8Array(fmtData);
+                formatSideEffectFiles = await this._loadFormatSideEffects(fmtKey);
                 // Cache in memory for subsequent compiles
-                this._fmtMemCache = { key: fmtKey, data: new Uint8Array(fmtArray) };
+                this._fmtMemCache = { key: fmtKey, data: new Uint8Array(fmtArray), sideEffectFiles: formatSideEffectFiles };
                 // Copy ArrayBuffer for transfer (must be ArrayBuffer, not Uint8Array)
                 const fmtCopy = fmtArray.buffer.slice(fmtArray.byteOffset, fmtArray.byteOffset + fmtArray.byteLength);
                 cachedFormat = { fmtName: fmtKey, fmtData: new Uint8Array(fmtCopy) };
                 transferList.push(fmtCopy);
                 this._log('Using cached format (filesystem)');
             }
+        }
+
+        // Attach captured preamble side-effect files to the format payload so the
+        // worker can restore them after loading the cached format.
+        if (cachedFormat && formatSideEffectFiles && Object.keys(formatSideEffectFiles).length > 0) {
+            const restored = {};
+            for (const [name, b64] of Object.entries(formatSideEffectFiles)) {
+                const bytes = base64ToBytes(b64);
+                const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+                restored[name] = new Uint8Array(copy);
+                transferList.push(copy);
+            }
+            cachedFormat.sideEffectFiles = restored;
+            this._log(`Restoring ${Object.keys(restored).length} preamble side-effect file(s) with cached format`);
         }
 
         // Check for cached aux files (include format state in key to avoid mismatch)
@@ -976,10 +1017,15 @@ export class SiglumCompiler {
                         // Skip for xelatex - XeTeX can't dump formats with native fonts
                         if (!cachedFormat && preamble && engine !== 'xelatex') {
                             this.generateFormat(source, { engine }).then(async () => {
-                                // Populate memory cache from the newly generated format
+                                // Populate memory cache from the newly generated format,
+                                // including any captured preamble side-effect files so the
+                                // next compile restores them with the format.
                                 await ensureFmtCacheMount();
                                 const data = await fileSystem.readBinary('/' + getFmtPath(fmtKey)).catch(() => null);
-                                if (data) this._fmtMemCache = { key: fmtKey, data: new Uint8Array(data) };
+                                if (data) {
+                                    const sideEffectFiles = await this._loadFormatSideEffects(fmtKey);
+                                    this._fmtMemCache = { key: fmtKey, data: new Uint8Array(data), sideEffectFiles };
+                                }
                             }).catch(() => {}); // Silent fail for background task
                         }
 
@@ -1118,11 +1164,22 @@ export class SiglumCompiler {
                     if (result.success) {
                         const fmtData = new Uint8Array(result.formatData);
 
+                        // Files the preamble wrote during the dump run (observed by
+                        // the worker, not guessed) — persist alongside the format so
+                        // they can be restored whenever this format is reused.
+                        const sideEffects = result.sideEffectFiles || {};
+                        const sideEffectsB64 = {};
+                        for (const [name, buf] of Object.entries(sideEffects)) {
+                            sideEffectsB64[name] = bytesToBase64(new Uint8Array(buf));
+                        }
+
                         // Cache to filesystem, then resolve
-                        ensureFmtCacheMount().then(() => {
-                            return fileSystem.writeBinary(fmtPath, fmtData, { createParents: true });
+                        ensureFmtCacheMount().then(async () => {
+                            await fileSystem.writeBinary(fmtPath, fmtData, { createParents: true });
+                            await this._saveFormatSideEffects(fmtKey, sideEffectsB64);
                         }).then(() => {
-                            this._log('Format generated and cached');
+                            const n = Object.keys(sideEffectsB64).length;
+                            this._log(`Format generated and cached${n ? ` (+${n} preamble side-effect file(s))` : ''}`);
                             resolve(fmtData);
                         }).catch(e => {
                             // Cache failed but format is still valid
@@ -1158,6 +1215,40 @@ export class SiglumCompiler {
         });
 
         return this.formatGenerationPromise;
+    }
+
+    /**
+     * Persist the preamble side-effect files captured during format generation,
+     * next to the cached format. Stored as a JSON map of filename → base64.
+     * @param {string} fmtKey
+     * @param {Object<string,string>} sideEffectsB64
+     */
+    async _saveFormatSideEffects(fmtKey, sideEffectsB64) {
+        const path = '/' + getFmtPath(fmtKey) + '.side.json';
+        try {
+            if (Object.keys(sideEffectsB64).length === 0) return; // nothing to store
+            const json = new TextEncoder().encode(JSON.stringify(sideEffectsB64));
+            await fileSystem.writeBinary(path, json, { createParents: true });
+        } catch (e) {
+            this._log('Warning: failed to persist format side-effect files: ' + e.message);
+        }
+    }
+
+    /**
+     * Load the preamble side-effect files persisted next to a cached format.
+     * @param {string} fmtKey
+     * @returns {Promise<Object<string,string>|null>} filename → base64, or null
+     */
+    async _loadFormatSideEffects(fmtKey) {
+        const path = '/' + getFmtPath(fmtKey) + '.side.json';
+        try {
+            const data = await fileSystem.readBinary(path).catch(() => null);
+            if (!data || data.byteLength === 0) return null;
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            return JSON.parse(new TextDecoder().decode(bytes));
+        } catch {
+            return null;
+        }
     }
 
     /**

@@ -15,7 +15,10 @@ types/
 # Compressed WASM (deploy artifact)
 busytex.wasm.br
 
-# Cloudflare infrastructure (separate project)
+# Host-specific deploy adapters live outside the hosting-agnostic engine.
+# cloudflare/ is one such adapter (a wrangler project): it consumes the engine's
+# emitted artifacts but must not become a dependency of the engine, so it is not
+# tracked here. (Version it in its own repo.)
 cloudflare/
 wrangler.toml
 .wrangler/
@@ -42,6 +45,10 @@ packages/bundles/*.data.br
 packages/bundles/*.raw
 packages/bundles/*.meta.json
 packages/bundles/registry.json
+
+# Normalized-artifact cache (regeneratable: `bun scripts/prebuild-packages.js`,
+# shipped to R2 / releases — same as the CTAN cache and bundle data above)
+packages/bundles/prebuilt/
 
 # One-off migration scripts
 packages/update-bundles-tl2026.ts

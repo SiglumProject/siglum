@@ -14,10 +14,13 @@ import {
   processExtractedFiles,
   processRawFileData,
   processZipData,
+  ctanDownloadUrls,
   textDecoder,
   isValidZip,
   type ProcessedPackage,
 } from './ctan-core.ts';
+import { resolveFontPackage } from './font-index.ts';
+import { loadPrebuilt } from './prebuilt-cache.ts';
 
 const execAsync = promisify(exec);
 
@@ -177,6 +180,21 @@ async function getCachedPackage(pkgName: string): Promise<ProcessedPackage | nul
     return memoryCache.get(pkgName)!;
   }
 
+  // Normalized-artifact cache (plan §0): a committed, pre-normalized artifact for
+  // a build-required package (acrotex/insdljs, …) is served verbatim — no docstrip
+  // build in-request. Checked before the runtime disk cache; the loader memoizes,
+  // so this is a constant-time lookup after the first hit.
+  //
+  // Prebuilt artifacts are keyed by bare package name (plan §9: docstrip output is
+  // version-stable), so strip any @tl<year> suffix the runtime cache key carries —
+  // otherwise a `?tlYear=2024` request would miss the cache and rebuild.
+  const bareName = pkgName.replace(/@tl\d+$/, '');
+  const prebuilt = await loadPrebuilt(bareName);
+  if (prebuilt) {
+    memoryCache.set(pkgName, prebuilt);
+    return prebuilt;
+  }
+
   // Try disk
   const diskData = await loadFromDisk(pkgName);
   if (diskData) {
@@ -236,6 +254,23 @@ async function fetchPackage(requestedPkg: string, tlYear: TLYear = DEFAULT_TL_YE
   if (tlResponse.ok) {
     const tarData = new Uint8Array(await tlResponse.arrayBuffer());
     return await processTexLiveTar(tarData, pkgName, tlYear);
+  }
+
+  // Not a package by that name — it may be a font file stem (phvr8t, ec-lmr10, …)
+  // that TeX requested directly. Resolve it to the package that ships it (TLPDB
+  // index, base-35 prefix fallback) and fetch that.
+  const fontPkg = await resolveFontPackage(pkgName);
+  if (fontPkg && fontPkg !== pkgName) {
+    console.log(`  Font stem ${pkgName} resolves to package ${fontPkg}`);
+    const famUrl = getTexLiveUrl(fontPkg, tlYear);
+    const famResponse = await fetch(famUrl, { redirect: 'follow' });
+    if (famResponse.ok) {
+      aliasCache.set(requestedPkg, fontPkg);
+      await saveAliasCache();
+      const tarData = new Uint8Array(await famResponse.arrayBuffer());
+      return await processTexLiveTar(tarData, fontPkg, tlYear);
+    }
+    console.log(`  Font package ${fontPkg} fetch failed (${famResponse.status}), falling through`);
   }
 
   // Query CTAN for package info
@@ -307,48 +342,28 @@ async function fetchPackage(requestedPkg: string, tlYear: TLYear = DEFAULT_TL_YE
     console.log(`  Raw file failed: ${rawResponse.status}`);
   }
 
-  // Determine ZIP URL
-  let downloadUrl: string | null = null;
-  if (info.install) {
-    downloadUrl = `https://mirrors.ctan.org/install${info.install}`;
-  } else if (info.ctan?.path) {
-    let ctanPath = info.ctan.path;
-    if (info.ctan.file === true) {
-      ctanPath = ctanPath.substring(0, ctanPath.lastIndexOf('/'));
-    }
-    downloadUrl = `https://mirrors.ctan.org${ctanPath}.zip`;
-  }
-
-  if (!downloadUrl) {
+  // Candidate ZIP URLs (in preference order) — shared with serve-local + the
+  // offline prebuild so CTAN path conventions can't drift between them.
+  const urlsToTry = ctanDownloadUrls(info, pkgName);
+  if (urlsToTry.length === 0) {
     return jsonResponse({ error: 'No download URL available' }, 404);
   }
 
-  console.log(`  Downloading: ${downloadUrl}`);
-  let zipResponse = await fetch(downloadUrl, { redirect: 'follow' });
-  console.log(`  Response: ${zipResponse.status}`);
-
-  // Try alternate URLs
-  if (!zipResponse.ok && info.ctan?.path) {
-    let ctanPath = info.ctan.path;
-    if (info.ctan.file === true) {
-      ctanPath = ctanPath.substring(0, ctanPath.lastIndexOf('/'));
-    }
-
-    for (const altUrl of [
-      `https://mirrors.ctan.org${ctanPath}/${pkgName}.zip`,
-      `https://mirrors.ctan.org${ctanPath}.tds.zip`,
-    ]) {
-      console.log(`  Trying: ${altUrl}`);
-      const altResponse = await fetch(altUrl, { redirect: 'follow' });
-      if (altResponse.ok) {
-        zipResponse = altResponse;
-        break;
-      }
+  let zipResponse: Response | null = null;
+  let lastStatus = 0;
+  for (const url of urlsToTry) {
+    console.log(`  Downloading: ${url}`);
+    const resp = await fetch(url, { redirect: 'follow' });
+    console.log(`  Response: ${resp.status}`);
+    lastStatus = resp.status;
+    if (resp.ok) {
+      zipResponse = resp;
+      break;
     }
   }
 
-  if (!zipResponse.ok) {
-    return jsonResponse({ error: `Download failed: ${zipResponse.status}` }, 500);
+  if (!zipResponse) {
+    return jsonResponse({ error: `Download failed: ${lastStatus}` }, 500);
   }
 
   const zipData = new Uint8Array(await zipResponse.arrayBuffer());
@@ -372,10 +387,15 @@ async function processZip(zipData: Uint8Array, pkgName: string): Promise<Respons
   const result = await processZipData(zipData, pkgName);
 
   if ('error' in result) {
+    if ('unbuildable' in result && result.unbuildable) {
+      // Structured, actionable failure (Phase 3) — not a generic error/crash.
+      console.log(`  Unbuildable (${result.provider}): ${result.reason}`);
+      return jsonResponse(result, 422);
+    }
     return jsonResponse(result, 404);
   }
 
-  console.log(`  Extracted ${result.totalFiles} files, deps: ${result.dependencies.join(', ') || 'none'}`);
+  console.log(`  Extracted ${result.totalFiles} files via ${result.provider || 'prebuilt'}, deps: ${result.dependencies.join(', ') || 'none'}`);
   await cachePackage(pkgName, result);
   return jsonResponse(result);
 }

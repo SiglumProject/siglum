@@ -40,7 +40,9 @@
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:browser": "vitest --config vitest.browser.config.ts",
-    "test:browser:run": "vitest run --config vitest.browser.config.ts"
+    "test:browser:run": "vitest run --config vitest.browser.config.ts",
+    "test:bun-parity": "bun run scripts/providers-bun-smoke.ts",
+    "prebuild-packages": "bun run scripts/prebuild-packages.js"
   },
   "repository": {
     "type": "git",
