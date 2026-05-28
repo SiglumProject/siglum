@@ -33,8 +33,8 @@ async function ensureWasmCacheMounted() {
 }
 
 const CTAN_CACHE_VERSION = 10; // Bumped: include all data files (.csv, .lua, etc.) in CTAN extractions
-const BUNDLE_CACHE_VERSION = 5; // Bumped: TL2026 rebuild with correct offsets
-const MANIFEST_CACHE_VERSION = 6; // Bumped: TL2026 rebuild with regenerated file-manifest.json
+const BUNDLE_CACHE_VERSION = 6; // Bumped: TL2026 clean rebuild — regenerated bundles + re-merged cm-super
+const MANIFEST_CACHE_VERSION = 7; // Bumped: TL2026 clean rebuild — regenerated file-manifest.json (+ cm-super)
 
 // CTAN cache mount
 let ctanCacheMounted = false;

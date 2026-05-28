@@ -13,9 +13,9 @@ This guide covers building the WASM engine and LaTeX bundles from source.
 
 | Component | Build Time | Output |
 |-----------|-----------|--------|
-| busytex.wasm | 2-3 hours | `busytex/build/wasm/busytex.wasm` (~29MB) |
-| busytex.js | (with above) | `busytex/build/wasm/busytex.js` (~3KB) |
-| Bundles | 15-30 min | `packages/bundles/*.data.gz` (~195MB total) |
+| busytex.wasm | 2-3 hours | `busytex/build/wasm/busytex.wasm` (~31MB) |
+| busytex.js | (with above) | `busytex/build/wasm/busytex.js` (~290KB) |
+| Bundles | 15-30 min | `packages/bundles/*.data.gz` (~170MB total) |
 
 ---
 
@@ -54,10 +54,11 @@ podman pull emscripten/emsdk:3.1.43
 
 ```bash
 cd busytex
-./build-wasm.sh wasm-all
+./build-wasm.sh wasm
 ```
 
 This runs the build inside an Emscripten container and outputs to `build/wasm/`.
+(`./build-wasm.sh all` runs the whole pipeline: wasm → texlive → formats → package → bundles.)
 
 #### Option B: Native Build
 

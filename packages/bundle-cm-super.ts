@@ -178,7 +178,9 @@ async function createBundle(files: Map<string, Buffer>): Promise<void> {
     existingManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
   }
   const mergedManifest = { ...existingManifest, ...fileManifest };
-  fs.writeFileSync(manifestPath, JSON.stringify(mergedManifest));
+  // Pretty-print to match split-bundle.ts's format — a minified single-line
+  // manifest makes git diffs unreviewable and merges painful.
+  fs.writeFileSync(manifestPath, JSON.stringify(mergedManifest, null, 2));
 
   // Update package-map.json
   const mapPath = path.join(OUTPUT_DIR, 'package-map.json');

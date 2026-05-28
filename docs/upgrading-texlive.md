@@ -1,14 +1,21 @@
 # Upgrading TeX Live Version
 
-How to upgrade siglum-engine from one TeX Live version to another (e.g., TL2024 → TL2025).
+How to upgrade siglum-engine from one TeX Live version to another (e.g., TL2025 → TL2026).
 
 ## Overview
 
-A TeX Live upgrade involves updating three components:
+A TeX Live upgrade touches several artifacts:
 
 1. **WASM binaries** — pdfTeX/XeTeX engines compiled to WebAssembly
-2. **LaTeX packages** — `.sty`, `.cls`, and other macro files in bundles
-3. **Format files** — Pre-compiled `.fmt` files (must match engine version)
+2. **LaTeX packages** — `.sty`, `.cls`, … in the `.data.gz` bundles
+3. **Format files** — pre-compiled `.fmt` files (must match the engine version)
+4. **Index tables** — `file-manifest.json`, `font-file-to-package.json`, … (regenerated from the new TLPDB)
+5. **Prebuilt cache** — `prebuilt/<pkg>.json` for build-required packages (regenerated; usually optional)
+
+The build artifacts (1–3) and the prebuilt cache (5) are **gitignored and shipped
+via R2/releases**, not committed — so merging a version bump does **not** ship
+them. You must regenerate and upload them (Steps 5–7, 10). Index tables (4) are
+committed except the prebuilt manifest.
 
 **See also:** [Building from Source](building.md) for detailed build instructions.
 
@@ -66,6 +73,15 @@ This runs `install-tl` which:
 - Generates format files (`pdflatex.fmt`, `xelatex.fmt`, etc.)
 - Places formats in `build/texlive-basic/texmf-dist/texmf-var/web2c/`
 
+The same Makefile target also rewrites `texmf-dist/web2c/texmf.cnf` (the `sed`
+in `build/texlive-%.txt`). It repoints `TEXMFSYSVAR`/`TEXMFSYSCONFIG` under
+`texmf-dist/` and **strips the `!!` prefixes** from the `TEXMF*` paths. In
+kpathsea, `!!` means "look in the `ls-R` index only, never scan the directory".
+The packaged WASM VFS ships no `ls-R`, so the `!!` is removed to let kpathsea
+scan the VFS directly — otherwise lookups silently resolve nothing. If a compile
+starts failing to find packages or fonts after an upgrade, confirm this rewrite
+still applied to the new `texmf.cnf` (TL sometimes reshuffles those lines).
+
 ## Step 5: Package into Bundles
 
 Convert the TeX Live installation into browser-loadable bundles:
@@ -76,17 +92,51 @@ make build/wasm/texlive-basic.js
 
 cd ../packages
 bun run split-bundle.ts
+bun run bundle-cm-super.ts   # REQUIRED: re-merge cm-super into file-manifest.json
 ```
 
 This creates individual `.data.gz` bundles and updates `file-manifest.json`.
 
-## Step 6: Update Package Content (Optional)
+> **Do not skip `bundle-cm-super.ts`.** `split-bundle.ts` *overwrites*
+> `file-manifest.json` from the `texlive-basic` tree only. cm-super is built and
+> served as a separate bundle (too large to fetch at runtime), and its ~420 font
+> entries are merged back in by `bundle-cm-super.ts`. Running only `split-bundle.ts`
+> drops every cm-super entry, and compiles then fail with `Font <tc/ec font> not
+> found` (e.g. `tcrm1200`). `./build-wasm.sh bundles` runs both for you.
+
+## Step 6: Regenerate the font-file index
+
+The font-stem → package index is derived from the TLPDB (now in the updated
+submodule). Regenerate it so font-by-filename lookups (`phvr8t`, `ec-lmr10`, …)
+resolve against the new version:
+
+```bash
+bun scripts/build-font-file-index.js
+```
+
+Writes the committed `packages/bundles/font-file-to-package.json`. Default TLPDB
+input is `busytex/source/texmfrepo/tlpkg/texlive.tlpdb` (override with `$TLPDB_PATH`).
+
+## Step 7: Regenerate prebuilt artifacts (optional)
+
+Build-required packages (source-only `.ins`/`.dtx`, `.tds.zip`) are pre-normalized
+into `packages/bundles/prebuilt/<pkg>.json` (gitignored, shipped to R2 in Step 10).
+docstrip output is largely version-stable, so this is usually optional — regenerate
+to refresh provenance (and update `TL_YEAR` in `scripts/prebuild-packages.js` if
+you key artifacts by year):
+
+```bash
+bun scripts/prebuild-packages.js        # full curated set
+# bun scripts/prebuild-packages.js acrotex   # a single package
+```
+
+## Step 8: Update Package Content (Optional)
 
 To update specific packages to their latest versions:
 
 ```bash
 cd packages
-bun run update-bundles-tl2025.ts
+bun run update-bundles-tl<year>.ts      # e.g. update-bundles-tl2026.ts
 ```
 
 Edit the script to specify which packages to update:
@@ -100,7 +150,7 @@ const PACKAGE_UPDATES: Record<string, string[]> = {
 };
 ```
 
-## Step 7: Test Locally
+## Step 9: Test Locally
 
 ```bash
 bun serve-local.ts
@@ -111,17 +161,48 @@ bun serve-local.ts
 3. Compile a test document
 4. Verify version in log output:
    ```
-   pdfTeX, Version 3.141592653-2.6-1.40.27 (TeX Live 2025)
-   LaTeX2e <2024-11-01> patch level 2
-   L3 programming layer <2025-01-18>
+   pdfTeX, Version 3.141592653-2.6-1.40.x (TeX Live 2026)
+   LaTeX2e <…>
+   L3 programming layer <…>
    ```
+5. Run the suite: `npm run test:run` and `npm run test:bun-parity`.
+
+## Step 10: Deploy to production
+
+The bundles, WASM, font index, and prebuilt artifacts live in R2/releases — a
+merge alone does **not** ship them.
+
+```bash
+cd cloudflare
+./upload-to-r2.sh        # bundles + WASM + font maps + prebuilt/* and _index.json
+```
+
+Then invalidate caches and deploy the Worker:
+
+- Bump `CACHE_VERSION` in `cloudflare/worker.ts` (invalidates edge-cached R2 files).
+- Bump `CTAN_CACHE_VERSION` if package processing/output changed (invalidates the R2 CTAN cache).
+- `bunx wrangler deploy`.
+
+Attach the regenerated `*.data.gz` and `busytex.wasm` to the GitHub release so
+fresh clones / self-hosters can fetch them (see [self-hosting.md](self-hosting.md)).
+
+**Leave the on-demand fetch year alone.** `DEFAULT_TL_YEAR` /
+`SUPPORTED_TL_YEARS` / `TEXLIVE_ARCHIVE_BASE` (in `ctan-proxy.ts`, `serve-local.ts`,
+`worker.ts`) point at the last **frozen** TeX Live year. On-demand package fetches
+use the historic `tlnet-final` archive, which only exists for *superseded*
+versions — the current year has none yet. Bundling TL2026 does not mean bumping
+these.
 
 ## Verification Checklist
 
-- [ ] LaTeX date shows new version
-- [ ] pdfTeX/XeTeX version matches new release
+- [ ] LaTeX date shows the new version
+- [ ] pdfTeX/XeTeX version matches the new release
 - [ ] Documents compile without format errors
-- [ ] Common packages (amsmath, tikz, etc.) work correctly
+- [ ] Common packages (amsmath, tikz, …) work
+- [ ] Font-by-filename resolves (a doc using a base-35 PostScript font)
+- [ ] A build-required package still works (e.g. `acrotex` → `insdljs`)
+- [ ] `npm run test:run` + `npm run test:bun-parity` pass
+- [ ] Production smoke after deploy: the above against the deployed Worker
 
 ## Troubleshooting
 
@@ -140,7 +221,7 @@ Package version mismatch. Update the amsmath bundle:
 
 ```bash
 cd packages
-bun run update-bundles-tl2025.ts
+bun run update-bundles-tl<year>.ts
 ```
 
 ### Format file has wrong checksum
@@ -155,18 +236,30 @@ make build/texlive-basic.txt
 
 Then re-run split-bundle.ts.
 
+### Font requested by filename 404s after upgrade
+
+The font-file index is stale. Re-run Step 6 (`bun scripts/build-font-file-index.js`)
+against the new TLPDB, and (production) re-upload it via `upload-to-r2.sh`.
+
 ## Files Modified During Upgrade
 
-- `busytex/Makefile` — TeX Live URLs
-- `busytex/build/wasm/busytex.wasm` — WASM binary
-- `busytex/build/wasm/busytex.js` — JS loader
-- `packages/bundles/*.data.gz` — All bundle files
-- `packages/bundles/file-manifest.json` — File offsets
-- `packages/bundles/bundles.json` — Bundle metadata
+Committed:
+- `busytex` — submodule pointer to the new TL build
+- `busytex/Makefile` — TeX Live URLs (inside the submodule)
+- `packages/bundles/file-manifest.json` — file offsets
+- `packages/bundles/bundles.json` — bundle metadata
+- `packages/bundles/font-file-to-package.json` — font-stem index (regenerated)
+- `cloudflare/worker.ts` — `CACHE_VERSION` / `CTAN_CACHE_VERSION` bumps
+- `package.json` — version / description
+
+Generated → R2/releases (gitignored, not committed):
+- `busytex/build/wasm/busytex.{wasm,js}` — WASM binary + loader
+- `packages/bundles/*.data.gz` — bundle payloads
+- `packages/bundles/prebuilt/*.json` + `_index.json` — build-required cache
 
 ## Notes
 
 - Format files are engine-specific (pdfTeX format won't work with XeTeX)
 - Format files embed version checksums and fail if mismatched
 - The bundle split regenerates all metadata automatically
-- Rename `update-bundles-tl2025.ts` to match the new version if desired
+- Rename `update-bundles-tl<year>.ts` to match the new version if desired
