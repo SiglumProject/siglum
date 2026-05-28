@@ -28,22 +28,19 @@ import {
   stablePrebuiltJson,
 } from '../packages/prebuilt-cache.ts';
 import { busytexAssetsAvailable } from '../packages/providers/busytex-engine.ts';
-import overrides from '../packages/providers/overrides.json';
 import buildRequired from '../packages/providers/build-required.json';
 
 const TL_YEAR = 2025;
 const UA = { 'User-Agent': 'siglum-engine-prebuild/1.0' };
 
-// The curated set: explicit build-required.json entries + every overrides.json
-// package pinned to a build-requiring provider (ins/dtx). Deduped, sorted.
+// The curated set is build-required.json alone — list the *bundle* (e.g. acrotex),
+// not its sub-packages. A request for a sub-package (insdljs) resolves to the
+// bundle's artifact via the proxy/worker parent-resolution path, so prebuilding
+// the sub-package separately would just duplicate the bundle. (overrides.json
+// sub-package entries like insdljs are runtime normalize hints, not prebuild
+// targets, and are intentionally NOT auto-included here.)
 function curatedPackages() {
-  const set = new Set(buildRequired.packages || []);
-  for (const [name, entry] of Object.entries(overrides)) {
-    if (entry && (entry.provider === 'ins' || entry.provider === 'dtx')) {
-      set.add(name);
-    }
-  }
-  return [...set].sort();
+  return [...new Set(buildRequired.packages || [])].sort();
 }
 
 // Resolve a package to its downloadable CTAN archive(s) using the same
