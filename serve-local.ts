@@ -13,8 +13,11 @@ import {
   processZipData,
   processRawFileData,
   processExtractedFiles,
+  ctanDownloadUrls,
   type ProcessedPackage,
 } from './packages/ctan-core.ts';
+import { resolveFontPackage } from './packages/font-index.ts';
+import { loadPrebuilt } from './packages/prebuilt-cache.ts';
 
 const execAsync = promisify(exec);
 
@@ -109,6 +112,16 @@ async function fetchAndExtractPackage(pkg: string): Promise<Response> {
     return jsonResponse(packageCache.get(pkg));
   }
 
+  // Normalized-artifact cache (plan §0): serve a committed, pre-normalized
+  // artifact for a build-required package (acrotex/insdljs, …) verbatim instead
+  // of running docstrip in-request. Checked before the live CTAN/TeXLive flow.
+  const prebuilt = await loadPrebuilt(pkg);
+  if (prebuilt) {
+    console.log(`[PREBUILT] Cache hit: ${pkg} (${prebuilt.totalFiles} files via ${prebuilt.provider || 'prebuilt'})`);
+    packageCache.set(pkg, prebuilt);
+    return jsonResponse(prebuilt);
+  }
+
   console.log(`[FETCH] Fetching package: ${pkg}`);
 
   // Try local TexLive archive first (has pre-built .sty files)
@@ -116,6 +129,20 @@ async function fetchAndExtractPackage(pkg: string): Promise<Response> {
   if (texliveResult) {
     packageCache.set(pkg, texliveResult);
     return jsonResponse(texliveResult);
+  }
+
+  // Not a package by that name — it may be a font file stem (phvr8t, ec-lmr10, …)
+  // that TeX requested directly. Resolve it to the package that ships it (via the
+  // TLPDB index, falling back to the base-35 prefix table) and fetch that.
+  const fontPkg = await resolveFontPackage(pkg);
+  if (fontPkg && fontPkg !== pkg) {
+    console.log(`[FONT] ${pkg} resolves to package ${fontPkg}`);
+    const famResult = await tryTexLiveArchive(fontPkg);
+    if (famResult) {
+      packageCache.set(pkg, famResult);
+      packageCache.set(fontPkg, famResult);
+      return jsonResponse(famResult);
+    }
   }
 
   // Query CTAN for package info
@@ -132,6 +159,17 @@ async function fetchAndExtractPackage(pkg: string): Promise<Response> {
   const parentPkg = info.miktex || info.texlive;
   if (parentPkg && parentPkg !== pkg) {
     console.log(`[CTAN] ${pkg} is part of ${parentPkg}`);
+
+    // The child missed the prebuilt cache, but its parent bundle may have a
+    // committed artifact (e.g. insdljs → the prebuilt acrotex). Serve that
+    // instead of re-running docstrip on the fetched source.
+    const parentPrebuilt = await loadPrebuilt(parentPkg);
+    if (parentPrebuilt) {
+      console.log(`[PREBUILT] Cache hit: ${pkg} via parent ${parentPkg} (${parentPrebuilt.totalFiles} files)`);
+      packageCache.set(pkg, parentPrebuilt);
+      packageCache.set(parentPkg, parentPrebuilt);
+      return jsonResponse(parentPrebuilt);
+    }
 
     // Try TexLive for parent package
     const parentTexlive = await tryTexLiveArchive(parentPkg);
@@ -165,22 +203,9 @@ async function fetchAndExtractPackage(pkg: string): Promise<Response> {
     }
   }
 
-  // Build list of URLs to try (in order of preference)
-  const urlsToTry: string[] = [];
-  let ctanPath = info.ctan?.path || '';
-  // Only strip filename if path has an actual file extension (CTAN sometimes returns file:true for directories)
-  if (info.ctan?.file === true && /\.[a-z]{2,4}$/i.test(ctanPath)) {
-    ctanPath = ctanPath.substring(0, ctanPath.lastIndexOf('/'));
-  }
-
-  if (info.install) {
-    urlsToTry.push(`https://mirrors.ctan.org/install${info.install}`);
-  }
-  if (ctanPath) {
-    urlsToTry.push(`https://mirrors.ctan.org${ctanPath}.zip`);
-    urlsToTry.push(`https://mirrors.ctan.org${ctanPath}/${pkgName}.zip`);
-    urlsToTry.push(`https://mirrors.ctan.org${ctanPath}.tds.zip`);
-  }
+  // Build list of URLs to try (in order of preference) — shared with the proxy
+  // and the offline prebuild so CTAN path conventions live in one place.
+  const urlsToTry = ctanDownloadUrls(info, pkgName);
 
   if (urlsToTry.length === 0) {
     return jsonResponse({ error: 'No download URL available' }, 404);
@@ -204,10 +229,17 @@ async function fetchAndExtractPackage(pkg: string): Promise<Response> {
     if (!('error' in result) && result.totalFiles > 0) {
       break;
     }
+    // A structured unbuildable result is a definitive answer for this archive;
+    // alternate URLs (.tds.zip etc.) may still yield a built copy, so keep
+    // trying, but don't lose the reason if nothing better turns up.
     console.log(`[CTAN] No usable files, trying next URL...`);
   }
 
   if ('error' in result) {
+    if ('unbuildable' in result && result.unbuildable) {
+      console.log(`[CTAN] Unbuildable (${result.provider}): ${result.reason}`);
+      return jsonResponse(result, 422);
+    }
     return jsonResponse(result, 404);
   }
 
@@ -225,7 +257,7 @@ async function fetchAndExtractPackage(pkg: string): Promise<Response> {
 // ============================================================================
 
 Bun.serve({
-  port: 8787,
+  port: parseInt(process.env.SIGLUM_DEV_PORT || '8787', 10),
   hostname: '0.0.0.0', // Listen on all interfaces for network access
   async fetch(req) {
     const url = new URL(req.url);

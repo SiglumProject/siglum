@@ -108,6 +108,21 @@ const packageNameCache = new Map();
 let fileToPackageIndex = null;
 let fileToPackageLoading = null;
 
+// Font-name-to-package index (loaded from server on first use)
+let fontNameIndex = null;
+let fontNameLoading = null;
+
+/**
+ * Normalize a font family name the way the build-time index keys are normalized:
+ * lowercase, keep only [a-z0-9]. fontspec/fontconfig compare loosely, so
+ * "TeX Gyre Chorus" and "texgyrechorus" must collapse to the same key.
+ * @param {string} name - Font family name
+ * @returns {string} Normalized key
+ */
+export function normalizeFontName(name) {
+    return name.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
 /**
  * @typedef {Object} CTANFetcherOptions
  * @property {string} [proxyUrl] - CTAN proxy URL
@@ -181,6 +196,66 @@ export class CTANFetcher {
     async lookupPackageForFile(fileName) {
         const index = await this.loadFileToPackageIndex();
         return index[fileName] || null;
+    }
+
+    /**
+     * Load font-name-to-package index (maps normalized family name → package).
+     * @returns {Promise<Object<string, string>>} Index mapping font keys to packages
+     */
+    async loadFontNameIndex() {
+        if (fontNameIndex) return fontNameIndex;
+        if (fontNameLoading) return fontNameLoading;
+
+        fontNameLoading = (async () => {
+            try {
+                const response = await fetch(`${this.bundlesUrl}/font-name-to-package.json`);
+                if (response.ok) {
+                    fontNameIndex = await response.json();
+                    this.onLog(`Loaded font-name index: ${Object.keys(fontNameIndex).length} entries`);
+                } else {
+                    this.onLog(`Failed to load font-name index: ${response.status}`);
+                    fontNameIndex = {};
+                }
+            } catch (e) {
+                this.onLog(`Error loading font-name index: ${e.message}`);
+                fontNameIndex = {};
+            }
+            return fontNameIndex;
+        })();
+
+        return fontNameLoading;
+    }
+
+    /**
+     * Look up the TeX Live package that provides a font family.
+     * @param {string} fontName - Font family name (e.g., "EB Garamond")
+     * @returns {Promise<string|null>} Package name or null
+     */
+    async lookupPackageForFontName(fontName) {
+        const index = await this.loadFontNameIndex();
+        return index[normalizeFontName(fontName)] || null;
+    }
+
+    /**
+     * Resolve a list of font family names to the set of packages that provide
+     * them. Unknown names are returned separately so callers can report them.
+     * @param {string[]} fontNames - Font family names from the document
+     * @returns {Promise<{packages: string[], unresolved: string[]}>}
+     */
+    async resolveFontPackages(fontNames) {
+        const index = await this.loadFontNameIndex();
+        const packages = new Set();
+        const unresolved = [];
+        for (const name of fontNames) {
+            const pkg = index[normalizeFontName(name)];
+            if (pkg) {
+                packages.add(pkg);
+            } else {
+                unresolved.push(name);
+                this.onLog(`[FONT] No package found for font "${name}" (will rely on bundled/system fonts)`);
+            }
+        }
+        return { packages: [...packages], unresolved };
     }
 
     /**
@@ -457,22 +532,22 @@ export class CTANFetcher {
             }
 
             // Process files (similar to CTAN fetch)
-            const texExtensions = ['.sty', '.cls', '.def', '.cfg', '.tex', '.fd', '.clo', '.ltx'];
-            const fontExtensions = ['.pfb', '.pfm', '.afm', '.tfm', '.vf', '.map', '.enc'];
             const files = new Map();
             const cacheWrites = [];
 
             await ensureTexliveMounted();
 
             for (const [tarPath, content] of tarFiles) {
-                // Skip docs and source
+                // Skip docs and source directories
                 if (tarPath.includes('/doc/') || tarPath.startsWith('doc/')) continue;
                 if (tarPath.includes('/source/') || tarPath.startsWith('source/')) continue;
 
                 const ext = tarPath.substring(tarPath.lastIndexOf('.')).toLowerCase();
                 const fileName = tarPath.split('/').pop();
 
-                if (texExtensions.includes(ext) || fontExtensions.includes(ext)) {
+                // Include all non-doc/source files — packages may contain
+                // arbitrary data files (.csv, .lua, .html, etc.)
+                if (fileName && ext.startsWith('.')) {
                     // Map to texlive path structure
                     // Note: tar paths may or may not have leading slash
                     let targetPath;
@@ -702,56 +777,80 @@ export class CTANFetcher {
         const failed = [];
         const skipped = [];
 
-        // Deduplicate
+        // Deduplicate requested names
         const uniquePackages = [...new Set(packageNames)];
-        const toFetch = [];
 
-        // Check cache first - use memory cache to avoid filesystem reads on every recompile
+        // Resolve each requested package to its CONTAINER package up front. Many
+        // sub-packages share one TeX Live container — e.g. tikz, pgfcore, pgfsys,
+        // pgfkeys, pgfmath, pgffor … all live in "pgf". Without this, each name
+        // independently misses the cache and re-downloads + re-decompresses the
+        // same multi-MB archive (the bug: pgf fetched ~13× per tikz compile).
+        // fetchPackage() would redirect each name to its container anyway, so
+        // collapsing them here is behaviour-preserving but fetches once.
+        const membersOf = new Map();  // container -> [requestedName, ...]
         for (const pkgName of uniquePackages) {
-            // Skip filesystem check if package already loaded into memory this session
-            if (this.loadedPackages.has(pkgName)) {
-                skipped.push(pkgName);
+            let container = pkgName;
+            if (!options.tlYear) {
+                for (const ext of LATEX_FILE_EXTENSIONS) {
+                    const realPkg = await this.lookupPackageForFile(pkgName + ext);
+                    if (realPkg && realPkg !== pkgName) { container = realPkg; break; }
+                }
+            }
+            if (!membersOf.has(container)) membersOf.set(container, []);
+            membersOf.get(container).push(pkgName);
+        }
+
+        const toFetch = [];  // containers needing a network fetch
+
+        // Check cache first (keyed by container) to avoid filesystem reads on recompile.
+        for (const [container, members] of membersOf) {
+            // Already loaded into memory this session (container or any member)?
+            if (this.loadedPackages.has(container) || members.some((m) => this.loadedPackages.has(m))) {
+                this.loadedPackages.add(container);
+                skipped.push(...members);
                 continue;
             }
-
-            const cached = await this.loadPackageFromCache(pkgName);
+            const cached = await this.loadPackageFromCache(container);
             if (cached && cached.files && !cached.notFound) {
-                // Already cached and has files - populate memory cache
                 for (const [path, content] of cached.files) {
                     this.fileCache.set(path, content);
                 }
-                this.loadedPackages.add(pkgName);
-                skipped.push(pkgName);
+                this.loadedPackages.add(container);
+                for (const m of members) this.loadedPackages.add(m);
+                skipped.push(...members);
             } else {
-                toFetch.push(pkgName);
+                toFetch.push(container);
             }
         }
 
         if (toFetch.length === 0) {
+            this.onLog(`[PRE-FETCH] Done: ${fetched.length} fetched, ${failed.length} failed, ${skipped.length} cached`);
             return { fetched, failed, skipped };
         }
 
-        this.onLog(`[PRE-FETCH] Batch fetching ${toFetch.length} packages...`);
+        this.onLog(`[PRE-FETCH] Batch fetching ${toFetch.length} container package${toFetch.length === 1 ? '' : 's'} (from ${uniquePackages.length} requested)...`);
 
         // Fetch in chunks with concurrency limit
         for (let i = 0; i < toFetch.length; i += concurrency) {
             const chunk = toFetch.slice(i, i + concurrency);
             const results = await Promise.allSettled(
-                chunk.map(async (pkgName) => {
-                    const result = await this.fetchPackage(pkgName);
-                    return { pkgName, result };
+                chunk.map(async (container) => {
+                    const result = await this.fetchPackage(container);
+                    return { container, result };
                 })
             );
 
             for (const res of results) {
+                const container = res.status === 'fulfilled' ? res.value.container : null;
+                const members = (container && membersOf.get(container)) || (container ? [container] : []);
                 if (res.status === 'fulfilled' && res.value.result) {
-                    fetched.push(res.value.pkgName);
-                    this.loadedPackages.add(res.value.pkgName);
+                    this.loadedPackages.add(container);
+                    for (const m of members) {
+                        this.loadedPackages.add(m);
+                        fetched.push(m);
+                    }
                 } else {
-                    const pkgName = res.status === 'fulfilled'
-                        ? res.value.pkgName
-                        : 'unknown';
-                    failed.push(pkgName);
+                    failed.push(...(members.length ? members : ['unknown']));
                 }
             }
         }

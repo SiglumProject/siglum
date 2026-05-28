@@ -1,7 +1,8 @@
 // Shared CTAN package extraction logic
 // Used by both ctan-proxy.ts (server) and serve-local.ts (dev)
 
-import { unzip } from 'fflate';
+import { unzipSync } from 'fflate';
+import { normalizePackage, type NormalizeOptions } from './providers/index.ts';
 
 // ============================================================================
 // Types
@@ -19,6 +20,8 @@ export interface ProcessedPackage {
   totalFiles: number;
   dependencies: string[];
   source?: string;
+  // Which normalize provider produced these files (prebuilt/tds/ins/…).
+  provider?: string;
 }
 
 export interface ExtractionResult {
@@ -97,11 +100,17 @@ export function isValidPackageName(name: string): boolean {
 }
 
 export function unzipAsync(data: Uint8Array): Promise<Record<string, Uint8Array>> {
+  // Use unzipSync, NOT fflate's async unzip(). The async path spawns Web Workers
+  // for parallel inflate, and under Bun (the proxy's runtime) those workers crash
+  // with "undefined is not an object (evaluating 'dat.length')". unzipSync runs in
+  // the calling thread and is reliable on every runtime; package zips are small
+  // enough (a few MB) that synchronous inflate is not a concern for a local proxy.
   return new Promise((resolve, reject) => {
-    unzip(data, (err, result) => {
-      if (err) reject(err);
-      else resolve(result);
-    });
+    try {
+      resolve(unzipSync(data));
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 
@@ -120,11 +129,71 @@ export function extractDependencies(content: string, excludePkg?: string): strin
   return [...deps];
 }
 
+// Standard 35 PostScript fonts: their Karl-Berry / Fontname filename prefixes
+// map to the TeX Live package that ships the metrics (.tfm), virtual fonts
+// (.vf) and maps. TeX requests these by file stem (e.g. `phvr8t`), which names
+// no CTAN/TeX Live *package*, so a direct fetch 404s; this resolves the stem to
+// its family package (verified present in the TeX Live archive). Used only as a
+// fallback when normal package resolution fails — these stems are never real
+// package names, so there are no false positives.
+export const PS_FONT_PACKAGE_BY_PREFIX: Record<string, string> = {
+  phv: 'helvetic',  // Helvetica / Nimbus Sans
+  ptm: 'times',     // Times / Nimbus Roman
+  pcr: 'courier',   // Courier / Nimbus Mono
+  ppl: 'palatino',  // Palatino / URW Palladio
+  pbk: 'bookman',   // Bookman / URW Bookman
+  pag: 'avantgar',  // Avant Garde / URW Gothic
+  pnc: 'ncntrsbk',  // New Century Schoolbook
+  psy: 'symbol',    // Symbol
+  pzd: 'zapfding',  // Zapf Dingbats
+  put: 'utopia',    // Utopia
+  bch: 'charter',   // Bitstream Charter
+};
+
+const FONT_STEM_EXTENSIONS = /\.(tfm|vf|pfb|pfm|afm|map|enc)$/i;
+
+/**
+ * Resolve a base-35 PostScript font file stem (e.g. `phvr8t`, `ptmr8t.tfm`) to
+ * the TeX Live package that provides it, or null if it isn't one.
+ */
+export function fontPackageForFile(name: string): string | null {
+  const stem = name.replace(FONT_STEM_EXTENSIONS, '').toLowerCase();
+  const prefix = stem.slice(0, 3);
+  return PS_FONT_PACKAGE_BY_PREFIX[prefix] ?? null;
+}
+
 /**
  * Validate ZIP magic bytes
  */
 export function isValidZip(data: Uint8Array): boolean {
   return data.length >= 4 && data[0] === 0x50 && data[1] === 0x4B;
+}
+
+/**
+ * Build the ordered list of candidate CTAN download URLs for a package from its
+ * CTAN info JSON (the response of ctan.org/json/2.0/pkg/<name>). Preference
+ * order: the `install` zip, then the path-based `.zip`, a package-named nested
+ * `.zip`, and the `.tds.zip`. Shared by both proxies (ctan-proxy.ts,
+ * serve-local.ts) and the offline prebuild (scripts/prebuild-packages.js) so the
+ * CTAN path conventions live in exactly one place and can't drift between them.
+ */
+export function ctanDownloadUrls(info: any, pkgName: string): string[] {
+  const urls: string[] = [];
+  let ctanPath: string = info?.ctan?.path || '';
+  // Strip a trailing filename only when CTAN marks this a file AND the path
+  // actually ends in an extension (CTAN sometimes sets file:true for directories).
+  if (info?.ctan?.file === true && /\.[a-z]{2,4}$/i.test(ctanPath)) {
+    ctanPath = ctanPath.substring(0, ctanPath.lastIndexOf('/'));
+  }
+  if (info?.install) {
+    urls.push(`https://mirrors.ctan.org/install${info.install}`);
+  }
+  if (ctanPath) {
+    urls.push(`https://mirrors.ctan.org${ctanPath}.zip`);
+    urls.push(`https://mirrors.ctan.org${ctanPath}/${pkgName}.zip`);
+    urls.push(`https://mirrors.ctan.org${ctanPath}.tds.zip`);
+  }
+  return urls;
 }
 
 // ============================================================================
@@ -151,12 +220,15 @@ export function processExtractedFiles(
     if (TEX_EXTENSIONS.includes(ext)) {
       let targetDir = `/texlive/texmf-dist/tex/latex/${pkgName}`;
 
-      if (filePath.includes('/tex/latex/')) {
-        const match = filePath.match(/\/tex\/latex\/([^/]+)/);
-        if (match) targetDir = `/texlive/texmf-dist/tex/latex/${match[1]}`;
-      } else if (filePath.includes('/tex/generic/')) {
-        const match = filePath.match(/\/tex\/generic\/([^/]+)/);
-        if (match) targetDir = `/texlive/texmf-dist/tex/generic/${match[1]}`;
+      // Anchor with (?:^|/) so paths whose TDS root is at the top level — as in
+      // TeX Live archive tars (`tex/latex/...`, not `texmf-dist/tex/latex/...`) —
+      // still route to their real subdirectory, not just the pkgName default.
+      const latexMatch = filePath.match(/(?:^|\/)tex\/latex\/([^/]+)/);
+      const genericMatch = filePath.match(/(?:^|\/)tex\/generic\/([^/]+)/);
+      if (latexMatch) {
+        targetDir = `/texlive/texmf-dist/tex/latex/${latexMatch[1]}`;
+      } else if (genericMatch) {
+        targetDir = `/texlive/texmf-dist/tex/generic/${genericMatch[1]}`;
       }
 
       const textContent = textDecoder.decode(content);
@@ -167,7 +239,12 @@ export function processExtractedFiles(
         deps.add(dep);
       }
     } else if (FONT_EXTENSIONS.includes(ext)) {
-      const fontsMatch = filePath.match(/\/(fonts\/[^/]+(?:\/[^/]+)*)\//);
+      // Preserve the full TDS font path (fonts/tfm/…, fonts/vf/…, fonts/map/…)
+      // so each file lands where kpathsea searches for its type. The (?:^|/)
+      // anchor is essential: TeX Live tars put `fonts/` at the top level, and a
+      // `/fonts/`-only regex misses that and dumps everything into type1/, where
+      // TeX never finds .tfm/.vf/.map. (This is what broke on-demand fonts.)
+      const fontsMatch = filePath.match(/(?:^|\/)(fonts\/[^/]+(?:\/[^/]+)*)\//);
       let targetDir = fontsMatch
         ? `/texlive/texmf-dist/${fontsMatch[1]}`
         : `/texlive/texmf-dist/fonts/type1/public/${pkgName}`;
@@ -217,14 +294,30 @@ export function processRawFileData(
   };
 }
 
+// Structured failure for a package that was fetched but cannot be made into
+// runtime files (source-only with no build engine, no recognized recipe, …).
+// Surfaced to the user as an actionable error rather than a crash (Phase 3).
+export interface UnbuildableResult {
+  error: string;
+  unbuildable: true;
+  reason: string;
+  provider: string;
+  additionalFiles?: string[];
+}
+
 /**
- * Process ZIP data into a ProcessedPackage
- * Returns null with error message if invalid
+ * Process ZIP data into a ProcessedPackage.
+ *
+ * Runs the normalize step (provider chain + override registry) on the freshly
+ * extracted files before routing them into TDS paths, so source-only packages
+ * (.ins/.dtx), bundled .tds.zip, etc. become usable. Returns a structured
+ * error/unbuildable result on failure instead of throwing.
  */
 export async function processZipData(
   zipData: Uint8Array,
-  pkgName: string
-): Promise<ProcessedPackage | { error: string }> {
+  pkgName: string,
+  opts: NormalizeOptions = {}
+): Promise<ProcessedPackage | { error: string } | UnbuildableResult> {
   // Validate ZIP magic bytes
   if (!isValidZip(zipData)) {
     const preview = textDecoder.decode(zipData.slice(0, 100));
@@ -232,7 +325,19 @@ export async function processZipData(
   }
 
   const files = await unzipAsync(zipData);
-  const result = processExtractedFiles(files, pkgName);
+
+  const norm = await normalizePackage(files, { pkgName }, opts);
+  if (norm.unbuildable) {
+    return {
+      error: norm.reason,
+      unbuildable: true,
+      reason: norm.reason,
+      provider: norm.provider,
+      additionalFiles: norm.additionalFiles,
+    };
+  }
+
+  const result = processExtractedFiles(norm.runtimeFiles, pkgName);
 
   if (result.fileCount === 0) {
     return { error: 'No usable files found in ZIP' };
@@ -242,6 +347,7 @@ export async function processZipData(
     name: pkgName,
     files: result.files,
     totalFiles: result.fileCount,
-    dependencies: result.dependencies
+    dependencies: result.dependencies,
+    provider: norm.provider,
   };
 }

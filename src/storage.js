@@ -11,45 +11,52 @@ function getFileSystem() {
 }
 
 let wasmCacheMounted = false;
+let wasmCacheMounting = null;
 async function ensureWasmCacheMounted() {
     if (wasmCacheMounted) return true;
-    const fs = await getFileSystem();
+    if (wasmCacheMounting) return wasmCacheMounting;
+    const fs = getFileSystem();
     if (!fs) return false;
-    try {
-        await fs.mountAuto('/wasm-cache');
-        wasmCacheMounted = true;
-        return true;
-    } catch (e) {
-        console.warn('Failed to mount wasm-cache filesystem:', e);
-        return false;
-    }
+    wasmCacheMounting = (async () => {
+        try {
+            await fs.mountAuto('/wasm-cache');
+            wasmCacheMounted = true;
+            return true;
+        } catch (e) {
+            console.warn('Failed to mount wasm-cache filesystem:', e);
+            return false;
+        } finally {
+            wasmCacheMounting = null;
+        }
+    })();
+    return wasmCacheMounting;
 }
 
-const IDB_NAME = 'siglum-ctan-cache';
-const IDB_STORE = 'packages';
-const CTAN_CACHE_VERSION = 9; // Bumped to force refetch from TexLive 2025 (enumitem v3.11 fix)
-const BUNDLE_CACHE_VERSION = 4;
-const MANIFEST_CACHE_VERSION = 5; // Bumped: consolidated metadata into bundles.json
+const CTAN_CACHE_VERSION = 10; // Bumped: include all data files (.csv, .lua, etc.) in CTAN extractions
+const BUNDLE_CACHE_VERSION = 6; // Bumped: TL2026 clean rebuild — regenerated bundles + re-merged cm-super
+const MANIFEST_CACHE_VERSION = 7; // Bumped: TL2026 clean rebuild — regenerated file-manifest.json (+ cm-super)
 
-let idbCache = null;
-
-// IndexedDB operations
-async function openIDBCache() {
-    if (idbCache) return idbCache;
-    return new Promise((resolve, reject) => {
-        const request = indexedDB.open(IDB_NAME, 1);
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => {
-            idbCache = request.result;
-            resolve(idbCache);
-        };
-        request.onupgradeneeded = (event) => {
-            const db = event.target.result;
-            if (!db.objectStoreNames.contains(IDB_STORE)) {
-                db.createObjectStore(IDB_STORE, { keyPath: 'name' });
-            }
-        };
-    });
+// CTAN cache mount
+let ctanCacheMounted = false;
+let ctanCacheMounting = null;
+async function ensureCtanCacheMounted() {
+    if (ctanCacheMounted) return true;
+    if (ctanCacheMounting) return ctanCacheMounting;
+    const fs = getFileSystem();
+    if (!fs) return false;
+    ctanCacheMounting = (async () => {
+        try {
+            await fs.mountAuto('/ctan-cache');
+            ctanCacheMounted = true;
+            return true;
+        } catch (e) {
+            console.warn('Failed to mount ctan-cache filesystem:', e);
+            return false;
+        } finally {
+            ctanCacheMounting = null;
+        }
+    })();
+    return ctanCacheMounting;
 }
 
 /**
@@ -59,14 +66,10 @@ async function openIDBCache() {
  */
 export async function getPackageMeta(packageName) {
     try {
-        const db = await openIDBCache();
-        return new Promise((resolve) => {
-            const tx = db.transaction(IDB_STORE, 'readonly');
-            const store = tx.objectStore(IDB_STORE);
-            const request = store.get(packageName);
-            request.onerror = () => resolve(null);
-            request.onsuccess = () => resolve(request.result);
-        });
+        if (!await ensureCtanCacheMounted()) return null;
+        const fs = getFileSystem();
+        const content = await fs.readFile(`/ctan-cache/${packageName}.json`);
+        return JSON.parse(content);
     } catch (e) {
         return null;
     }
@@ -80,14 +83,11 @@ export async function getPackageMeta(packageName) {
  */
 export async function savePackageMeta(packageName, meta) {
     try {
-        const db = await openIDBCache();
-        return new Promise((resolve) => {
-            const tx = db.transaction(IDB_STORE, 'readwrite');
-            const store = tx.objectStore(IDB_STORE);
-            const request = store.put({ name: packageName, ...meta, timestamp: Date.now() });
-            request.onerror = () => resolve(false);
-            request.onsuccess = () => resolve(true);
-        });
+        if (!await ensureCtanCacheMounted()) return false;
+        const fs = getFileSystem();
+        const data = { name: packageName, ...meta, timestamp: Date.now() };
+        await fs.writeFile(`/ctan-cache/${packageName}.json`, JSON.stringify(data), { createParents: true });
+        return true;
     } catch (e) {
         return false;
     }
@@ -99,14 +99,21 @@ export async function savePackageMeta(packageName, meta) {
  */
 export async function listAllCachedPackages() {
     try {
-        const db = await openIDBCache();
-        return new Promise((resolve) => {
-            const tx = db.transaction(IDB_STORE, 'readonly');
-            const store = tx.objectStore(IDB_STORE);
-            const request = store.getAll();
-            request.onerror = () => resolve([]);
-            request.onsuccess = () => resolve(request.result || []);
-        });
+        if (!await ensureCtanCacheMounted()) return [];
+        const fs = getFileSystem();
+        const entries = await fs.readdir('/ctan-cache');
+        const jsonFiles = entries.filter(e => e.name.endsWith('.json'));
+        const results = await Promise.all(
+            jsonFiles.map(async (entry) => {
+                try {
+                    const content = await fs.readFile(entry.path);
+                    return JSON.parse(content);
+                } catch {
+                    return null;
+                }
+            })
+        );
+        return results.filter(r => r !== null);
     } catch (e) {
         return [];
     }
@@ -114,38 +121,53 @@ export async function listAllCachedPackages() {
 
 // Mount for manifests
 let manifestsMounted = false;
+let manifestsMounting = null;
 async function ensureManifestsMounted() {
     if (manifestsMounted) return true;
-    const fs = await getFileSystem();
+    if (manifestsMounting) return manifestsMounting;
+    const fs = getFileSystem();
     if (!fs) return false;
-    try {
-        await fs.mountAuto('/manifests');
-        manifestsMounted = true;
-        return true;
-    } catch (e) {
-        console.warn('Failed to mount manifests filesystem:', e);
-        return false;
-    }
+    manifestsMounting = (async () => {
+        try {
+            await fs.mountAuto('/manifests');
+            manifestsMounted = true;
+            return true;
+        } catch (e) {
+            console.warn('Failed to mount manifests filesystem:', e);
+            return false;
+        } finally {
+            manifestsMounting = null;
+        }
+    })();
+    return manifestsMounting;
 }
 
 // Mount for format cache
 let fmtCacheMounted = false;
+let fmtCacheMounting = null;
 async function ensureFmtCacheMounted() {
     if (fmtCacheMounted) return true;
-    const fs = await getFileSystem();
+    if (fmtCacheMounting) return fmtCacheMounting;
+    const fs = getFileSystem();
     if (!fs) return false;
-    try {
-        await fs.mountAuto('/fmt-cache');
-        fmtCacheMounted = true;
-        return true;
-    } catch (e) {
-        console.warn('Failed to mount fmt-cache filesystem:', e);
-        return false;
-    }
+    fmtCacheMounting = (async () => {
+        try {
+            await fs.mountAuto('/fmt-cache');
+            fmtCacheMounted = true;
+            return true;
+        } catch (e) {
+            console.warn('Failed to mount fmt-cache filesystem:', e);
+            return false;
+        } finally {
+            fmtCacheMounting = null;
+        }
+    })();
+    return fmtCacheMounting;
 }
 
 // Mount for texlive/CTAN cache
 let texliveMounted = false;
+let texliveMounting = null;
 
 /**
  * Ensure the /texlive filesystem is mounted for CTAN package storage.
@@ -153,51 +175,64 @@ let texliveMounted = false;
  */
 export async function ensureTexliveMounted() {
     if (texliveMounted) return true;
-    const fs = await getFileSystem();
+    if (texliveMounting) return texliveMounting;
+    const fs = getFileSystem();
     if (!fs) return false;
-    try {
-        await fs.mountAuto('/texlive');
-        texliveMounted = true;
-        return true;
-    } catch (e) {
-        console.warn('Failed to mount texlive filesystem:', e);
-        return false;
-    }
+    texliveMounting = (async () => {
+        try {
+            await fs.mountAuto('/texlive');
+            texliveMounted = true;
+            return true;
+        } catch (e) {
+            console.warn('Failed to mount texlive filesystem:', e);
+            return false;
+        } finally {
+            texliveMounting = null;
+        }
+    })();
+    return texliveMounting;
 }
 
 // Bundle cache operations
 let bundleCacheMounted = false;
+let bundleCacheMounting = null;
 
 async function ensureBundleCacheMounted() {
     if (bundleCacheMounted) return true;
-    const fs = await getFileSystem();
+    if (bundleCacheMounting) return bundleCacheMounting;
+    const fs = getFileSystem();
     if (!fs) return false;
-    try {
-        await fs.mountAuto('/bundle-cache');
-        bundleCacheMounted = true;
-
-        // Check version and clear if outdated
+    bundleCacheMounting = (async () => {
         try {
-            const versionStr = await fs.readFile('/bundle-cache/version');
-            const version = parseInt(versionStr) || 0;
-            if (version < BUNDLE_CACHE_VERSION) {
-                if (version > 0) {
-                    console.log(`Bundle cache version upgrade (${version} → ${BUNDLE_CACHE_VERSION}), clearing...`);
-                }
-                await fs.rmdir('/bundle-cache', { recursive: true });
-                await fs.mountAuto('/bundle-cache');
-            }
-        } catch (e) {
-            // Version file doesn't exist, will be created on first write
-        }
+            await fs.mountAuto('/bundle-cache');
+            bundleCacheMounted = true;
 
-        // Write current version
-        await fs.writeFile('/bundle-cache/version', String(BUNDLE_CACHE_VERSION));
-        return true;
-    } catch (e) {
-        console.warn('Failed to mount bundle-cache filesystem:', e);
-        return false;
-    }
+            // Check version and clear if outdated
+            try {
+                const versionStr = await fs.readFile('/bundle-cache/version');
+                const version = parseInt(versionStr) || 0;
+                if (version < BUNDLE_CACHE_VERSION) {
+                    if (version > 0) {
+                        console.log(`Bundle cache version upgrade (${version} → ${BUNDLE_CACHE_VERSION}), clearing...`);
+                    }
+                    await fs.rmdir('/bundle-cache', { recursive: true });
+                    await fs.mountAuto('/bundle-cache');
+                }
+            } catch (e) {
+                // Version file doesn't exist, will be created on first write
+            }
+
+            // Write current version
+            await fs.writeFile('/bundle-cache/version', String(BUNDLE_CACHE_VERSION));
+            return true;
+        } catch (e) {
+            console.warn('Failed to mount bundle-cache filesystem:', e);
+            return false;
+        } finally {
+            bundleCacheMounting = null;
+        }
+    })();
+    return bundleCacheMounting;
 }
 
 /**
@@ -207,9 +242,8 @@ async function ensureBundleCacheMounted() {
  */
 export async function getBundleFromCache(bundleName) {
     try {
-        const fs = await getFileSystem();
-        if (!fs || !await ensureBundleCacheMounted()) return null;
-
+        if (!await ensureBundleCacheMounted()) return null;
+        const fs = getFileSystem();
         const data = await fs.readBinary(`/bundle-cache/bundles/${bundleName}.data`);
         return data?.buffer || null;
     } catch (e) {
@@ -225,12 +259,11 @@ export async function getBundleFromCache(bundleName) {
  */
 export async function saveBundleToCache(bundleName, data) {
     try {
-        const fs = await getFileSystem();
-        if (!fs || !await ensureBundleCacheMounted()) return false;
-
+        if (!await ensureBundleCacheMounted()) return false;
+        const fs = getFileSystem();
         await fs.mkdir('/bundle-cache/bundles');
-        // Convert SharedArrayBuffer to regular ArrayBuffer for IndexedDB compatibility
-        // (SharedArrayBuffer can't be serialized for storage)
+        // Convert SharedArrayBuffer to regular ArrayBuffer for storage
+        // (SharedArrayBuffer can't be serialized)
         let buffer = data;
         if (typeof SharedArrayBuffer !== 'undefined' && data instanceof SharedArrayBuffer) {
             buffer = new ArrayBuffer(data.byteLength);
@@ -251,9 +284,8 @@ export async function saveBundleToCache(bundleName, data) {
  */
 export async function getManifestFromCache(name) {
     try {
-        const fs = await getFileSystem();
-        if (!fs || !await ensureManifestsMounted()) return null;
-
+        if (!await ensureManifestsMounted()) return null;
+        const fs = getFileSystem();
         const content = await fs.readFile(`/manifests/${name}.json`);
         return JSON.parse(content);
     } catch (e) {
@@ -269,9 +301,8 @@ export async function getManifestFromCache(name) {
  */
 export async function saveManifestToCache(name, data) {
     try {
-        const fs = await getFileSystem();
-        if (!fs || !await ensureManifestsMounted()) return false;
-
+        if (!await ensureManifestsMounted()) return false;
+        const fs = getFileSystem();
         await fs.writeFile(`/manifests/${name}.json`, JSON.stringify(data), { createParents: true });
         return true;
     } catch (e) {
@@ -285,9 +316,8 @@ export async function saveManifestToCache(name, data) {
  */
 export async function getManifestVersion() {
     try {
-        const fs = await getFileSystem();
-        if (!fs || !await ensureManifestsMounted()) return 0;
-
+        if (!await ensureManifestsMounted()) return 0;
+        const fs = getFileSystem();
         const content = await fs.readFile('/manifests/version');
         return parseInt(content) || 0;
     } catch (e) {
@@ -302,9 +332,8 @@ export async function getManifestVersion() {
  */
 export async function saveManifestVersion(version) {
     try {
-        const fs = await getFileSystem();
-        if (!fs || !await ensureManifestsMounted()) return false;
-
+        if (!await ensureManifestsMounted()) return false;
+        const fs = getFileSystem();
         await fs.writeFile('/manifests/version', String(version), { createParents: true });
         return true;
     } catch (e) {
@@ -312,27 +341,30 @@ export async function saveManifestVersion(version) {
     }
 }
 
-// Aux file cache
-const AUX_STORE = 'aux-cache';
-let auxCacheDb = null;
+// Aux file cache with LRU eviction
 const auxMemoryCache = new Map();
+const MAX_AUX_CACHE_SIZE = 20;
+let auxCacheMounted = false;
+let auxCacheMounting = null;
 
-async function openAuxCacheDb() {
-    if (auxCacheDb) return auxCacheDb;
-    return new Promise((resolve, reject) => {
-        const request = indexedDB.open('siglum-aux-cache', 1);
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => {
-            auxCacheDb = request.result;
-            resolve(auxCacheDb);
-        };
-        request.onupgradeneeded = (event) => {
-            const db = event.target.result;
-            if (!db.objectStoreNames.contains(AUX_STORE)) {
-                db.createObjectStore(AUX_STORE, { keyPath: 'hash' });
-            }
-        };
-    });
+async function ensureAuxCacheMounted() {
+    if (auxCacheMounted) return true;
+    if (auxCacheMounting) return auxCacheMounting;
+    const fs = getFileSystem();
+    if (!fs) return false;
+    auxCacheMounting = (async () => {
+        try {
+            await fs.mountAuto('/aux-cache');
+            auxCacheMounted = true;
+            return true;
+        } catch (e) {
+            console.warn('Failed to mount aux-cache filesystem:', e);
+            return false;
+        } finally {
+            auxCacheMounting = null;
+        }
+    })();
+    return auxCacheMounting;
 }
 
 /**
@@ -342,21 +374,26 @@ async function openAuxCacheDb() {
  */
 export async function getAuxCache(preambleHash) {
     if (auxMemoryCache.has(preambleHash)) {
-        return auxMemoryCache.get(preambleHash);
+        // Move to end for LRU (delete + set maintains insertion order)
+        const value = auxMemoryCache.get(preambleHash);
+        auxMemoryCache.delete(preambleHash);
+        auxMemoryCache.set(preambleHash, value);
+        return value;
     }
     try {
-        const db = await openAuxCacheDb();
-        return new Promise((resolve) => {
-            const tx = db.transaction(AUX_STORE, 'readonly');
-            const store = tx.objectStore(AUX_STORE);
-            const request = store.get(preambleHash);
-            request.onerror = () => resolve(null);
-            request.onsuccess = () => {
-                const result = request.result;
-                if (result) auxMemoryCache.set(preambleHash, result);
-                resolve(result);
-            };
-        });
+        if (!await ensureAuxCacheMounted()) return null;
+        const fs = getFileSystem();
+        const content = await fs.readFile(`/aux-cache/${preambleHash}.json`);
+        const result = JSON.parse(content);
+        if (result) {
+            // Evict oldest if at capacity
+            if (auxMemoryCache.size >= MAX_AUX_CACHE_SIZE) {
+                const firstKey = auxMemoryCache.keys().next().value;
+                auxMemoryCache.delete(firstKey);
+            }
+            auxMemoryCache.set(preambleHash, result);
+        }
+        return result;
     } catch (e) {
         return null;
     }
@@ -370,37 +407,51 @@ export async function getAuxCache(preambleHash) {
  */
 export async function saveAuxCache(preambleHash, auxFiles) {
     const entry = { hash: preambleHash, files: auxFiles, timestamp: Date.now() };
+
+    // LRU: delete first to ensure it moves to end on set
+    const exists = auxMemoryCache.has(preambleHash);
+    if (exists) {
+        auxMemoryCache.delete(preambleHash);
+    } else if (auxMemoryCache.size >= MAX_AUX_CACHE_SIZE) {
+        // Evict oldest if at capacity and adding new entry
+        const firstKey = auxMemoryCache.keys().next().value;
+        auxMemoryCache.delete(firstKey);
+    }
     auxMemoryCache.set(preambleHash, entry);
-    try {
-        const db = await openAuxCacheDb();
-        const tx = db.transaction(AUX_STORE, 'readwrite');
-        const store = tx.objectStore(AUX_STORE);
-        store.put(entry);
-    } catch (e) {}
+
+    // Fire-and-forget write to disk (memory cache already has the data)
+    // Don't await - matches original IndexedDB behavior where transaction was queued but not awaited
+    ensureAuxCacheMounted().then(mounted => {
+        if (!mounted) return;
+        const fs = getFileSystem();
+        fs.writeFile(`/aux-cache/${preambleHash}.json`, JSON.stringify(entry), { createParents: true }).catch(() => {});
+    });
 }
 
 // Document cache for compiled PDFs
-const DOC_STORE = 'doc-cache';
-let docCacheDb = null;
 const docMemoryCache = new Map();
 const MAX_DOC_CACHE_SIZE = 10;
+let docCacheMounted = false;
+let docCacheMounting = null;
 
-async function openDocCacheDb() {
-    if (docCacheDb) return docCacheDb;
-    return new Promise((resolve, reject) => {
-        const request = indexedDB.open('siglum-doc-cache', 1);
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => {
-            docCacheDb = request.result;
-            resolve(docCacheDb);
-        };
-        request.onupgradeneeded = (event) => {
-            const db = event.target.result;
-            if (!db.objectStoreNames.contains(DOC_STORE)) {
-                db.createObjectStore(DOC_STORE, { keyPath: 'key' });
-            }
-        };
-    });
+async function ensureDocCacheMounted() {
+    if (docCacheMounted) return true;
+    if (docCacheMounting) return docCacheMounting;
+    const fs = getFileSystem();
+    if (!fs) return false;
+    docCacheMounting = (async () => {
+        try {
+            await fs.mountAuto('/doc-cache');
+            docCacheMounted = true;
+            return true;
+        } catch (e) {
+            console.warn('Failed to mount doc-cache filesystem:', e);
+            return false;
+        } finally {
+            docCacheMounting = null;
+        }
+    })();
+    return docCacheMounting;
 }
 
 // Re-export hashDocument from centralized hash module (BLAKE3-WASM)
@@ -415,23 +466,25 @@ export { hashDocument } from './hash.js';
 export async function getCachedPdf(docHash, engine) {
     const key = docHash + '_' + engine;
     if (docMemoryCache.has(key)) {
-        return docMemoryCache.get(key);
+        // Move to end for LRU
+        const value = docMemoryCache.get(key);
+        docMemoryCache.delete(key);
+        docMemoryCache.set(key, value);
+        return value;
     }
     try {
-        const db = await openDocCacheDb();
-        return new Promise((resolve) => {
-            const tx = db.transaction(DOC_STORE, 'readonly');
-            const store = tx.objectStore(DOC_STORE);
-            const request = store.get(key);
-            request.onerror = () => resolve(null);
-            request.onsuccess = () => {
-                const result = request.result;
-                if (result) {
-                    docMemoryCache.set(key, result.pdfData);
-                }
-                resolve(result?.pdfData || null);
-            };
-        });
+        if (!await ensureDocCacheMounted()) return null;
+        const fs = getFileSystem();
+        const pdfData = await fs.readBinary(`/doc-cache/${key}.pdf`);
+        if (pdfData) {
+            // Evict oldest if at capacity
+            if (docMemoryCache.size >= MAX_DOC_CACHE_SIZE) {
+                const firstKey = docMemoryCache.keys().next().value;
+                docMemoryCache.delete(firstKey);
+            }
+            docMemoryCache.set(key, pdfData);
+        }
+        return pdfData || null;
     } catch (e) {
         return null;
     }
@@ -446,20 +499,25 @@ export async function getCachedPdf(docHash, engine) {
  */
 export async function saveCachedPdf(docHash, engine, pdfData) {
     const key = docHash + '_' + engine;
-    docMemoryCache.set(key, pdfData);
 
-    // Limit memory cache size
-    if (docMemoryCache.size > MAX_DOC_CACHE_SIZE) {
+    // LRU: delete first to ensure it moves to end on set
+    const exists = docMemoryCache.has(key);
+    if (exists) {
+        docMemoryCache.delete(key);
+    } else if (docMemoryCache.size >= MAX_DOC_CACHE_SIZE) {
+        // Evict oldest if at capacity and adding new entry
         const firstKey = docMemoryCache.keys().next().value;
         docMemoryCache.delete(firstKey);
     }
+    docMemoryCache.set(key, pdfData);
 
-    try {
-        const db = await openDocCacheDb();
-        const tx = db.transaction(DOC_STORE, 'readwrite');
-        const store = tx.objectStore(DOC_STORE);
-        store.put({ key, pdfData, timestamp: Date.now() });
-    } catch (e) {}
+    // Fire-and-forget write to disk (memory cache already has the data)
+    // Don't await - matches original IndexedDB behavior where transaction was queued but not awaited
+    ensureDocCacheMounted().then(mounted => {
+        if (!mounted) return;
+        const fs = getFileSystem();
+        fs.writeBinary(`/doc-cache/${key}.pdf`, pdfData, { createParents: true }).catch(() => {});
+    });
 }
 
 /**
@@ -477,92 +535,14 @@ export function getFmtPath(fmtKey) {
  */
 export async function clearCTANCache() {
     try {
-        const db = await openIDBCache();
-        const tx = db.transaction(IDB_STORE, 'readwrite');
-        const store = tx.objectStore(IDB_STORE);
-        store.clear();
-        await new Promise(r => tx.oncomplete = r);
+        if (!await ensureCtanCacheMounted()) return false;
+        const fs = getFileSystem();
+        await fs.rmdir('/ctan-cache', { recursive: true });
+        // Reset mounted flag so next access will remount
+        ctanCacheMounted = false;
+        await ensureCtanCacheMounted();
         return true;
     } catch (e) {
-        return false;
-    }
-}
-
-// WASM cache - stores COMPILED WebAssembly.Module in IndexedDB for instant instantiation
-const WASM_CACHE_VERSION = 2; // Bump to invalidate old byte caches
-const WASM_DB_NAME = 'siglum-wasm-cache';
-const WASM_STORE = 'modules';
-
-let wasmCacheDb = null;
-
-async function openWasmCacheDb() {
-    if (wasmCacheDb) return wasmCacheDb;
-    return new Promise((resolve, reject) => {
-        const request = indexedDB.open(WASM_DB_NAME, WASM_CACHE_VERSION);
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => {
-            wasmCacheDb = request.result;
-            resolve(wasmCacheDb);
-        };
-        request.onupgradeneeded = (event) => {
-            const db = event.target.result;
-            // Clear old stores on version upgrade
-            for (const name of db.objectStoreNames) {
-                db.deleteObjectStore(name);
-            }
-            db.createObjectStore(WASM_STORE, { keyPath: 'key' });
-        };
-    });
-}
-
-/**
- * Get cached WASM bytes and compile to WebAssembly.Module.
- * @returns {Promise<WebAssembly.Module|null>} Compiled module or null
- */
-export async function getCompiledWasmModule() {
-    try {
-        const db = await openWasmCacheDb();
-        return new Promise((resolve) => {
-            const tx = db.transaction(WASM_STORE, 'readonly');
-            const store = tx.objectStore(WASM_STORE);
-            const request = store.get('busytex');
-            request.onerror = () => resolve(null);
-            request.onsuccess = async () => {
-                const result = request.result;
-                if (result?.bytes instanceof Uint8Array) {
-                    try {
-                        const module = await WebAssembly.compile(result.bytes);
-                        resolve(module);
-                    } catch {
-                        resolve(null);
-                    }
-                } else {
-                    resolve(null);
-                }
-            };
-        });
-    } catch (e) {
-        console.warn('Failed to get cached WASM:', e);
-        return null;
-    }
-}
-
-/**
- * Save WASM bytes to IndexedDB for future compilation.
- * @param {Uint8Array} bytes - WASM bytes
- * @returns {Promise<boolean>} True if saved successfully
- */
-export async function saveWasmBytes(bytes) {
-    try {
-        const db = await openWasmCacheDb();
-        return new Promise((resolve) => {
-            const tx = db.transaction(WASM_STORE, 'readwrite');
-            const store = tx.objectStore(WASM_STORE);
-            const request = store.put({ key: 'busytex', bytes, timestamp: Date.now() });
-            request.onerror = () => resolve(false);
-            request.onsuccess = () => resolve(true);
-        });
-    } catch {
         return false;
     }
 }
@@ -606,8 +586,7 @@ export async function saveWasmMemorySnapshot(memoryOrSnapshot, metadata = {}) {
         const byteLength = snapshot.byteLength;
 
         // Write snapshot binary - fileSystem handles any necessary copying internally
-        const fs = await getFileSystem();
-        if (!fs) return false;
+        const fs = getFileSystem();
         await fs.writeBinary(MEMORY_SNAPSHOT_PATH, snapshot, { createParents: true, silent: true });
 
         // Write metadata as JSON (small, no optimization needed)
@@ -640,3 +619,17 @@ export { CTAN_CACHE_VERSION };
  * @type {number}
  */
 export { MANIFEST_CACHE_VERSION };
+
+/**
+ * Reset all module-level mount flags and in-memory caches. These are process-wide
+ * singletons, so without a reset a mounted flag set by one test would short-circuit
+ * the mount logic in the next. Intended for tests only; no-op effect in production.
+ */
+export function __resetStorageStateForTests() {
+    wasmCacheMounted = ctanCacheMounted = manifestsMounted = fmtCacheMounted =
+        texliveMounted = bundleCacheMounted = auxCacheMounted = docCacheMounted = false;
+    wasmCacheMounting = ctanCacheMounting = manifestsMounting = fmtCacheMounting =
+        texliveMounting = bundleCacheMounting = auxCacheMounting = docCacheMounting = null;
+    auxMemoryCache.clear();
+    docMemoryCache.clear();
+}

@@ -1,0 +1,4 @@
+{
+  "_comment": "Authoritative curated list of build-required *bundles* to pre-normalize offline (source-only .ins/.dtx, .tds.zip, self-extracting .dtx). scripts/prebuild-packages.js fetches each from CTAN, runs the busytex docstrip/build, and writes the artifact to packages/bundles/prebuilt/ (gitignored, shipped to R2/releases). List the bundle, not its sub-packages — a request for a sub-package (e.g. insdljs) resolves to the bundle's artifact (acrotex) via the proxy/worker parent-resolution path.",
+  "packages": ["acrotex"]
+}

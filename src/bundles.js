@@ -15,31 +15,19 @@ import {
 
 import { hashPreamble } from './hash.js';
 
-// Check if SharedArrayBuffer is available (requires COOP/COEP headers)
-const sharedArrayBufferSupported = typeof SharedArrayBuffer !== 'undefined';
-
 // Decompression using native CompressionStream
-// Returns SharedArrayBuffer when available for zero-copy sharing with workers
+// Returns regular ArrayBuffer - SharedArrayBuffer causes memory leaks due to V8 GC issues
+// (SABs sent to workers become "strong roots" that persist even after worker termination)
 async function decompress(compressed, format = 'gzip') {
     // If format is 'none', return as-is (already decompressed by browser)
-    let data;
     if (format === 'none') {
-        data = compressed;
-    } else {
-        const ds = new DecompressionStream(format);
-        const blob = new Blob([compressed]);
-        const stream = blob.stream().pipeThrough(ds);
-        data = await new Response(stream).arrayBuffer();
+        return compressed;
     }
 
-    // Convert to SharedArrayBuffer for zero-copy worker access
-    if (sharedArrayBufferSupported) {
-        const shared = new SharedArrayBuffer(data.byteLength);
-        new Uint8Array(shared).set(new Uint8Array(data));
-        return shared;
-    }
-
-    return data;
+    const ds = new DecompressionStream(format);
+    const blob = new Blob([compressed]);
+    const stream = blob.stream().pipeThrough(ds);
+    return await new Response(stream).arrayBuffer();
 }
 
 /**
@@ -348,6 +336,13 @@ export class BundleManager {
             while ((match = loadClassRegex.exec(text)) !== null) {
                 packages.add(match[1]);
             }
+
+            // \DocumentMetadata{...} requires latex-lab support files
+            if (/\\DocumentMetadata/.test(text)) {
+                packages.add('latex-lab');
+                packages.add('pdfmanagement-testphase');
+                packages.add('tagpdf');
+            }
         };
 
         // Scan main source
@@ -417,7 +412,7 @@ export class BundleManager {
     /**
      * Load a bundle by name.
      * @param {string} bundleName - Bundle name
-     * @returns {Promise<ArrayBuffer|SharedArrayBuffer>} Bundle data
+     * @returns {Promise<ArrayBuffer>} Bundle data
      */
     async loadBundle(bundleName) {
         // Check memory cache
@@ -459,7 +454,7 @@ export class BundleManager {
     /**
      * Load multiple bundles in parallel.
      * @param {string[]} bundleNames - Bundle names
-     * @returns {Promise<Object<string, ArrayBuffer|SharedArrayBuffer>>} Map of bundle data
+     * @returns {Promise<Object<string, ArrayBuffer>>} Map of bundle data
      */
     async loadBundles(bundleNames) {
         const bundleData = {};
@@ -528,6 +523,59 @@ export function detectEngine(source) {
 
     // pdfLaTeX is default
     return 'pdflatex';
+}
+
+/**
+ * Extract fontspec font *family names* requested by name in the source.
+ * These are not caught by the \usepackage pre-scan, yet each needs its TeX Live
+ * font package fetched so fontconfig can resolve the name at compile time.
+ *
+ * Handles: \setmainfont \setsansfont \setmonofont \setmathfont \setromanfont
+ * \fontspec, and \newfontface/\newfontfamily (which take a control sequence
+ * before the name). Names that are actually file references (containing a path
+ * separator or a font extension) are skipped — those resolve via kpathsea.
+ *
+ * @param {string} source - Main LaTeX source
+ * @param {Object} [additionalFiles] - Optional map of filename → content
+ * @returns {string[]} Unique font family names
+ */
+export function extractFontNames(source, additionalFiles = {}) {
+    const names = new Set();
+
+    // \setmainfont[opts]{Name}, \fontspec[opts]{Name}, etc. The name is the
+    // first brace group, optionally preceded by a bracket option group.
+    const directRegex =
+        /\\(?:setmainfont|setsansfont|setmonofont|setmathfont|setromanfont|fontspec)\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g;
+
+    // \newfontface\Cmd[opts]{Name} / \newfontfamily[opts]\Cmd{Name}: a control
+    // sequence sits between the macro and the name.
+    const newFontRegex =
+        /\\newfontf(?:ace|amily)\s*(?:\[[^\]]*\])?\s*\\[A-Za-z@]+\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g;
+
+    const looksLikeFile = (n) => /[\\/]/.test(n) || /\.(otf|ttf|ttc|pfb|pfa)$/i.test(n);
+
+    const scan = (text) => {
+        let m;
+        for (const re of [directRegex, newFontRegex]) {
+            re.lastIndex = 0;
+            while ((m = re.exec(text)) !== null) {
+                const name = m[1].trim();
+                if (name && !looksLikeFile(name)) names.add(name);
+            }
+        }
+    };
+
+    scan(source);
+
+    const texFiles = Object.entries(additionalFiles).filter(([f]) => f.endsWith('.tex'));
+    if (texFiles.length > 0) {
+        const decoder = new TextDecoder();
+        for (const [, content] of texFiles) {
+            scan(typeof content === 'string' ? content : decoder.decode(content));
+        }
+    }
+
+    return [...names];
 }
 
 /**
