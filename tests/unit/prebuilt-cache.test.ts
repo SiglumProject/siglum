@@ -1,12 +1,27 @@
 /**
  * Tests for the normalized-artifact cache loader/serializer.
  *
- * These are the locally-verifiable half of the cache layer: that a committed
- * prebuilt artifact loads in the shape both proxies serve, and that the
+ * These are the locally-verifiable half of the cache layer: that a self-contained
+ * prebuilt fixture loads in the shape both proxies serve, and that the
  * serializer is deterministic (re-running the prebuild → byte-identical files).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+// Release artifacts are generated and gitignored. Exercise actual file reads
+// against a small committed fixture instead of depending on local build output.
+vi.mock('fs/promises', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('fs/promises')>();
+  const fixtures = new URL('../fixtures/prebuilt/', import.meta.url);
+  return {
+    ...fs,
+    readdir: (path: string, ...options: any[]) =>
+      fs.readdir(path.endsWith('/packages/bundles/prebuilt') ? fixtures : path, ...options),
+    readFile: (path: string, ...options: any[]) =>
+      fs.readFile(path.includes('/packages/bundles/prebuilt/')
+        ? new URL(path.slice(path.lastIndexOf('/') + 1), fixtures) : path, ...options),
+  };
+});
 
 import {
   loadPrebuilt,
@@ -24,10 +39,10 @@ describe('prebuilt-cache loader', () => {
     expect(await loadPrebuilt('definitely-not-a-real-package-xyz')).toBeNull();
   });
 
-  it('loads the committed acrotex artifact in ProcessedPackage shape', async () => {
+  it('loads a prebuilt fixture in ProcessedPackage shape', async () => {
     clearPrebuiltCache();
     const a = await loadPrebuilt('acrotex');
-    // This fixture is produced by `bun scripts/prebuild-packages.js acrotex`.
+    // The fixture models normalized docstrip output; no TeX build is needed.
     expect(a).not.toBeNull();
     expect(a!.name).toBe('acrotex');
     expect(a!.provider).toBe('ins');
@@ -43,6 +58,7 @@ describe('prebuilt-cache loader', () => {
     clearPrebuiltCache();
     const first = await loadPrebuilt('acrotex');
     const second = await loadPrebuilt('acrotex');
+    expect(first).not.toBeNull();
     expect(second).toBe(first);
   });
 
