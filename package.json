@@ -25,7 +25,12 @@
     "./storage": {
       "types": "./types/storage.d.ts",
       "default": "./src/storage.js"
-    }
+    },
+    "./texlive": {
+      "types": "./types/texlive.d.ts",
+      "default": "./src/texlive.js"
+    },
+    "./worker": "./src/worker.js"
   },
   "files": [
     "src/",
@@ -42,7 +47,12 @@
     "test:browser": "vitest --config vitest.browser.config.ts",
     "test:browser:run": "vitest run --config vitest.browser.config.ts",
     "test:bun-parity": "bun run scripts/providers-bun-smoke.ts",
-    "prebuild-packages": "bun run scripts/prebuild-packages.js"
+    "prebuild-packages": "bun run scripts/prebuild-packages.js",
+    "test:proxy": "bun run scripts/ctan-proxy-smoke.ts",
+    "test:types": "tsc && tsc --noEmit --strict --skipLibCheck --moduleResolution bundler --module ESNext --target ES2022 --lib ES2022,DOM tests/typecheck/compile-result.ts",
+    "prepare:runtime": "node scripts/sync-runtime.mjs",
+    "stage:runtime": "node scripts/stage-runtime.mjs",
+    "verify:runtime": "node scripts/verify-runtime.mjs"
   },
   "repository": {
     "type": "git",
@@ -64,7 +74,7 @@
   },
   "homepage": "https://github.com/SiglumProject/siglum-engine#readme",
   "dependencies": {
-    "@siglum/filesystem": "file:../siglum-filesystem",
+    "@siglum/filesystem": "^0.3.0",
     "blake3-wasm": "2.1.5",
     "xzwasm": "^0.1.2"
   },
@@ -74,8 +84,11 @@
     "fflate": "0.8.2",
     "happy-dom": "^15.0.0",
     "jszip": "^3.10.1",
-    "playwright": "^1.58.2",
-    "typescript": "^5.0.0",
+    "playwright": "1.58.2",
+    "typescript": "^5.7.0",
     "vitest": "^2.0.0"
+  },
+  "overrides": {
+    "@siglum/filesystem": "file:../siglum-filesystem"
   }
 }

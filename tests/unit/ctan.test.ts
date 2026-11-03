@@ -560,6 +560,25 @@ describe('ctan module', () => {
                 expect(result === null || result?.files !== undefined).toBe(true);
             });
 
+            it('follows production TeX Live alias hints without caching an empty package', async () => {
+                const files = new Map([['/texlive/font.tfm', new Uint8Array([1])]]);
+                fetchMock.mockResolvedValue({ok:true,json:async()=>({useTexLive:true,texlivePackage:'actual-fonts',files:{}})});
+                const raw = vi.spyOn(fetcher, 'fetchTexLivePackage').mockResolvedValue({files,dependencies:[]});
+                const result = await fetcher.fetchCtanPackage('fontalias_' + Date.now());
+                expect(raw).toHaveBeenCalledWith('actual-fonts', null);
+                expect(result?.files).toBe(files);
+            });
+
+            it('returns a package failure when the decompressor script loads without its API', async () => {
+                fetchMock.mockResolvedValue({ok:true,arrayBuffer:async()=>new ArrayBuffer(8)});
+                const append=vi.spyOn(document.head,'appendChild').mockImplementation((script:any)=>{
+                    queueMicrotask(()=>script.onload?.(new Event('load')));
+                    return script;
+                });
+                try { expect(await fetcher.fetchTexLivePackage('broken-decompressor',2026)).toBeNull(); }
+                finally { append.mockRestore(); }
+            });
+
             it('should handle tlYear parameter', async () => {
                 fetchMock.mockResolvedValue({ ok: false, status: 404 });
 

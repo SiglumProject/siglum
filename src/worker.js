@@ -669,6 +669,8 @@ function configureTexEnvironment(ENV) {
     ENV['TEXMFAUXTREES'] = '';
     ENV['TEXMF'] = '/texlive/texmf-dist';
     ENV['TEXMFDOTDIR'] = '.';
+    ENV['BIBINPUTS'] = '.:/texlive/texmf-dist/bibtex/bib//:';
+    ENV['BSTINPUTS'] = '.:/texlive/texmf-dist/bibtex/bst//:';
     ENV['TEXINPUTS'] = '.:/texlive/texmf-dist/tex/latex//:/texlive/texmf-dist/tex/generic//:/texlive/texmf-dist/tex//:';
     ENV['T1FONTS'] = '.:/texlive/texmf-dist/fonts/type1//';
     ENV['ENCFONTS'] = '.:/texlive/texmf-dist/fonts/enc//';
@@ -915,7 +917,7 @@ const workerBundleCache = new Map();
  * @param {string} bundleName
  * @returns {Promise<ArrayBuffer|null>}
  */
-async function loadBundleFromOPFS(bundleName) {
+async function loadBundleFromOPFS(bundleName, baseUrl) {
     if (!canUseWorkerOPFS) return null;
 
     try {
@@ -924,7 +926,7 @@ async function loadBundleFromOPFS(bundleName) {
         // Navigate to bundle-cache/bundles directory
         const bundleCacheDir = await root.getDirectoryHandle('bundle-cache', { create: false });
         const bundlesDir = await bundleCacheDir.getDirectoryHandle('bundles', { create: false });
-        const fileHandle = await bundlesDir.getFileHandle(`${bundleName}.data`, { create: false });
+        const fileHandle = await bundlesDir.getFileHandle(`${(baseUrl?.match(/\/releases\/(tl2026-[a-f0-9]{16})(?:\/|$)/)?.[1] || 'tl2026-r1')}-${bundleName}.data`, { create: false });
 
         // Read file content
         const file = await fileHandle.getFile();
@@ -973,7 +975,7 @@ async function fetchBundleFromNetwork(bundleName, bundlesUrl) {
 
     // Cache to OPFS (fire-and-forget)
     if (canUseWorkerOPFS) {
-        saveBundleToOPFS(bundleName, decompressed).catch(() => {});
+        saveBundleToOPFS(bundleName, decompressed, bundlesUrl).catch(() => {});
     }
 
     return decompressed;
@@ -984,14 +986,14 @@ async function fetchBundleFromNetwork(bundleName, bundlesUrl) {
  * @param {string} bundleName
  * @param {ArrayBuffer} data
  */
-async function saveBundleToOPFS(bundleName, data) {
+async function saveBundleToOPFS(bundleName, data, baseUrl) {
     try {
         const root = await navigator.storage.getDirectory();
 
         // Create directories if needed
         const bundleCacheDir = await root.getDirectoryHandle('bundle-cache', { create: true });
         const bundlesDir = await bundleCacheDir.getDirectoryHandle('bundles', { create: true });
-        const fileHandle = await bundlesDir.getFileHandle(`${bundleName}.data`, { create: true });
+        const fileHandle = await bundlesDir.getFileHandle(`${(baseUrl?.match(/\/releases\/(tl2026-[a-f0-9]{16})(?:\/|$)/)?.[1] || 'tl2026-r1')}-${bundleName}.data`, { create: true });
 
         // Write using writable stream
         const writable = await fileHandle.createWritable();
@@ -1019,7 +1021,7 @@ async function loadBundleInWorker(bundleName, bundlesUrl) {
     }
 
     // Try OPFS cache
-    const opfsCached = await loadBundleFromOPFS(bundleName);
+    const opfsCached = await loadBundleFromOPFS(bundleName, bundlesUrl);
     if (opfsCached) {
         workerBundleCache.set(bundleName, opfsCached);
         return opfsCached;
@@ -1068,12 +1070,15 @@ async function detectWorkerOPFS() {
 // ============ External Fetch Requests ============
 
 // Supported TexLive years for version fallback (newest first)
-const SUPPORTED_TL_YEARS = [2025, 2024, 2023];
-const DEFAULT_TL_YEAR = 2025;
+const SUPPORTED_TL_YEARS = [2026, 2025, 2024, 2023];
+const DEFAULT_TL_YEAR = 2026;
+
+// Request IDs only correlate messages within this worker, including on HTTP LAN origins.
+let nextFetchRequestId = 0;
 
 function requestCtanFetch(packageName, originalFileName = null, tlYear = null) {
     return new Promise((resolve, reject) => {
-        const requestId = crypto.randomUUID();
+        const requestId = String(++nextFetchRequestId);
         pendingCtanRequests.set(requestId, { resolve, reject });
 
         self.postMessage({
@@ -1095,7 +1100,7 @@ function requestCtanFetch(packageName, originalFileName = null, tlYear = null) {
 
 function requestBundleFetch(bundleName) {
     return new Promise((resolve, reject) => {
-        const requestId = crypto.randomUUID();
+        const requestId = String(++nextFetchRequestId);
         pendingBundleRequests.set(requestId, { resolve, reject });
 
         self.postMessage({
@@ -1115,7 +1120,7 @@ function requestBundleFetch(bundleName) {
 
 function requestFileRangeFetch(bundleName, start, end) {
     return new Promise((resolve, reject) => {
-        const requestId = crypto.randomUUID();
+        const requestId = String(++nextFetchRequestId);
         pendingFileRangeRequests.set(requestId, { resolve, reject });
 
         self.postMessage({
@@ -1307,33 +1312,6 @@ function extractUndefinedCommands(logContent) {
     return commands;
 }
 
-// Inject auto-generated stubs for undefined commands
-// undefinedCommands is a Map<commandName, argCount>
-function injectAutoShims(source, undefinedCommands) {
-    if (undefinedCommands.size === 0) return source;
-
-    // Find the end of \documentclass[...]{...} to insert after it
-    const documentclassMatch = source.match(/\\documentclass(\[[^\]]*\])?\{[^}]+\}/);
-    if (!documentclassMatch) return source;
-
-    // Generate stubs with detected argument counts
-    const stubs = [];
-    const cmdList = [];
-    for (const [cmd, argCount] of undefinedCommands) {
-        cmdList.push(`${cmd}[${argCount}]`);
-        if (argCount === 0) {
-            stubs.push(`\\providecommand{\\${cmd}}{}`);
-        } else {
-            stubs.push(`\\providecommand{\\${cmd}}[${argCount}]{}`);
-        }
-    }
-
-    // Insert all stubs inline after \documentclass to preserve line numbers
-    const insertPos = documentclassMatch.index + documentclassMatch[0].length;
-    workerLog(`Auto-shimming ${undefinedCommands.size} commands: ${cmdList.join(', ')}`);
-    return source.slice(0, insertPos) + stubs.join('') + source.slice(insertPos);
-}
-
 // ============ Missing File Detection ============
 
 function extractMissingFile(logContent, alreadyFetched) {
@@ -1464,13 +1442,19 @@ function restoreSideEffectFiles(FS, sideEffectFiles) {
 }
 
 function collectAuxFiles(FS) {
-    const auxExtensions = ['.aux', '.toc', '.lof', '.lot', '.out', '.nav', '.snm', '.bbl', '.blg'];
+    const auxExtensions = ['.aux', '.toc', '.lof', '.lot', '.out', '.nav', '.snm', '.bbl', '.blg', '-blx.bib'];
     const files = {};
     for (const ext of auxExtensions) {
         const path = docBase + ext;
         try {
             files[ext] = FS.readFile(path, { encoding: 'utf8' });
         } catch (e) {}
+    }
+    // Included chapters have their own aux files; BibTeX follows \@input entries.
+    for (const path of snapshotWorkTree(FS)) {
+        if (path.endsWith('.aux') && path !== docBase + '.aux') {
+            try { files['@' + path] = FS.readFile(path, { encoding: 'utf8' }); } catch {}
+        }
     }
     return files;
 }
@@ -1479,7 +1463,9 @@ function restoreAuxFiles(FS, auxFiles) {
     let restored = 0;
     for (const [ext, content] of Object.entries(auxFiles)) {
         try {
-            FS.writeFile(docBase + ext, content);
+            const path = ext.startsWith('@/') ? ext.slice(1) : docBase + ext;
+            FS.mkdirTree(path.slice(0, path.lastIndexOf('/')) || '/');
+            FS.writeFile(path, content);
             restored++;
         } catch (e) {}
     }
@@ -1727,7 +1713,7 @@ function quickHash(content) {
 }
 
 // Aux file extensions in fixed order for consistent hashing
-const AUX_EXTENSIONS = ['.aux', '.bbl', '.blg', '.lof', '.lot', '.nav', '.out', '.snm', '.toc'];
+
 
 /**
  * Hash all aux files into a single combined hash.
@@ -1738,7 +1724,7 @@ function hashAuxFiles(auxFiles) {
     if (!auxFiles) return 0;
 
     let combined = 0;
-    for (const ext of AUX_EXTENSIONS) {
+    for (const ext of Object.keys(auxFiles).sort()) {
         const content = auxFiles[ext];
         if (content) {
             combined ^= quickHash(content);
@@ -1752,10 +1738,10 @@ function hashAuxFiles(auxFiles) {
 async function handleCompile(request) {
     const { id, source, engine, options, bundleData, bundleNames, bundlesUrl, ctanFiles, cachedFormat, cachedAuxFiles, deferredBundleNames, mainFile } = request;
 
-    // Derive the on-disk base name for this compile from the caller-supplied main
-    // file name (basename only; default keeps legacy '/document'). Reused by every
-    // FS path below, the aux-cache helpers, and resetFS via the module-level docBase.
-    docBase = '/' + (((mainFile || 'document.tex').split('/').pop() || 'document.tex').replace(/\.tex$/i, '') || 'document');
+    // The compiler validates project paths. Keep the directory so TeX can resolve ../ inputs.
+    const sourcePath = '/' + (mainFile || 'document.tex').replace(/^\/+/, '');
+    docBase = sourcePath.replace(/\.tex$/i, '');
+    const workingDirectory = sourcePath.slice(0, sourcePath.lastIndexOf('/')) || '/';
 
     // Allow runtime verbose toggle via compile options
     if (options?.verbose !== undefined) {
@@ -1818,6 +1804,7 @@ async function handleCompile(request) {
     // Use global cache for Range-fetched files (persists across compiles)
     let lastExitCode = -1;
     let texLog = '';
+    let compileError = '';
     let Module = null;
     let FS = null;
 
@@ -1825,7 +1812,7 @@ async function handleCompile(request) {
     // Predict passes needed based on source analysis
     const predictedPasses = predictRequiredPasses(source);
     let rerunPass = 0;
-    const maxRerunPasses = predictedPasses - 1;  // 1 initial + N reruns
+    let maxRerunPasses = predictedPasses - 1;  // 1 initial + N reruns
 
     if (predictedPasses === 1) {
         workerLog('Single-pass mode: no cross-references detected');
@@ -1840,10 +1827,6 @@ async function handleCompile(request) {
             ? 'b:' + [...bundleDataMap.keys()].sort().join(',') +
               '|d:' + [...deferredBundles].sort().join(',')
             : null;
-
-    // Auto-shim tracking for undefined control sequences
-    // Map<commandName, argCount>
-    const shimmedCommands = new Map();
 
     // Version fallback tracking for packages with kernel incompatibility
     // Map<packageName, tlYear> - which TL year to use for each package
@@ -1867,7 +1850,7 @@ async function handleCompile(request) {
             const _pResetEnd = performance.now();
 
             // Create VFS with unified mount handling
-            const vfs = new VirtualFileSystem(FS, {
+            let vfs = new VirtualFileSystem(FS, {
                 onLog: workerLog,
                 lazyEnabled: options.enableLazyFS,
                 fetchedFilesCache: globalFetchedFilesCache  // Persist across compiles
@@ -1900,6 +1883,9 @@ async function handleCompile(request) {
                 vfs.mountCtanFiles(accumulatedCtanFiles, { forceOverride: hasVersionFallback });
             }
 
+            FS.mkdirTree(workingDirectory);
+            FS.chdir(workingDirectory);
+
             // Restore aux files
             if (cachedAuxFiles && Object.keys(cachedAuxFiles).length > 0) {
                 const restored = restoreAuxFiles(FS, cachedAuxFiles);
@@ -1911,6 +1897,31 @@ async function handleCompile(request) {
             // Finalize VFS - processes font maps, generates ls-R (cached when safe)
             finalizeVfsCached(vfs, computeFinalizeSig());
             const _pFinalizeEnd = performance.now();
+
+            // Every TeX/BibTeX pass gets fresh C globals but the same project cwd,
+            // mounted input files, and auxiliary files from the preceding pass.
+            const resetForPass = async (auxFiles) => {
+                Module = await getOrCreateModule();
+                FS = Module.FS;
+                resetFS(FS);
+                vfs = new VirtualFileSystem(FS, {
+                    onLog: workerLog, lazyEnabled: options.enableLazyFS,
+                    fetchedFilesCache: globalFetchedFilesCache
+                });
+                if (options.enableLazyFS) vfs.patchForLazyLoading();
+                for (const [name, data] of bundleDataMap) {
+                    vfs.mountBundle(name, data, fileManifest, bundleMetaMap.get(name) || null);
+                }
+                for (const name of deferredBundles) {
+                    if (!bundleDataMap.has(name)) vfs.mountDeferredBundle(name, fileManifest, null);
+                }
+                if (accumulatedCtanFiles.size) vfs.mountCtanFiles(accumulatedCtanFiles, { forceOverride: packageTLVersions.size > 0 });
+                FS.mkdirTree(workingDirectory);
+                FS.chdir(workingDirectory);
+                restoreAuxFiles(FS, auxFiles);
+                finalizeVfsCached(vfs, computeFinalizeSig());
+            };
+
 
             // Prepare document source
             let docSource = source;
@@ -1949,12 +1960,7 @@ async function handleCompile(request) {
             // Inject kernel compatibility shim for packages using TL2026+ tagging features
             docSource = injectKernelCompatShim(docSource);
 
-            // Inject auto-shims for undefined commands from previous attempts
-            if (shimmedCommands.size > 0) {
-                docSource = injectAutoShims(docSource, shimmedCommands);
-            }
-
-            FS.writeFile(docBase + '.tex', docSource);
+            FS.writeFile(sourcePath, docSource);
 
             // Run compilation
             workerProgress('compile', `Running ${engine}...`);
@@ -1964,14 +1970,14 @@ async function handleCompile(request) {
             if (engine === 'pdflatex') {
                 result = Module.callMainWithRedirects([
                     'pdflatex', '--no-shell-escape', '--interaction=nonstopmode',
-                    '--halt-on-error', '--synctex=-1', '--fmt=' + fmtPath, docBase + '.tex'
+                    '--file-line-error', '--halt-on-error', '--synctex=-1', '--fmt=' + fmtPath, sourcePath
                 ]);
             } else {
                 result = Module.callMainWithRedirects([
                     'xelatex', '--no-shell-escape', '--interaction=nonstopmode',
-                    '--halt-on-error', '--synctex=-1', '--no-pdf',
+                    '--file-line-error', '--halt-on-error', '--synctex=-1', '--no-pdf',
                     '--fmt=/texlive/texmf-dist/texmf-var/web2c/xetex/xelatex.fmt',
-                    docBase + '.tex'
+                    sourcePath
                 ]);
                 if (result.exit_code === 0) {
                     result = Module.callMainWithRedirects([
@@ -1986,7 +1992,18 @@ async function handleCompile(request) {
             }
 
             lastExitCode = result.exit_code;
-            texLog = result.stdout || '';
+            // Emscripten redirects can omit TeX diagnostics from stdout; the .log is authoritative.
+            try { texLog = FS.readFile(docBase + '.log', { encoding: 'utf8' }); }
+            catch { texLog = [result.stdout, result.stderr].filter(Boolean).join('\n'); }
+            if (result.exit_code !== 0) {
+                const fileDiagnostic = texLog.match(/^(.+?):(\d+):\s*(.+)$/m);
+                const diagnostic = texLog.match(/^!\s*(.+)$/m)?.[1];
+                const line = texLog.match(/^l\.(\d+)\s*(.*)$/m);
+                compileError = fileDiagnostic
+                    ? `${fileDiagnostic[1]}:${fileDiagnostic[2]}: ${fileDiagnostic[3]}`
+                    : diagnostic ? `${sourcePath}${line ? ':' + line[1] : ''}: ${diagnostic}${line?.[2] ? ' ' + line[2] : ''}`
+                    : `TeX compilation failed for ${sourcePath} (exit code ${result.exit_code})`;
+            }
 
             if (result.exit_code === 0) {
                 try {
@@ -2002,6 +2019,46 @@ async function handleCompile(request) {
                         workerLog(`SyncTeX data: ${(syncTexBytes.byteLength / 1024).toFixed(1)}KB`);
                     } catch (e) {
                         workerLog('No SyncTeX file generated');
+                    }
+
+                    // A successful first TeX pass can still contain unresolved citations.
+                    // BibTeX must run before two further TeX passes can resolve them.
+                    let bibliographyPasses = 0;
+                    try {
+                        if (FS.stat(docBase + '.bcf') && !accumulatedCtanFiles.has(docBase + '.bbl')) {
+                            throw new Error('This document requires Biber, which is not bundled. Use biblatex with backend=bibtex, or supply a generated .bbl file.');
+                        }
+                    } catch (error) { if (!error.errno) throw error; }
+                    const firstAux = collectAuxFiles(FS);
+                    const bibliographyAux = Object.values(firstAux).join('\n');
+                    if (/\\bibdata\{/.test(bibliographyAux) && /\\bibstyle\{/.test(bibliographyAux)) {
+                        const styleBundles = new Set(['bibtex']);
+                        for (const match of bibliographyAux.matchAll(/\\bibstyle\{([^}]+)\}/g)) {
+                            const style = Object.entries(fileManifest).find(([path]) => path.endsWith('/' + match[1] + '.bst'))?.[1];
+                            if (style?.bundle) styleBundles.add(style.bundle);
+                        }
+                        for (const name of styleBundles) if (!bundleDataMap.has(name)) {
+                            const bundle = await requestBundleFetch(name);
+                            if (!bundle.success) throw new Error('Could not load the BibTeX styles bundle.');
+                            bundleDataMap.set(name, bundle.bundleData);
+                            if (bundle.bundleMeta) bundleMetaMap.set(name, bundle.bundleMeta);
+                        }
+                        await resetForPass(firstAux);
+                        workerProgress('compile', 'Building bibliography…');
+                        workerLog('Running BibTeX…');
+                        const bib = Module.callMainWithRedirects(['bibtex8', '--8bit', docBase.slice(docBase.lastIndexOf('/') + 1)]);
+                        let bibLog = [bib.stdout, bib.stderr].filter(Boolean).join('\n');
+                        try { bibLog = FS.readFile(docBase + '.blg', { encoding: 'utf8' }); } catch {}
+                        if (bib.exit_code !== 0) {
+                            lastExitCode = bib.exit_code;
+                            texLog += '\n' + bibLog;
+                            throw new Error('BibTeX failed: ' + (bibLog.match(/^(?:I couldn.t|I found no|.*---line).*$/m)?.[0] || 'check the bibliography file and full log.'));
+                        }
+                        try { FS.readFile(docBase + '.bbl'); }
+                        catch { throw new Error('BibTeX did not produce a bibliography (.bbl).'); }
+                        workerLog('BibTeX completed.');
+                        bibliographyPasses = 2;
+                        maxRerunPasses = Math.max(maxRerunPasses, rerunPass + 2);
                     }
 
                     // Auto-rerun loop for cross-references/TOC
@@ -2021,14 +2078,14 @@ async function handleCompile(request) {
                             logSaysRerun = rerunPattern.test(logContent);
                         } catch (e) {}
 
-                        if (!logSaysRerun) break;
+                        if (!logSaysRerun && bibliographyPasses === 0) break;
 
                         // Collect current aux files and compare hash with previous pass
                         // If hash is identical, the "Rerun" warning is a false positive
                         const currentAuxFiles = collectAuxFiles(FS);
                         const currentAuxHash = hashAuxFiles(currentAuxFiles);
 
-                        if (currentAuxHash === prevAuxHash) {
+                        if (currentAuxHash === prevAuxHash && bibliographyPasses === 0) {
                             workerLog('Aux hash unchanged, skipping unnecessary rerun');
                             break;
                         }
@@ -2048,49 +2105,11 @@ async function handleCompile(request) {
                         // Use aux files we already collected for comparison
                         const rerunAuxFiles = prevAuxFiles;
 
-                        // Create fresh WASM module
-                        Module = await getOrCreateModule();
-                        FS = Module.FS;
-                        resetFS(FS);
-
-                        // Recreate VFS with same configuration
-                        const rerunVfs = new VirtualFileSystem(FS, {
-                            onLog: workerLog,
-                            lazyEnabled: options.enableLazyFS,
-                            fetchedFilesCache: globalFetchedFilesCache
-                        });
-
-                        if (options.enableLazyFS) {
-                            rerunVfs.patchForLazyLoading();
-                        }
-
-                        // Remount all bundles
-                        for (const [bundleName, data] of bundleDataMap) {
-                            const meta = bundleMetaMap.get(bundleName) || null;
-                            rerunVfs.mountBundle(bundleName, data, fileManifest, meta);
-                        }
-
-                        // Remount deferred bundles
-                        for (const bundleName of deferredBundles) {
-                            if (!bundleDataMap.has(bundleName)) {
-                                rerunVfs.mountDeferredBundle(bundleName, fileManifest, null);
-                            }
-                        }
-
-                        // Remount CTAN files (with override for version fallback)
-                        if (accumulatedCtanFiles.size > 0) {
-                            const hasVersionFallback = packageTLVersions.size > 0;
-                            rerunVfs.mountCtanFiles(accumulatedCtanFiles, { forceOverride: hasVersionFallback });
-                        }
-
-                        // Restore aux files from previous pass (critical for TOC/refs)
-                        restoreAuxFiles(FS, rerunAuxFiles);
-
-                        // Finalize VFS (cached when safe)
-                        finalizeVfsCached(rerunVfs, computeFinalizeSig());
+                        await resetForPass(rerunAuxFiles);
+                        if (bibliographyPasses > 0) bibliographyPasses--;
 
                         // Rewrite document source
-                        FS.writeFile(docBase + '.tex', docSource);
+                        FS.writeFile(sourcePath, docSource);
 
                         // Mount custom format if used
                         if (fmtPath === '/custom.fmt' && cachedFormat?.fmtData?.buffer?.byteLength > 0) {
@@ -2106,14 +2125,14 @@ async function handleCompile(request) {
                         if (engine === 'pdflatex') {
                             rerunResult = Module.callMainWithRedirects([
                                 'pdflatex', '--no-shell-escape', '--interaction=nonstopmode',
-                                '--halt-on-error', '--synctex=-1', '--fmt=' + fmtPath, docBase + '.tex'
+                                '--file-line-error', '--halt-on-error', '--synctex=-1', '--fmt=' + fmtPath, sourcePath
                             ]);
                         } else {
                             // XeLaTeX: two-step process (xelatex -> xdvipdfmx)
                             rerunResult = Module.callMainWithRedirects([
                                 'xelatex', '--no-shell-escape', '--interaction=nonstopmode',
-                                '--halt-on-error', '--synctex=-1', '--no-pdf',
-                                '--fmt=' + fmtPath, docBase + '.tex'
+                                '--file-line-error', '--halt-on-error', '--synctex=-1', '--no-pdf',
+                                '--fmt=' + fmtPath, sourcePath
                             ]);
                             if (rerunResult.exit_code === 0) {
                                 rerunResult = Module.callMainWithRedirects([
@@ -2128,7 +2147,8 @@ async function handleCompile(request) {
                             // transcript still contains the (now-resolved) "undefined
                             // references" warning, which would otherwise surface as a
                             // spurious warning in the UI and mask convergence.
-                            texLog = rerunResult.stdout || texLog;
+                            try { texLog = FS.readFile(docBase + '.log', { encoding: 'utf8' }); }
+                            catch { texLog = rerunResult.stdout || texLog; }
                             lastExitCode = rerunResult.exit_code;
                             workerLog(`Rerun ${rerunPass} successful`);
                             // Update SyncTeX data
@@ -2137,8 +2157,9 @@ async function handleCompile(request) {
                                 syncTexData = new TextDecoder().decode(syncTexBytes);
                             } catch (e) {}
                         } else {
-                            workerLog(`Rerun ${rerunPass} failed, keeping previous PDF`);
-                            break;
+                            lastExitCode = rerunResult.exit_code;
+                            try { texLog = FS.readFile(docBase + '.log', { encoding: 'utf8' }); } catch {}
+                            throw new Error(`TeX rerun ${rerunPass} failed; check the full compiler log.`);
                         }
                     }
 
@@ -2147,7 +2168,11 @@ async function handleCompile(request) {
                         workerLog(`Completed ${rerunPass + 1} passes (1 initial + ${rerunPass} reruns)`);
                     }
                 } catch (e) {
-                    workerLog('Failed to read PDF: ' + e.message);
+                    compileSuccess = false;
+                    pdfData = null;
+                    compileError = e.message;
+                    texLog += '\n! ' + e.message;
+                    workerLog('Compilation failed: ' + e.message);
                 }
             }
 
@@ -2361,7 +2386,7 @@ async function handleCompile(request) {
                             let needsVersionFallback = false;
 
                             for (const pkgName of incompatiblePkgs) {
-                                // Get current TL year for this package (default to 2025)
+                                // Get current TL year for this package (default to 2026)
                                 const currentYear = packageTLVersions.get(pkgName) || DEFAULT_TL_YEAR;
                                 const yearIndex = SUPPORTED_TL_YEARS.indexOf(currentYear);
 
@@ -2389,7 +2414,7 @@ async function handleCompile(request) {
                                         }
                                     }
                                 } else {
-                                    workerLog(`[VERSION FALLBACK] ${pkgName}: exhausted all TL versions (2025→2024→2023), will auto-shim`);
+                                    workerLog(`[VERSION FALLBACK] ${pkgName}: exhausted all TL versions (2026→2025→2024→2023), preserving the TeX error`);
                                 }
                             }
 
@@ -2435,21 +2460,9 @@ async function handleCompile(request) {
                         }
                     }
 
-                    // SECOND: Auto-shim any remaining undefined commands
-                    let foundNew = false;
-                    for (const [cmd, argCount] of undefinedCmds) {
-                        // Add if new, or update if we found more args than before
-                        if (!shimmedCommands.has(cmd) || shimmedCommands.get(cmd) < argCount) {
-                            shimmedCommands.set(cmd, argCount);
-                            foundNew = true;
-                        }
-                    }
-                    if (foundNew) {
-                        const cmdList = [...undefinedCmds.entries()].map(([c, n]) => `${c}[${n}]`);
-                        workerLog(`[RETRY] Found undefined commands: ${cmdList.join(', ')}`);
-                        retryCount++;
-                        continue;
-                    }
+                    // Undefined user commands are source errors. Never invent no-op macros
+                    // or retry unchanged source merely to suppress the diagnostic.
+
                 }
             }
 
@@ -2457,6 +2470,7 @@ async function handleCompile(request) {
             if (!compileSuccess) break;
 
         } catch (e) {
+            compileError = e.message;
             workerLog(`Error: ${e.message}`);
             break;
         }
@@ -2504,6 +2518,7 @@ async function handleCompile(request) {
         type: 'compile-response',
         id,
         success: compileSuccess,
+        error: compileSuccess ? undefined : (compileError || `No PDF produced for ${sourcePath}`),
         pdfData: pdfData ? pdfData.buffer : null,
         syncTexData,
         exitCode: lastExitCode,

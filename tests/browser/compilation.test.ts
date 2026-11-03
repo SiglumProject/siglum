@@ -600,7 +600,12 @@ describe('Compilation Tests', () => {
         }, 30000);
 
         it('should compile a fontspec font requested by name', async () => {
-            const project = PROJECT_NAMED_FONT;
+            const fixture = await fetch('/fixtures/fontspec.json');
+            expect(fixture.ok, 'Installed TeX Live fontspec fixture must be available').toBe(true);
+            const project = {
+                ...PROJECT_NAMED_FONT,
+                files: { ...PROJECT_NAMED_FONT.files, ...await fixture.json() },
+            };
             const result = await compileProject(compiler, project);
 
             timingResults.push({
@@ -611,7 +616,7 @@ describe('Compilation Tests', () => {
                 pdfHash: result.pdf ? await hashPdf(result.pdf) : undefined,
             });
 
-            expect(result.success).toBe(true);
+            expect(result.success, result.error + '\n' + result.log).toBe(true);
             expect(result.pdf).toBeDefined();
 
             if (project.maxTimeMs) {

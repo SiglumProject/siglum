@@ -46,6 +46,7 @@ export class BundleManager {
      */
     constructor(options = {}) {
         this.bundleBase = options.bundleBase || 'packages/bundles';
+        this.cachePrefix = (this.bundleBase.match(/\/releases\/(tl2026-[a-f0-9]{16})(?:\/|$)/)?.[1] || 'tl2026-r1') + '-';
         this.bundleCache = new Map();  // In-memory bundle cache
         this.fileManifest = null;
         this.packageMap = null;
@@ -93,8 +94,8 @@ export class BundleManager {
         const cachedVersion = await getManifestVersion();
         if (cachedVersion === MANIFEST_CACHE_VERSION) {
             const [manifest, bundlesData] = await Promise.all([
-                getManifestFromCache('file-manifest'),
-                getManifestFromCache('bundles'),
+                getManifestFromCache(this.cachePrefix + 'file-manifest'),
+                getManifestFromCache(this.cachePrefix + 'bundles'),
             ]);
 
             if (manifest && bundlesData) {
@@ -118,8 +119,8 @@ export class BundleManager {
         // Save to cache (await to ensure cache is populated)
         try {
             await Promise.all([
-                saveManifestToCache('file-manifest', this.fileManifest),
-                saveManifestToCache('bundles', bundlesData),
+                saveManifestToCache(this.cachePrefix + 'file-manifest', this.fileManifest),
+                saveManifestToCache(this.cachePrefix + 'bundles', bundlesData),
                 saveManifestVersion(MANIFEST_CACHE_VERSION),
             ]);
             this.onLog('Manifests saved to cache');
@@ -164,7 +165,7 @@ export class BundleManager {
         if (!this.packageDeps) {
             const cachedVersion = await getManifestVersion();
             if (cachedVersion === MANIFEST_CACHE_VERSION) {
-                const packageDeps = await getManifestFromCache('package-deps');
+                const packageDeps = await getManifestFromCache(this.cachePrefix + 'package-deps');
                 if (packageDeps) {
                     this.packageDeps = packageDeps;
                     return this.bundleDeps;
@@ -176,7 +177,7 @@ export class BundleManager {
                 if (packageDepsRes?.ok) {
                     this.packageDeps = await packageDepsRes.json();
                     try {
-                        await saveManifestToCache('package-deps', this.packageDeps);
+                        await saveManifestToCache(this.cachePrefix + 'package-deps', this.packageDeps);
                     } catch (e) {
                         // Cache save failed, continue anyway
                     }
@@ -421,7 +422,7 @@ export class BundleManager {
         }
 
         // Check filesystem cache
-        const cached = await getBundleFromCache(bundleName);
+        const cached = await getBundleFromCache(this.cachePrefix + bundleName);
         if (cached) {
             this.onLog(`  From cache: ${bundleName}`);
             this.bundleCache.set(bundleName, cached);
@@ -446,7 +447,7 @@ export class BundleManager {
         this.bundleCache.set(bundleName, decompressed);
 
         // Save to cache in background
-        saveBundleToCache(bundleName, decompressed);
+        saveBundleToCache(this.cachePrefix + bundleName, decompressed);
 
         return decompressed;
     }

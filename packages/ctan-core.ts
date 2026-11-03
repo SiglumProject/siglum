@@ -327,7 +327,7 @@ export async function processZipData(
   const files = await unzipAsync(zipData);
 
   const norm = await normalizePackage(files, { pkgName }, opts);
-  if (norm.unbuildable) {
+  if (norm.unbuildable === true) {
     return {
       error: norm.reason,
       unbuildable: true,

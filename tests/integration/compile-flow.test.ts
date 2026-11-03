@@ -456,6 +456,24 @@ describe('Compilation Flow Integration', () => {
     });
 
     describe('Additional files injection', () => {
+        it('copies only the supplied binary view, not its entire backing buffer', async () => {
+            await initCompiler();
+            const spy = vi.spyOn(workerInstances[0], 'postMessage');
+            const backing = new Uint8Array([99, 1, 2, 3, 88]);
+            await compiler.compile(SIMPLE_DOCUMENT, { additionalFiles: { 'image.bin': backing.subarray(1, 4) } });
+            const message = spy.mock.calls.find(([msg]) => (msg as any).type === 'compile')?.[0] as any;
+            expect(Array.from(message.ctanFiles['/image.bin'])).toEqual([1, 2, 3]);
+            expect(Array.from(backing)).toEqual([99, 1, 2, 3, 88]);
+        });
+
+        it('does not reuse a main-source-only PDF cache when dependencies are supplied', async () => {
+            const { getCachedPdf, saveCachedPdf } = await import('../../src/storage.js');
+            await initCompiler();
+            await compiler.compile(SIMPLE_DOCUMENT, { additionalFiles: { 'chapter.tex': 'Changed chapter' } });
+            expect(getCachedPdf).not.toHaveBeenCalled();
+            expect(saveCachedPdf).not.toHaveBeenCalled();
+        });
+
         it('should pass additional files to worker', async () => {
             await initCompiler();
 

@@ -32,7 +32,7 @@ async function ensureWasmCacheMounted() {
     return wasmCacheMounting;
 }
 
-const CTAN_CACHE_VERSION = 10; // Bumped: include all data files (.csv, .lua, etc.) in CTAN extractions
+const CTAN_CACHE_VERSION = 12; // TL2026 sources and preserved BibTeX package paths.
 const BUNDLE_CACHE_VERSION = 6; // Bumped: TL2026 clean rebuild — regenerated bundles + re-merged cm-super
 const MANIFEST_CACHE_VERSION = 7; // Bumped: TL2026 clean rebuild — regenerated file-manifest.json (+ cm-super)
 
