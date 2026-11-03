@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Tests for the normalized-artifact cache loader/serializer.
  *
@@ -48,6 +49,7 @@ describe('prebuilt-cache loader', () => {
     expect(a!.provider).toBe('ins');
     expect(a!.schema).toBe(PREBUILT_SCHEMA);
     expect(a!.totalFiles).toBe(Object.keys(a!.files).length);
+    expect(Object.values(a!.files)[0].content).toContain('Synthetic loader fixture');
     // The whole point: docstrip output insdljs.sty is present, routed to TDS.
     expect(
       Object.keys(a!.files).some((p) => p.endsWith('/acrotex/insdljs.sty')),
