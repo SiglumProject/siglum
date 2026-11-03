@@ -56,7 +56,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SiglumProject/siglum-engine.git"
+    "url": "git+https://github.com/SiglumProject/siglum.git"
   },
   "keywords": [
     "latex",
@@ -70,9 +70,9 @@
   "author": "Siglum Project",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/SiglumProject/siglum-engine/issues"
+    "url": "https://github.com/SiglumProject/siglum/issues"
   },
-  "homepage": "https://github.com/SiglumProject/siglum-engine#readme",
+  "homepage": "https://github.com/SiglumProject/siglum#readme",
   "dependencies": {
     "@siglum/filesystem": "^0.3.0",
     "blake3-wasm": "2.1.5",
@@ -90,5 +90,8 @@
   },
   "overrides": {
     "@siglum/filesystem": "file:../siglum-filesystem"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

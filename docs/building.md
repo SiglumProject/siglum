@@ -1,266 +1,85 @@
 # Building Siglum Engine
 
-This guide covers building the WASM engine and LaTeX bundles from source.
+The npm library and TeX runtime have separate builds. For a prebuilt runtime,
+use the matching [GitHub release](https://github.com/SiglumProject/siglum/releases)
+and follow [self-hosting](self-hosting.md). Do not use older release assets with
+the TeX Live 2026 engine.
 
-**For most users**: Download pre-built assets from [cdn.siglum.org](https://cdn.siglum.org) or [GitHub Releases](https://github.com/SiglumProject/siglum-engine/releases). Building from source is only needed for:
-- Upgrading to a new TeX Live version
-- Adding custom packages to bundles
-- Modifying the TeX engine
+## Source checkout
 
----
+Clone `SiglumProject/siglum` as `siglum-engine`, with `siglum-filesystem` beside
+it. Initialize the pinned BusyTeX submodule and build the filesystem dependency:
 
-## Quick Reference
-
-| Component | Build Time | Output |
-|-----------|-----------|--------|
-| busytex.wasm | 2-3 hours | `busytex/build/wasm/busytex.wasm` (~31MB) |
-| busytex.js | (with above) | `busytex/build/wasm/busytex.js` (~290KB) |
-| Bundles | 15-30 min | `packages/bundles/*.data.gz` (~170MB total) |
-
----
-
-## 1. Building busytex.wasm and busytex.js
-
-The WASM binary is built from TeX Live source using Emscripten.
-
-### Prerequisites
-
-**System tools** (Linux/macOS):
-```bash
-# Debian/Ubuntu
-apt-get install wget cmake gperf p7zip-full perl python3 bsdtar
-
-# macOS
-brew install cmake gperf p7zip perl python3
+```sh
+git submodule update --init --recursive
+bun install --frozen-lockfile
+bun run --cwd ../siglum-filesystem build
+bun run build:types
 ```
 
-**Emscripten SDK**:
-```bash
-git clone https://github.com/emscripten-core/emsdk
-cd emsdk
-./emsdk install 3.1.43
-./emsdk activate 3.1.43
-source emsdk_env.sh
-```
+The local filesystem override is for development. Published npm consumers use
+`@siglum/filesystem@^0.3.0`. See [release steps](releasing.md) for packing without
+local overrides.
 
-Or use Docker/Podman (recommended):
-```bash
-podman pull emscripten/emsdk:3.1.43
-```
+## TeX Live 2026 runtime
 
-### Build Steps
+The supported build wrapper is `busytex/build-wasm.sh`, using Podman and
+Emscripten **3.1.43**. Install Podman, Bun, Python 3, and the archive tools used
+by the Makefile. Start the Podman machine before building. Reserve substantial
+working space for the ISO, extracted sources, native build, and WASM build.
 
-#### Option A: Container Build (Recommended)
-
-```bash
+```sh
 cd busytex
+make source/texmfrepo.txt
 ./build-wasm.sh wasm
+./build-wasm.sh texlive
+./build-wasm.sh formats
+./build-wasm.sh package
+./build-wasm.sh bundles
 ```
 
-This runs the build inside an Emscripten container and outputs to `build/wasm/`.
-(`./build-wasm.sh all` runs the whole pipeline: wasm → texlive → formats → package → bundles.)
+`wasm` builds native tools and the WASM targets; it already invokes
+`make wasm-all`. `wasm-all` is not a wrapper command. `formats` generates the
+formats with the WASM engine, avoiding native/WASM format mismatches.
+`bundles` splits the data and adds the separate cm-super font bundle.
+Use `./build-wasm.sh all` to run the wrapper's complete pipeline.
 
-#### Option B: Native Build
+Outputs include `busytex/build/wasm/{busytex,pdftex,xetex}.{js,wasm}` and
+`packages/bundles/`. The formats, engine binaries, and bundled packages must
+belong to the same TeX Live release. `packages/update-bundles-tl2025.ts` is a
+legacy targeted update script, not the 2026 rebuild procedure.
 
-```bash
-cd busytex
-export MAKEFLAGS=-j8  # Use 8 parallel jobs
+## Indexes, normalized packages, and staging
 
-# 1. Download sources (~6GB TeX Live ISO)
-make source/texlive.txt source/expat.txt source/fontconfig.txt
-make source/texmfrepo.txt
+From the engine repository root:
 
-# 2. Build native tools first (required as build dependencies)
-make native
-
-# 3. Build WASM
-make wasm
+```sh
+bun scripts/build-font-file-index.js
+bun scripts/prebuild-packages.js
+bun run prepare:runtime
+bun run stage:runtime
+node scripts/verify-runtime.mjs "$(node -p "require('./.local-release/current.json').directory")"
 ```
 
-### Output
+The font index uses the submodule's TLPDB by default (`TLPDB_PATH` overrides it).
+Review all generated bundle/index changes before committing. Staging checks
+bundle byte ranges and creates a content-addressed runtime under
+`.local-release/tl2026-…`; it does not upload anything. Bulk runtime files are
+ignored by Git and must be distributed separately.
 
-```
-busytex/build/wasm/
-├── busytex.wasm    # WebAssembly TeX engine
-└── busytex.js      # JavaScript loader
-```
+## Validation
 
-### Build Targets
-
-```bash
-make wasm           # Full WASM build (pdfTeX + XeTeX)
-make wasm-pdftex    # pdfTeX only
-make wasm-xetex     # XeTeX only
-make clean-wasm     # Remove WASM build artifacts
-```
-
----
-
-## 2. Building Bundles
-
-Bundles are gzip-compressed archives of LaTeX packages, organized for lazy loading.
-
-### Bundle Structure
-
-```
-packages/bundles/
-├── core.data.gz           # Base LaTeX (~730KB)
-├── amsmath.data.gz        # AMS packages (~120KB)
-├── pgf-tikz.data.gz       # TikZ graphics (~10MB)
-├── fmt-pdflatex.data.gz   # Compiled pdfLaTeX format (~9MB)
-├── fmt-xelatex.data.gz    # Compiled XeTeX format (~12MB)
-├── bundles.json           # Bundle metadata
-├── file-manifest.json     # File → bundle lookup (1.2MB)
-└── file-to-package.json   # File → CTAN package lookup
+```sh
+bun run test:run
+bun run test:types
+bun run test:browser:run
+bun run test:proxy
+bun run test:bun-parity
 ```
 
-### Prerequisites
+The browser suite requires Playwright and the locally built runtime. Test
+pdfLaTeX, XeLaTeX, bibliography passes, nested projects, fonts, and packages
+fetched through the proxy. Biber is not bundled; use BibTeX or a prebuilt `.bbl`.
 
-```bash
-# Bun runtime
-curl -fsSL https://bun.sh/install | bash
-
-# TeX Live ISO (if creating from scratch)
-cd busytex
-make source/texmfrepo.txt
-```
-
-### Creating Bundles from Scratch
-
-After building busytex, create the TeX Live installation and package it:
-
-```bash
-cd busytex
-
-# 1. Install TeX Live to build/texlive-basic/
-make build/texlive-basic.txt
-
-# 2. Package into Emscripten data format
-make build/wasm/texlive-basic.js
-
-# 3. Split into individual bundles
-cd ../packages
-bun run split-bundle.ts
-```
-
-### Updating Existing Bundles
-
-To update bundles with newer package versions:
-
-```bash
-cd packages
-
-# Update from TeX Live archives
-bun run update-bundles-tl2025.ts
-```
-
-This script:
-1. Reads the TeX Live package archives from `busytex/source/texmfrepo/archive/`
-2. Extracts updated files for packages listed in the script
-3. Repacks affected bundles with new content
-4. Updates `file-manifest.json` with new byte offsets
-
-### Configuring Bundle Contents
-
-Edit `packages/update-bundles-tl2025.ts` to specify which packages go into which bundles:
-
-```typescript
-const PACKAGE_UPDATES: Record<string, string[]> = {
-    'latex': ['core'],           // tex/latex/base/* → core bundle
-    'amsmath': ['amsmath'],      // tex/latex/amsmath/* → amsmath bundle
-    'pgf': ['pgf-tikz'],         // tex/latex/pgf/* → pgf-tikz bundle
-    'tcolorbox': ['boxes'],
-    // Add new packages here
-};
-```
-
----
-
-## 3. Building the File Index
-
-The `file-to-package.json` index maps LaTeX filenames to CTAN package names, enabling auto-fetching of missing packages.
-
-```bash
-# Download TeX Live package database
-curl -o /tmp/tlpdb.txt https://mirrors.ctan.org/systems/texlive/tlnet/tlpkg/texlive.tlpdb
-
-# Generate index
-node scripts/build-file-index.js packages/bundles/file-to-package.json
-```
-
----
-
-## 4. Format Files
-
-Format files (`.fmt`) are pre-compiled TeX macros. They must match the engine version exactly.
-
-Format files are generated by running TeX with `-ini`:
-
-```bash
-# Using native build
-./busytex/build/native/busytex pdflatex -ini \
-    -jobname=pdflatex \
-    latex.ltx \
-    </dev/null
-```
-
-The format files are then bundled into `fmt-pdflatex.data.gz`, `fmt-xelatex.data.gz`, etc.
-
----
-
-## 5. Complete Build from Scratch
-
-Full rebuild including WASM and all bundles:
-
-```bash
-# 1. Build WASM engine
-cd busytex
-export MAKEFLAGS=-j8
-make source/texlive.txt source/expat.txt source/fontconfig.txt
-make source/texmfrepo.txt
-make native
-make wasm
-
-# 2. Create TeX Live installation
-make build/texlive-basic.txt
-make build/wasm/texlive-basic.js
-
-# 3. Split into bundles
-cd ../packages
-bun run split-bundle.ts
-bun run update-bundles-tl2025.ts
-
-# 4. Copy to distribution
-mkdir -p ../dist
-cp ../busytex/build/wasm/busytex.{js,wasm} ../dist/
-cp bundles/* ../dist/
-```
-
----
-
-## 6. Upgrading TeX Live Version
-
-See [upgrading-texlive.md](upgrading-texlive.md) for the complete upgrade process.
-
-Quick summary:
-1. Update URLs in `busytex/Makefile` to new TeX Live version
-2. Rebuild WASM: `make clean-wasm && make wasm`
-3. Regenerate bundles: `bun run update-bundles-tl2025.ts`
-4. Regenerate format files
-5. Test compilation with sample documents
-
----
-
-## Troubleshooting
-
-### "Could not undump X bytes from format file"
-Format file size mismatch in `file-manifest.json`. Re-run bundle generation to fix offsets.
-
-### "article.cls not found"
-Bundle manifest is out of sync. Re-run `bun run split-bundle.ts`.
-
-### WASM won't load
-Check Emscripten version matches (3.1.43). Different versions may produce incompatible output.
-
-### Build runs out of memory
-WASM linking is memory-intensive. Ensure at least 8GB RAM available, or reduce parallelism.
+For upgrades see [upgrading TeX Live](upgrading-texlive.md). For publication,
+use [release steps](releasing.md); merging or running a build does not deploy.

@@ -43,7 +43,7 @@ The proxy runs on `http://localhost:8081` by default.
 When a package is requested:
 
 1. **Check cache** - Memory first, then disk
-2. **Try TexLive** - Pre-built packages from TexLive 2025 archives
+2. **Try TexLive** - Pre-built packages from the matching TeX Live year (2026 by default)
 3. **Try CTAN** - Falls back to CTAN mirrors if not in TexLive
 4. **Extract & cache** - Extracts `.sty`, `.cls`, fonts, etc. and caches to disk
 
@@ -53,7 +53,7 @@ Packages are cached permanently to disk. The memory cache is a bounded LRU cache
 Request → Memory Cache (LRU) → Disk Cache (permanent) → TexLive/CTAN
 ```
 
-CTAN is only contacted once per package, ever. Subsequent requests are served from disk.
+Cached packages are reused until their cache entries are removed or invalidated. Versioned requests must retain their requested TeX Live year.
 
 ## API
 
@@ -65,8 +65,10 @@ extracts and normalizes files on the server and returns JSON.
 
 Without a year, the proxy first looks for `package.r*.tar.xz` in
 `CTAN_TEXLIVE_ARCHIVE_DIR` (default: `busytex/source/texmfrepo/archive` in the repository).
-If no local archive exists, it fetches the pinned TeX Live 2025 archive. An explicit
-`tlYear` skips the local archive; supported fallback years are 2025, 2024, and 2023.
+If no local archive exists, it fetches TeX Live 2026 through `src/texlive.js`. An explicit
+`tlYear` skips the local archive; supported years are 2026, 2025, 2024, and 2023.
+For 2026, tlnet is used only while its `TEXLIVE_2026` marker is present; otherwise
+the historic 2026 `tlnet-final` archive is used.
 Missing archives return 404, invalid names/years return 400, and upstream failures
 return 502. Responses include the same CORS headers as the other API routes.
 
@@ -228,31 +230,19 @@ When CTAN doesn't recognize a package name (e.g., `pgfkeys`), the proxy searches
 
 ### Docker
 
-```dockerfile
-FROM oven/bun:1
-WORKDIR /app
-
-# Copy package files and install dependencies
-COPY package.json bun.lock* ./
-RUN bun install --production
-
-# Copy proxy files
-COPY packages/ctan-core.ts packages/
-COPY packages/ctan-proxy.ts packages/
-
-RUN mkdir -p /var/cache/ctan
-ENV CTAN_PROXY_CACHE_DIR=/var/cache/ctan
-ENV CTAN_PROXY_MEMORY_CACHE_SIZE=500
-EXPOSE 8081
-CMD ["bun", "packages/ctan-proxy.ts"]
-```
+Build a container from the source checkout with Bun, dependencies, `src/`,
+`packages/`, and the matching indexes/normalized artifacts. The standalone
+proxy uses `tar`/`xz` for archive extraction, so install those tools too. A
+container containing only two proxy files is incomplete. Keep its cache on a
+persistent volume and expose port 8081 behind your reverse proxy.
 
 ### Cloudflare Workers
 
-The proxy is designed to work in Cloudflare Workers with modifications:
-
-- Replace disk cache with KV or R2 storage
-- Replace `exec` (tar extraction) with pure JS/WASM decompression
+The maintained adapter is
+[siglum-web/worker](https://github.com/SiglumProject/siglum-web/tree/main/worker).
+It uses R2 and browser-compatible decompression instead of the standalone
+server's filesystem and subprocess extraction. Follow that repository's
+configuration and immutable runtime release procedure.
 
 ### Systemd
 
@@ -274,7 +264,7 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
-**Note:** The working directory must contain both `packages/ctan-proxy.ts` and `packages/ctan-core.ts`, plus `node_modules` with dependencies (`fflate`).
+**Note:** Run from a complete source checkout with installed dependencies, shared `src/texlive.js`, package helper modules, and matching runtime indexes.
 
 ## Troubleshooting
 

@@ -1,7 +1,7 @@
 # Siglum
 
 [![npm version](https://img.shields.io/npm/v/@siglum/engine)](https://www.npmjs.com/package/@siglum/engine)
-[![license](https://img.shields.io/npm/l/@siglum/engine)](https://github.com/SiglumProject/siglum-engine/blob/main/LICENSE)
+[![license](https://img.shields.io/npm/l/@siglum/engine)](https://github.com/SiglumProject/siglum/blob/main/LICENSE)
 
 A browser-based LaTeX compiler. TeX Live 2026 running in WebAssembly, with lazy bundle loading and on-demand package fetching.
 
@@ -17,10 +17,12 @@ The full bundle is ~195MB to deploy, but clients only download what their docume
 - [Examples & Playground Tutorial](examples/README.md) — Build a LaTeX editor UI
 - [CTAN Proxy Guide](docs/ctan-proxy.md) — Self-host the package proxy for production
 - [Building from Source](docs/building.md) — Build WASM engine and bundles
+- [Self-hosting](docs/self-hosting.md) — Configure runtime assets and package routes
+- [Releasing](docs/releasing.md) — Publish npm packages and matched runtime assets
 
 ## Quick Start (Local Demo)
 
-This checkout is the TeX Live 2026 release candidate. Runtime binaries are
+This checkout targets the TeX Live 2026 release. Runtime binaries are
 separate from the npm package; do not mix assets from different releases.
 
 For development, place `siglum-engine` and `siglum-filesystem` in sibling
@@ -40,9 +42,13 @@ The four-repository UI workspace can prepare and test all dependencies together.
 
 ## Installation
 
-The candidate versions are `@siglum/filesystem@0.3.0` and
-`@siglum/engine@0.2.0`. Publish filesystem first. These versions and their runtime
-must be published before consumers can install them from npm.
+The release versions are `@siglum/filesystem@0.3.0` and
+`@siglum/engine@0.2.0`. See [release steps](docs/releasing.md) for publication
+order and [self-hosting](docs/self-hosting.md) for runtime setup.
+
+```sh
+npm install @siglum/engine@0.2.0
+```
 
 After publication, download `siglum-runtime-v0.2.0.tar.gz` from the matching
 GitHub release, extract it, and run `scripts/verify-runtime.mjs <directory>`.
@@ -301,26 +307,57 @@ await compiler.compile(source); // Already warmed up
 
 ## Usage with Bundlers (Vite, Webpack, etc.)
 
-Bundlers pre-bundle dependencies, which breaks the automatic worker loading. You need to copy the worker file and pass an explicit URL:
+Use the exported worker as a static asset and pass its URL explicitly:
 
-```json
-// package.json
-{
-  "scripts": {
-    "postinstall": "cp node_modules/@siglum/engine/src/worker.js public/worker.js"
-  }
-}
-```
+```js
+import { SiglumCompiler } from '@siglum/engine';
+import workerUrl from '@siglum/engine/worker?url';
 
-```javascript
 const compiler = new SiglumCompiler({
-    bundlesUrl: '/bundles',
-    wasmUrl: '/busytex.wasm',
-    workerUrl: '/worker.js',  // Explicit path to copied worker
+    bundlesUrl: '/releases/<releaseId>/bundles',
+    wasmUrl: '/releases/<releaseId>/wasm/busytex.wasm',
+    workerUrl,
 });
 ```
 
-The `postinstall` script runs automatically on `npm install`, keeping the worker in sync with the package version.
+If your bundler does not support `?url`, copy
+`node_modules/@siglum/engine/src/worker.js` to your public assets and use its
+served URL. Copy it again whenever the engine package changes.
+
+### Vite and optional BLAKE3 acceleration
+
+`blake3-wasm@2.1.5` has an incomplete browser ESM entry. Vite cannot bundle it
+without a workaround, even though hashing has a fallback. Disable that optional
+entry so the engine retains its built-in DJB2 change-detection hash:
+
+```js
+// blake3-disabled.js
+throw new Error('BLAKE3 acceleration disabled in this build');
+export function hash() {}
+```
+
+```js
+// vite.config.mjs
+import { defineConfig } from 'vite';
+import { fileURLToPath } from 'node:url';
+
+export default defineConfig({
+    resolve: {
+        alias: {
+            'blake3-wasm/browser.js': fileURLToPath(
+                new URL('./blake3-disabled.js', import.meta.url)
+            ),
+        },
+        dedupe: ['@siglum/filesystem'],
+    },
+    build: { target: 'esnext' },
+    define: { global: 'globalThis' },
+});
+```
+
+The fallback is for cache/change detection, not cryptographic verification.
+Runtime release integrity is checked separately with SHA-256. The configuration
+above is tested against the packed engine, filesystem, and Git packages together.
 
 ## Engines
 
