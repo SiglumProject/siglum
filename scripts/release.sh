@@ -12,7 +12,9 @@ TAG="v$VERSION"
 RELEASE_COMMIT="$(git rev-parse HEAD)"
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then echo "Tag already exists: $TAG" >&2; exit 1; fi
 if [ -n "$(git status --porcelain)" ] && [ "${DRY_RUN:-0}" != 1 ]; then echo 'Commit the reviewed release changes first.' >&2; exit 1; fi
-node scripts/stage-runtime.mjs
+# Reuse the reviewed manifest when the assets are already deployed. Re-staging
+# here could omit generated files removed from the working tree since upload.
+if [ "${SKIP_R2:-0}" != 1 ]; then node scripts/stage-runtime.mjs; fi
 RUNTIME_DIR="$(node -p "require('./.local-release/current.json').directory")"
 RUNTIME_ID="$(node -p "require('./.local-release/current.json').releaseId")"
 node scripts/verify-runtime.mjs "$RUNTIME_DIR"
