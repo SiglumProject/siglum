@@ -20,8 +20,8 @@
  */
 
 export { SiglumCompiler, BusyTeXCompiler } from './compiler.js';
-export { BundleManager, detectEngine, extractPreamble, hashPreamble } from './bundles.js';
-export { CTANFetcher, getPackageFromFile, isValidPackageName, forceRefreshPackage } from './ctan.js';
+export { BundleManager, detectEngine, extractPreamble, extractFontNames, hashPreamble } from './bundles.js';
+export { CTANFetcher, getPackageFromFile, isValidPackageName, forceRefreshPackage, normalizeFontName } from './ctan.js';
 export {
     clearCTANCache,
     hashDocument,

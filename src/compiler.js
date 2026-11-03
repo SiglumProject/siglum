@@ -3,7 +3,8 @@
  * Main SiglumCompiler class - orchestrates LaTeX compilation in the browser.
  */
 
-import { BundleManager, detectEngine, extractPreamble, hashPreamble } from './bundles.js';
+import { normalizeProjectPath } from './project-paths.js';
+import { BundleManager, detectEngine, extractPreamble, extractFontNames, hashPreamble } from './bundles.js';
 
 /**
  * @typedef {Object} SiglumCompilerOptions
@@ -27,21 +28,32 @@ import { BundleManager, detectEngine, extractPreamble, hashPreamble } from './bu
  * @typedef {Object} CompileOptions
  * @property {string} [engine] - 'pdflatex', 'xelatex', or 'lualatex'
  * @property {boolean} [useCache] - Use document cache
- * @property {Object<string, string|Uint8Array>} [additionalFiles] - Additional files for compilation
+ * @property {Object<string, string|Uint8Array>} [additionalFiles] - Files keyed by paths relative to the virtual project root, e.g. figures/plot.pdf
+ * @property {string} [mainFile] - Main source path relative to the virtual project root, e.g. revision/main.tex.
+ * TeX resolves relative inputs from this file's directory. Default document.tex.
  */
 
 /**
- * @typedef {Object} CompileResult
- * @property {boolean} success - Whether compilation succeeded
- * @property {Uint8Array} [pdf] - Compiled PDF bytes
- * @property {boolean} [pdfIsShared] - True if PDF is in SharedArrayBuffer
- * @property {Object|null} [syncTexData] - SyncTeX data for source mapping
+ * @typedef {Object} CompileMetadata
+ * @property {string|null} [syncTexData] - SyncTeX source mapping
  * @property {Object} [stats] - Compilation statistics
- * @property {string} [log] - TeX compilation log
- * @property {string} [error] - Error message if failed
- * @property {number} [exitCode] - TeX exit code if failed
- * @property {boolean} [cached] - True if result was from cache
+ * @property {string} [log] - Full TeX compilation log
+ * @property {number} [exitCode] - TeX exit code
+ * @property {boolean} [cached] - True for a cached PDF
  */
+/**
+ * @typedef {Object} CompileSuccess
+ * @property {true} success
+ * @property {Uint8Array<ArrayBuffer>} pdf - Compiled PDF bytes, directly usable as a BlobPart
+ * @property {never} [error]
+ */
+/**
+ * @typedef {Object} CompileFailure
+ * @property {false} success
+ * @property {string} error - Actionable compilation failure
+ * @property {never} [pdf]
+ */
+/** @typedef {CompileMetadata & (CompileSuccess | CompileFailure)} CompileResult */
 import { CTANFetcher } from './ctan.js';
 
 // Module-level tracking to prevent multiple workers across all instances
@@ -56,10 +68,26 @@ import {
     hashDocument,
     getFmtPath,
     clearCTANCache,
-    getCompiledWasmModule,
-    saveWasmBytes,
     saveWasmMemorySnapshot,
 } from './storage.js';
+
+// Base64 helpers for persisting small binary blobs (preamble side-effect files)
+// in a JSON cache entry. Chunked to avoid call-stack limits on large inputs.
+function bytesToBase64(bytes) {
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+}
+
+function base64ToBytes(b64) {
+    const binary = atob(b64);
+    const out = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+    return out;
+}
 
 // Ensure fmt-cache mount exists
 let fmtCacheMounted = false;
@@ -79,6 +107,9 @@ async function ensureFmtCacheMount() {
  * Browser-based LaTeX compiler using WebAssembly.
  * Handles bundle loading, CTAN fetching, and compilation orchestration.
  */
+// IDs correlate jobs in this module; no secure-context-only UUID API is needed.
+let nextCompilerRequestId = 0;
+
 export class SiglumCompiler {
     /**
      * @param {SiglumCompilerOptions} [options] - Compiler options
@@ -86,10 +117,11 @@ export class SiglumCompiler {
     constructor(options = {}) {
         this.bundlesUrl = options.bundlesUrl || 'packages/bundles';
         this.wasmUrl = options.wasmUrl || 'busytex.wasm';
+        this.runtimeKey = this.wasmUrl.match(/\/releases\/(tl2026-[a-f0-9]{16})(?:\/|$)/)?.[1] || 'tl2026-r1';
         this.jsUrl = options.jsUrl || null; // Derived from wasmUrl if not provided
         this.workerUrl = options.workerUrl || null; // Will use embedded worker if not provided
         this.ctanProxyUrl = options.ctanProxyUrl || null;
-        this.xzwasmUrl = options.xzwasmUrl || './src/xzwasm.js';
+        this.xzwasmUrl = options.xzwasmUrl || (this.ctanProxyUrl ? `${this.ctanProxyUrl}/xzwasm.js` : './src/xzwasm.js');
 
         this.bundleManager = new BundleManager({
             bundleBase: this.bundlesUrl,
@@ -106,6 +138,7 @@ export class SiglumCompiler {
         this.workerReady = false;
         this.wasmModule = null;
         this._initWorkerPromise = null;
+        this._initPromise = null;
         this.pendingCompile = null;
         this.formatGenerationPromise = null;
 
@@ -238,7 +271,20 @@ export class SiglumCompiler {
      * Initialize the compiler. Loads WASM, manifests, and prepares the worker.
      * @returns {Promise<void>}
      */
-    async init() {
+    init() {
+        // Memoize so concurrent callers share one in-flight init (avoids a second
+        // WASM fetch/compile + worker). Returns the same promise object until it
+        // settles; on failure the memo is cleared so a later call can retry.
+        if (!this._initPromise) {
+            this._initPromise = this._doInit().catch(e => {
+                this._initPromise = null;
+                throw e;
+            });
+        }
+        return this._initPromise;
+    }
+
+    async _doInit() {
         this._log('Initializing Siglum compiler...');
 
         // Load manifests + WASM in parallel
@@ -267,29 +313,56 @@ export class SiglumCompiler {
         this._log('Loading WASM...');
         const startTime = performance.now();
 
-        try {
-            // Try loading cached compiled module first (skips fetch + compile)
-            const cachedModule = await getCompiledWasmModule();
-            if (cachedModule) {
-                this.wasmModule = cachedModule;
-                const elapsed = (performance.now() - startTime).toFixed(0);
-                this._log('WASM loaded from cache in ' + elapsed + 'ms');
-                return;
-            }
+        // Primary path: Cache API + compileStreaming()
+        // V8 automatically caches compiled machine code when compileStreaming is used.
+        // On subsequent loads, it deserializes native code instead of recompiling from bytes.
+        if (typeof WebAssembly.compileStreaming === 'function' && typeof caches !== 'undefined') {
+            try {
+                const cache = await caches.open('siglum-wasm-tl2026-v2');
+                let response = await cache.match(this.wasmUrl);
+                if (response) {
+                    try {
+                        this.wasmModule = await WebAssembly.compileStreaming(response);
+                        const elapsed = (performance.now() - startTime).toFixed(0);
+                        this._log(`WASM loaded from cache + compileStreaming in ${elapsed}ms`);
+                        return;
+                    } catch (e) {
+                        // Cached response may be corrupt or stale — delete and fall through
+                        this._log('Cached WASM compile failed, evicting: ' + e.message);
+                        cache.delete(this.wasmUrl).catch(() => {});
+                    }
+                }
 
-            // Fetch WASM as bytes (not streaming compile - we need bytes for caching)
+                // Not cached (or cache evicted) — fetch from network
+                response = await fetch(this.wasmUrl);
+                if (response.ok) {
+                    // Clone before consuming — only cache after compile succeeds
+                    const responseToCache = response.clone();
+                    this.wasmModule = await WebAssembly.compileStreaming(response);
+                    cache.put(this.wasmUrl, responseToCache).catch(() => {});
+                    const elapsed = (performance.now() - startTime).toFixed(0);
+                    this._log(`WASM fetched + compileStreaming in ${elapsed}ms`);
+                    return;
+                }
+                // Non-ok response — fall through to fallback (don't re-fetch)
+            } catch (e) {
+                this._log('compileStreaming path failed, falling back: ' + e.message);
+            }
+        }
+
+        // Fallback: fetch + compile (no V8 code caching, but works everywhere)
+        try {
             const response = await fetch(this.wasmUrl);
+            if (!response.ok) {
+                throw new Error(`WASM fetch failed: ${response.status} ${response.statusText}`);
+            }
             const wasmBytes = new Uint8Array(await response.arrayBuffer());
             const fetchElapsed = (performance.now() - startTime).toFixed(0);
 
-            // Compile from bytes
             const compileStart = performance.now();
             this.wasmModule = await WebAssembly.compile(wasmBytes);
             const compileElapsed = (performance.now() - compileStart).toFixed(0);
-            this._log(`WASM fetched in ${fetchElapsed}ms, compiled in ${compileElapsed}ms`);
-
-            // Cache the bytes for future loads (Module can't be serialized to IndexedDB)
-            saveWasmBytes(wasmBytes).catch(() => {});
+            this._log(`WASM fetched in ${fetchElapsed}ms, compiled in ${compileElapsed}ms (fallback)`);
         } catch (e) {
             this._log('WASM load failed: ' + e.message);
             throw e;
@@ -375,6 +448,7 @@ export class SiglumCompiler {
                 bundleDepsData: this.bundleManager.bundleDeps,
                 bundleRegistryData: this.bundleManager.bundleRegistry ? [...this.bundleManager.bundleRegistry] : [],
                 verbose: this.verbose,
+                bundlesUrl: this.bundlesUrl,  // For worker-direct OPFS/network bundle loading
             };
 
             // Include memory snapshot if available (transfer for efficiency)
@@ -493,14 +567,24 @@ export class SiglumCompiler {
                 return;
             }
 
+            // Copy file buffers for transfer (original stays in cache)
+            const files = {};
+            const transferList = [];
+            for (const [path, data] of result.files) {
+                if (data && data.buffer) {
+                    const copy = data.buffer.slice(0);
+                    files[path] = new Uint8Array(copy);
+                    transferList.push(copy);
+                }
+            }
             this.worker.postMessage({
                 type: 'ctan-fetch-response',
                 requestId,
                 packageName,
                 success: true,
-                files: Object.fromEntries(result.files),
+                files,
                 dependencies: result.dependencies || [],
-            });
+            }, transferList);
         } catch (e) {
             this._log('CTAN fetch error: ' + e.message);
             this.worker.postMessage({
@@ -521,27 +605,16 @@ export class SiglumCompiler {
 
             const bundleData = await this.bundleManager.loadBundle(bundleName);
 
-            // SharedArrayBuffer: send directly (automatically shared, no transfer list)
-            // ArrayBuffer: copy before transfer so original stays valid in cache
-            const isShared = typeof SharedArrayBuffer !== 'undefined' && bundleData instanceof SharedArrayBuffer;
-            if (isShared) {
-                this.worker.postMessage({
-                    type: 'bundle-fetch-response',
-                    requestId,
-                    bundleName,
-                    success: true,
-                    bundleData,
-                });
-            } else {
-                const copy = bundleData.slice(0);
-                this.worker.postMessage({
-                    type: 'bundle-fetch-response',
-                    requestId,
-                    bundleName,
-                    success: true,
-                    bundleData: copy,
-                }, [copy]);
-            }
+            // Copy and transfer to worker (original stays in cache)
+            // Note: SharedArrayBuffer intentionally not used - causes V8 memory leaks
+            const copy = bundleData.slice(0);
+            this.worker.postMessage({
+                type: 'bundle-fetch-response',
+                requestId,
+                bundleName,
+                success: true,
+                bundleData: copy,
+            }, [copy]);
         } catch (e) {
             this._log('Bundle fetch error: ' + e.message);
             this.worker.postMessage({
@@ -664,9 +737,10 @@ export class SiglumCompiler {
 
             // Distribute data to each original requester
             for (const req of group) {
-                const offset = req.start - fetchStart;
+                const offset = response.status === 200 ? req.start : req.start - fetchStart;
                 const length = req.end - req.start;
                 const data = fullData.slice(offset, offset + length);
+                if (data.length !== length) throw new Error(`Incomplete range response for ${bundleName}`);
 
                 this.worker.postMessage({
                     type: 'file-range-fetch-response',
@@ -743,12 +817,16 @@ export class SiglumCompiler {
             await this.formatGenerationPromise.catch(() => {});
         }
 
+        const mainFile = normalizeProjectPath(options.mainFile || 'document.tex');
+        const projectFiles = Object.entries(options.additionalFiles || {}).map(([path, content]) => [normalizeProjectPath(path), content]);
         const engine = options.engine || detectEngine(source);
-        const useCache = this.enableDocCache && options.useCache !== false;
+        // The existing cache key only covers main source. Dependencies must compile afresh.
+        const useCache = this.enableDocCache && options.useCache !== false
+            && Object.keys(options.additionalFiles || {}).length === 0;
 
         // Check document cache
         if (useCache) {
-            const docHash = hashDocument(source);
+            const docHash = hashDocument(JSON.stringify([this.runtimeKey, mainFile, source]));
             const cached = await getCachedPdf(docHash, engine);
             if (cached) {
                 this._log('Using cached PDF');
@@ -775,11 +853,30 @@ export class SiglumCompiler {
         let depBundles = [];
         if (this.enableCtan) {
             const additionalFilesMap = options.additionalFiles || {};
-            const { ctanPackages, additionalBundles } = this.bundleManager.prescanForCtanPackages(source, engine, additionalFilesMap);
+            const { ctanPackages, additionalBundles } = this.bundleManager.prescanForCtanPackages(source, engine, additionalFilesMap, mainFile);
 
             // Add bundles needed for package dependencies (not detected from direct \usepackage)
             if (additionalBundles && additionalBundles.length > 0) {
                 depBundles = additionalBundles;
+            }
+
+            // Resolve fontspec named fonts (\setmainfont{EB Garamond}, etc.) to
+            // their TeX Live packages so fontconfig can find them at runtime.
+            // Only relevant for engines that use fontconfig (xelatex/lualatex).
+            if (engine === 'xelatex' || engine === 'lualatex') {
+                const fontNames = extractFontNames(source, additionalFilesMap);
+                if (fontNames.length > 0) {
+                    const { packages, unresolved } = await this.ctanFetcher.resolveFontPackages(fontNames);
+                    if (packages.length > 0) {
+                        this._log(`Fonts: ${fontNames.length} named, resolved to packages: ${packages.join(', ')}`);
+                        for (const pkg of packages) {
+                            if (!ctanPackages.includes(pkg)) ctanPackages.push(pkg);
+                        }
+                    }
+                    if (unresolved.length > 0) {
+                        this._log(`Fonts: unresolved (relying on bundled/system fonts): ${unresolved.join(', ')}`);
+                    }
+                }
             }
 
             if (ctanPackages.length > 0) {
@@ -808,88 +905,105 @@ export class SiglumCompiler {
             this._log('Required bundles: ' + bundles.join(', '));
         }
 
-        // Prepare bundle data for worker (SharedArrayBuffer for zero-copy, or regular ArrayBuffer with transfer)
-        this.onProgress('loading', 'Loading bundles...');
+        // Worker-direct bundle loading: send names only, worker loads from OPFS/network
+        // This eliminates main thread memory usage for bundle data (300MB+ savings)
+        this.onProgress('loading', 'Preparing compilation...');
 
-        let bundleData = {};
+        const bundleNames = allBundles;  // Just pass names - worker loads directly
         let transferList = [];
 
-        // Load bundle blobs
-        const loadedBundles = await this.bundleManager.loadBundles(allBundles);
-        let totalBytes = 0;
-        let usingSharedArrayBuffer = false;
-
-        for (const [name, data] of Object.entries(loadedBundles)) {
-            if (data) {
-                // Check if data is SharedArrayBuffer (zero-copy) or regular ArrayBuffer (needs transfer)
-                const isShared = typeof SharedArrayBuffer !== 'undefined' && data instanceof SharedArrayBuffer;
-                if (isShared) {
-                    // SharedArrayBuffer: no copy needed, worker reads same memory
-                    bundleData[name] = data;
-                    usingSharedArrayBuffer = true;
-                } else {
-                    // Regular ArrayBuffer: copy for transfer (original stays in cache)
-                    const copy = data.slice(0);
-                    bundleData[name] = copy;
-                    transferList.push(copy);
-                }
-                totalBytes += data.byteLength;
-            }
-        }
-        if (usingSharedArrayBuffer) {
-            this._log(`Sharing ${Object.keys(bundleData).length} bundles via SharedArrayBuffer (${(totalBytes/1024/1024).toFixed(1)}MB, zero-copy)`);
-        } else {
-            this._log(`Transferring ${Object.keys(bundleData).length} bundles (${(totalBytes/1024/1024).toFixed(1)}MB)`);
-        }
+        this._log(`Bundles: ${bundleNames.join(', ')} (worker-direct loading)`);
 
         // Get CTAN files from memory cache (populated by previous fetches)
-        const ctanFiles = this.ctanFetcher.getCachedFiles();
+        // Copy files for transfer (original stays in cache)
+        const ctanFilesRaw = this.ctanFetcher.getCachedFiles();
+        const ctanFiles = {};
+        for (const [path, data] of Object.entries(ctanFilesRaw)) {
+            if (data && data.buffer) {
+                const copy = data.buffer.slice(0);
+                ctanFiles[path] = new Uint8Array(copy);
+                transferList.push(copy);
+            }
+        }
         const ctanFileCount = Object.keys(ctanFiles).length;
         if (ctanFileCount > 0) {
             this._log(`Passing ${ctanFileCount} cached CTAN files to worker`);
         }
 
         // Merge in any additional files provided by the user
-        const additionalFiles = options.additionalFiles || {};
-        for (const [filename, content] of Object.entries(additionalFiles)) {
+        for (const [filename, content] of projectFiles) {
             // Convert string content to Uint8Array
             const data = typeof content === 'string'
                 ? new TextEncoder().encode(content)
                 : content;
-            // Mount in current directory (will be found by TeX)
-            ctanFiles['/' + filename] = data;
+            // Copy buffer for transfer
+            const copy = new Uint8Array(data).buffer;
+            ctanFiles['/' + filename] = new Uint8Array(copy);
+            transferList.push(copy);
         }
 
         // Check for cached format (in-memory first, then filesystem)
         let cachedFormat = null;
         const preamble = extractPreamble(source);
         const preambleHash = hashPreamble(preamble);
-        const fmtKey = preambleHash + '_' + engine;
+        const fmtKey = this.runtimeKey + '_' + preambleHash + '_' + engine;
+
+        // Files the preamble writes as a side effect during format precompilation
+        // (e.g. insdljs' .djs, written via \openout and read back at
+        // \begin{document}). A cached format skips the preamble on reuse, so these
+        // must be captured at format-build time and restored here, or they go
+        // missing. Loaded alongside the format below and shipped to the worker.
+        let formatSideEffectFiles = null;
 
         // Check in-memory cache first (fast path)
-        if (this._fmtMemCache?.key === fmtKey && this._fmtMemCache?.data?.buffer?.byteLength > 0) {
-            cachedFormat = { fmtName: fmtKey, fmtData: this._fmtMemCache.data };
+        const canUseFormat = projectFiles.length === 0 && !mainFile.includes('/');
+        if (canUseFormat && this._fmtMemCache?.key === fmtKey && this._fmtMemCache?.data?.buffer?.byteLength > 0) {
+            // Copy format data for transfer (original stays in memory cache)
+            const fmtCopy = this._fmtMemCache.data.buffer.slice(0);
+            cachedFormat = { fmtName: fmtKey, fmtData: new Uint8Array(fmtCopy) };
+            transferList.push(fmtCopy);
+            formatSideEffectFiles = this._fmtMemCache.sideEffectFiles || null;
             this._log('Using cached format (memory)');
-        } else {
+        } else if (canUseFormat) {
             // Fall back to filesystem cache - path is deterministic from fmtKey
             const fmtPath = '/' + getFmtPath(fmtKey);
             await ensureFmtCacheMount();
             const fmtData = await fileSystem.readBinary(fmtPath).catch(() => null);
             if (fmtData && fmtData.byteLength > 0) {
+                // Normalize to Uint8Array if needed (readBinary may return ArrayBuffer or Uint8Array)
+                const fmtArray = fmtData instanceof Uint8Array ? fmtData : new Uint8Array(fmtData);
+                formatSideEffectFiles = await this._loadFormatSideEffects(fmtKey);
                 // Cache in memory for subsequent compiles
-                this._fmtMemCache = { key: fmtKey, data: fmtData.slice() };
-                cachedFormat = { fmtName: fmtKey, fmtData: this._fmtMemCache.data };
+                this._fmtMemCache = { key: fmtKey, data: new Uint8Array(fmtArray), sideEffectFiles: formatSideEffectFiles };
+                // Copy ArrayBuffer for transfer (must be ArrayBuffer, not Uint8Array)
+                const fmtCopy = fmtArray.buffer.slice(fmtArray.byteOffset, fmtArray.byteOffset + fmtArray.byteLength);
+                cachedFormat = { fmtName: fmtKey, fmtData: new Uint8Array(fmtCopy) };
+                transferList.push(fmtCopy);
                 this._log('Using cached format (filesystem)');
             }
         }
 
+        // Attach captured preamble side-effect files to the format payload so the
+        // worker can restore them after loading the cached format.
+        if (cachedFormat && formatSideEffectFiles && Object.keys(formatSideEffectFiles).length > 0) {
+            const restored = {};
+            for (const [name, b64] of Object.entries(formatSideEffectFiles)) {
+                const bytes = base64ToBytes(b64);
+                const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+                restored[name] = new Uint8Array(copy);
+                transferList.push(copy);
+            }
+            cachedFormat.sideEffectFiles = restored;
+            this._log(`Restoring ${Object.keys(restored).length} preamble side-effect file(s) with cached format`);
+        }
+
         // Check for cached aux files (include format state in key to avoid mismatch)
-        const auxCacheKey = cachedFormat ? preambleHash + '_fmt' : preambleHash;
+        const auxCacheKey = this.runtimeKey + ':' + mainFile + ':' + (cachedFormat ? preambleHash + '_fmt' : preambleHash);
         const auxCache = await getAuxCache(auxCacheKey);
 
         // Send compile request
         this.onProgress('compiling', 'Compiling...');
-        const compileId = crypto.randomUUID();
+        const compileId = String(++nextCompilerRequestId);
 
         return new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
@@ -903,18 +1017,14 @@ export class SiglumCompiler {
                 resolve: async (result) => {
                     clearTimeout(timeout);
 
-                    if (result.success) {
-                        // Create Uint8Array view - works for both SharedArrayBuffer and ArrayBuffer
-                        // Both are zero-copy views, just pointing to different backing memory
-                        const pdfData = result.pdfData ? new Uint8Array(result.pdfData) : null;
+                    if (result.success && result.pdfData) {
+                        // PDF comes back as a transferred (regular) ArrayBuffer
+                        const pdfData = Uint8Array.from(new Uint8Array(result.pdfData));
 
-                        // Cache the PDF (IndexedDB requires regular ArrayBuffer, not SharedArrayBuffer)
+                        // Cache the PDF
                         if (useCache && pdfData) {
-                            const docHash = hashDocument(source);
-                            const cacheBuffer = result.pdfDataIsShared
-                                ? result.pdfData.slice(0)  // Copy SharedArrayBuffer to regular ArrayBuffer
-                                : result.pdfData;          // Already regular ArrayBuffer
-                            await saveCachedPdf(docHash, engine, cacheBuffer);
+                            const docHash = hashDocument(JSON.stringify([this.runtimeKey, mainFile, source]));
+                            await saveCachedPdf(docHash, engine, result.pdfData);
                         }
 
                         // Cache aux files (use same key that includes format state)
@@ -925,19 +1035,23 @@ export class SiglumCompiler {
                         // Auto-generate format cache if no cached format was used
                         // Do this in background to not block the compile result
                         // Skip for xelatex - XeTeX can't dump formats with native fonts
-                        if (!cachedFormat && preamble && engine !== 'xelatex') {
+                        if (canUseFormat && !cachedFormat && preamble && engine !== 'xelatex') {
                             this.generateFormat(source, { engine }).then(async () => {
-                                // Populate memory cache from the newly generated format
+                                // Populate memory cache from the newly generated format,
+                                // including any captured preamble side-effect files so the
+                                // next compile restores them with the format.
                                 await ensureFmtCacheMount();
                                 const data = await fileSystem.readBinary('/' + getFmtPath(fmtKey)).catch(() => null);
-                                if (data) this._fmtMemCache = { key: fmtKey, data: new Uint8Array(data) };
+                                if (data) {
+                                    const sideEffectFiles = await this._loadFormatSideEffects(fmtKey);
+                                    this._fmtMemCache = { key: fmtKey, data: new Uint8Array(data), sideEffectFiles };
+                                }
                             }).catch(() => {}); // Silent fail for background task
                         }
 
                         resolve({
                             success: true,
                             pdf: pdfData,
-                            pdfIsShared: result.pdfDataIsShared || false, // Pass flag to consumer
                             syncTexData: result.syncTexData || null, // SyncTeX data for source/PDF synchronization
                             stats: result.stats,
                             log: result.log,
@@ -945,7 +1059,7 @@ export class SiglumCompiler {
                     } else {
                         resolve({
                             success: false,
-                            error: result.error,
+                            error: result.error || (result.success ? 'Compilation produced no PDF' : `TeX compilation failed (exit code ${result.exitCode ?? 'unknown'})`),
                             exitCode: result.exitCode,
                             log: result.log,
                         });
@@ -957,35 +1071,49 @@ export class SiglumCompiler {
                 },
             };
 
-            this.worker.postMessage({
-                type: 'compile',
-                id: compileId,
-                source,
-                engine,
-                options: {
-                    enableLazyFS: this.enableLazyFS,
-                    enableCtan: this.enableCtan,
-                    maxRetries: this.maxRetries,
-                    verbose: this.verbose,
-                },
-                bundleData,
-                ctanFiles,
-                cachedFormat,
-                cachedAuxFiles: auxCache?.files || null,
-                // Deferred bundles minus any that are eagerly loaded
-                deferredBundleNames: (this.bundleManager.bundleDeps?.deferred || [])
-                    .filter(b => !eagerBundles.includes(b)),
-            }, transferList);
+            try {
+                this.worker.postMessage({
+                    type: 'compile',
+                    id: compileId,
+                    source,
+                    engine,
+                    mainFile,
+                    options: {
+                        enableLazyFS: this.enableLazyFS,
+                        enableCtan: this.enableCtan,
+                        maxRetries: this.maxRetries,
+                        verbose: this.verbose,
+                    },
+                    bundleNames,         // Worker-direct: send names only
+                    bundlesUrl: this.bundlesUrl,  // Worker loads from OPFS/network
+                    ctanFiles,
+                    cachedFormat,
+                    cachedAuxFiles: auxCache?.files || null,
+                    // Deferred bundles minus any that are eagerly loaded
+                    deferredBundleNames: (this.bundleManager.bundleDeps?.deferred || [])
+                        .filter(b => !eagerBundles.includes(b)),
+                }, transferList);
+            } catch (e) {
+                this._log('Failed to post compile message to worker: ' + e.message);
+                reject(e);
+                return;
+            }
         });
     }
 
     /**
      * Pre-generate a format file for faster subsequent compilations.
      * @param {string} source - LaTeX source with preamble to cache
-     * @param {{engine?: string}} [options] - Options
+     * @param {{engine?: string, mainFile?: string, additionalFiles?: Object<string, string|Uint8Array>}} [options] - Options. Project dependencies disable format caching.
      * @returns {Promise<Uint8Array|null>} Format data or null if not supported
      */
     async generateFormat(source, options = {}) {
+        // The format key covers only the main preamble. Do not return or build a
+        // format that can become stale when a project dependency changes.
+        if (Object.keys(options.additionalFiles || {}).length > 0 || normalizeProjectPath(options.mainFile || 'document.tex').includes('/')) {
+            this._log('Format caching disabled for multi-file or nested projects');
+            return null;
+        }
         const engine = options.engine || 'pdflatex';
 
         // XeTeX can't dump formats with native fonts (fontspec)
@@ -1002,7 +1130,7 @@ export class SiglumCompiler {
 
         // Check cache - path is deterministic from fmtKey
         const preambleHash = hashPreamble(preamble);
-        const fmtKey = preambleHash + '_' + engine;
+        const fmtKey = this.runtimeKey + '_' + preambleHash + '_' + engine;
         const fmtPath = '/' + getFmtPath(fmtKey);
         await ensureFmtCacheMount();
         const existingFmt = await fileSystem.readBinary(fmtPath).catch(() => null);
@@ -1028,11 +1156,20 @@ export class SiglumCompiler {
             }
         }
 
-        const allBundles = [...new Set([...bundles, ...depBundles])];
-        const bundleData = await this.bundleManager.loadBundles(allBundles);
+        // Worker-direct bundle loading: send names only
+        const bundleNames = [...new Set([...bundles, ...depBundles])];
+        const transferList = [];
 
-        // Get CTAN files from memory cache
-        const ctanFiles = this.ctanFetcher.getCachedFiles();
+        // Get CTAN files from memory cache - copy for transfer
+        const ctanFilesRaw = this.ctanFetcher.getCachedFiles();
+        const ctanFiles = {};
+        for (const [path, data] of Object.entries(ctanFilesRaw)) {
+            if (data && data.buffer) {
+                const copy = data.buffer.slice(0);
+                ctanFiles[path] = new Uint8Array(copy);
+                transferList.push(copy);
+            }
+        }
 
         this._log('Generating format file...');
         this.onProgress('format', 'Generating format...');
@@ -1053,11 +1190,22 @@ export class SiglumCompiler {
                     if (result.success) {
                         const fmtData = new Uint8Array(result.formatData);
 
+                        // Files the preamble wrote during the dump run (observed by
+                        // the worker, not guessed) — persist alongside the format so
+                        // they can be restored whenever this format is reused.
+                        const sideEffects = result.sideEffectFiles || {};
+                        const sideEffectsB64 = {};
+                        for (const [name, buf] of Object.entries(sideEffects)) {
+                            sideEffectsB64[name] = bytesToBase64(new Uint8Array(buf));
+                        }
+
                         // Cache to filesystem, then resolve
-                        ensureFmtCacheMount().then(() => {
-                            return fileSystem.writeBinary(fmtPath, fmtData, { createParents: true });
+                        ensureFmtCacheMount().then(async () => {
+                            await fileSystem.writeBinary(fmtPath, fmtData, { createParents: true });
+                            await this._saveFormatSideEffects(fmtKey, sideEffectsB64);
                         }).then(() => {
-                            this._log('Format generated and cached');
+                            const n = Object.keys(sideEffectsB64).length;
+                            this._log(`Format generated and cached${n ? ` (+${n} preamble side-effect file(s))` : ''}`);
                             resolve(fmtData);
                         }).catch(e => {
                             // Cache failed but format is still valid
@@ -1076,22 +1224,57 @@ export class SiglumCompiler {
 
             this.worker.postMessage({
                 type: 'generate-format',
-                id: crypto.randomUUID(),
+                id: String(++nextCompilerRequestId),
                 preambleContent: preamble,
                 engine,
                 manifest: this.bundleManager.fileManifest,
                 packageMapData: this.bundleManager.packageMap,
                 bundleDepsData: this.bundleManager.bundleDeps,
                 bundleRegistryData: [...this.bundleManager.bundleRegistry],
-                bundleData,
+                bundleNames,           // Worker-direct: send names only
+                bundlesUrl: this.bundlesUrl,  // Worker loads from OPFS/network
                 ctanFiles,
                 maxRetries: this.maxRetries,
-            });
+            }, transferList);
         }).finally(() => {
             this.formatGenerationPromise = null;
         });
 
         return this.formatGenerationPromise;
+    }
+
+    /**
+     * Persist the preamble side-effect files captured during format generation,
+     * next to the cached format. Stored as a JSON map of filename → base64.
+     * @param {string} fmtKey
+     * @param {Object<string,string>} sideEffectsB64
+     */
+    async _saveFormatSideEffects(fmtKey, sideEffectsB64) {
+        const path = '/' + getFmtPath(fmtKey) + '.side.json';
+        try {
+            if (Object.keys(sideEffectsB64).length === 0) return; // nothing to store
+            const json = new TextEncoder().encode(JSON.stringify(sideEffectsB64));
+            await fileSystem.writeBinary(path, json, { createParents: true });
+        } catch (e) {
+            this._log('Warning: failed to persist format side-effect files: ' + e.message);
+        }
+    }
+
+    /**
+     * Load the preamble side-effect files persisted next to a cached format.
+     * @param {string} fmtKey
+     * @returns {Promise<Object<string,string>|null>} filename → base64, or null
+     */
+    async _loadFormatSideEffects(fmtKey) {
+        const path = '/' + getFmtPath(fmtKey) + '.side.json';
+        try {
+            const data = await fileSystem.readBinary(path).catch(() => null);
+            if (!data || data.byteLength === 0) return null;
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            return JSON.parse(new TextDecoder().decode(bytes));
+        } catch {
+            return null;
+        }
     }
 
     /**
@@ -1103,6 +1286,15 @@ export class SiglumCompiler {
         await clearCTANCache();
         this.ctanFetcher.clearMountedFiles();
         this._log('Cache cleared');
+    }
+
+    /**
+     * Clear bundle memory cache to free RAM.
+     * Bundles are still cached on disk (OPFS) and will reload quickly.
+     * Call this after compile to reduce main thread memory usage.
+     */
+    clearBundleMemoryCache() {
+        this.bundleManager.clearCache();
     }
 
     /**
@@ -1129,6 +1321,8 @@ export class SiglumCompiler {
             this.worker = null;
             this.workerReady = false;
         }
+        // Clear the memoized init so a subsequent init() re-runs from scratch.
+        this._initPromise = null;
     }
 
     /**

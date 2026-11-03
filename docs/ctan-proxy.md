@@ -57,6 +57,24 @@ CTAN is only contacted once per package, ever. Subsequent requests are served fr
 
 ## API
 
+### `GET /api/texlive/:package[?tlYear=YYYY]`
+
+Return a raw prebuilt TeX Live `.tar.xz` archive with `Content-Type: application/x-xz`.
+The engine decompresses it in the browser. This differs from `/api/fetch/`, which
+extracts and normalizes files on the server and returns JSON.
+
+Without a year, the proxy first looks for `package.r*.tar.xz` in
+`CTAN_TEXLIVE_ARCHIVE_DIR` (default: `busytex/source/texmfrepo/archive` in the repository).
+If no local archive exists, it fetches the pinned TeX Live 2025 archive. An explicit
+`tlYear` skips the local archive; supported fallback years are 2025, 2024, and 2023.
+Missing archives return 404, invalid names/years return 400, and upstream failures
+return 502. Responses include the same CORS headers as the other API routes.
+
+The raw route is an optimization for already-built package files, not a required
+alternate JSON API. The engine can fall back to `/api/fetch/` when the archive is
+unavailable. Both the standalone proxy and the development server implement the
+engine's `/api/texlive/`, `/api/ctan-pkg/`, and `/api/fetch/` routes.
+
 ### `GET /api/fetch/:package`
 
 Download and extract a package. Returns JSON with file contents.
@@ -81,12 +99,12 @@ Response:
 }
 ```
 
-### `GET /api/pkg/:package`
+### `GET /api/ctan-pkg/:package` (alias: `/api/pkg/:package`)
 
-Get package metadata from CTAN (cached).
+Get package metadata from CTAN (cached). Both routes return the same JSON. The engine uses `/api/ctan-pkg/`; `/api/pkg/` remains available for existing clients.
 
 ```bash
-curl http://localhost:8081/api/pkg/enumitem
+curl http://localhost:8081/api/ctan-pkg/enumitem
 ```
 
 ### `GET /api/deps/:package`

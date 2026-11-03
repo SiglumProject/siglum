@@ -1,0 +1,58 @@
+name: Release (npm publish)
+
+# Publishing the engine to npm is the only release step this repo owns in CI.
+#
+#   - Runtime assets (busytex.wasm/.js + bundles) are uploaded to Cloudflare R2
+#     from the maintainer's working tree via `scripts/release.sh` (the WASM and
+#     bundle artifacts are gitignored, so CI has nothing to upload).
+#   - The Cloudflare Worker / Pages that *serve* those assets live in their own
+#     repo (the host adapter is intentionally not tracked here).
+#
+# `scripts/release.sh vX.Y.Z` uploads the assets, then creates the GitHub
+# Release whose tag push triggers this workflow.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Guard: the pushed tag must match the version in package.json, otherwise
+      # we would publish a version that disagrees with its own tag.
+      - name: Verify tag matches package.json version
+        run: |
+          pkg_version=$(node -p "require('./package.json').version")
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$pkg_version" != "$tag_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME (=$tag_version) != package.json version $pkg_version"
+            exit 1
+          fi
+          echo "Publishing @siglum/engine@$pkg_version"
+
+      # The committed dependency on @siglum/filesystem is a published semver
+      # range, so a plain install resolves it from npm with no sibling checkout.
+      - name: Install dependencies
+        run: |
+          # Local checkouts use a sibling override; release installation must use
+          # the published dependency. Publish filesystem 0.3.0 first.
+          npm pkg delete overrides
+          npm install --no-audit --no-fund
+
+      # prepublishOnly runs `tsc` to emit types/ into the published tarball.
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

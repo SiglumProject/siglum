@@ -1,0 +1,13 @@
+{
+  "name": "acrotex",
+  "schema": 1,
+  "provider": "ins",
+  "files": {
+    "/texlive/texmf-dist/tex/latex/acrotex/insdljs.sty": {
+      "path": "/texlive/texmf-dist/tex/latex/acrotex",
+      "content": "% Synthetic loader fixture; not the acrotex distribution.\n"
+    }
+  },
+  "totalFiles": 1,
+  "dependencies": []
+}

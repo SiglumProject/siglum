@@ -1,3 +1,4 @@
+import { TEXLIVE_YEAR } from './texlive.js';
 /**
  * @module @siglum/engine/ctan
  * CTAN package fetching and caching.
@@ -23,25 +24,37 @@ function setXzwasmUrl(url) {
     xzwasmUrl = url;
 }
 
+let xzLoading = null;
 async function loadXzwasm() {
     if (XzReadableStream) return XzReadableStream;
-
-    // Load UMD module via script tag
-    return new Promise((resolve, reject) => {
-        if (self.xzwasm) {
-            XzReadableStream = self.xzwasm.XzReadableStream;
-            resolve(XzReadableStream);
-            return;
-        }
+    if (typeof self.xzwasm?.XzReadableStream === 'function') return XzReadableStream = self.xzwasm.XzReadableStream;
+    if (xzLoading) return xzLoading;
+    xzLoading = new Promise((resolve, reject) => {
         const script = document.createElement('script');
+        let timer;
+        const finish = error => {
+            clearTimeout(timer);
+            script.onload = script.onerror = null;
+            script.remove();
+            if (error) reject(error);
+            else resolve(XzReadableStream);
+        };
+        script.crossOrigin = 'anonymous';
         script.src = xzwasmUrl;
         script.onload = () => {
+            if (typeof self.xzwasm?.XzReadableStream !== 'function') {
+                finish(new Error('Invalid XZ decompressor script at ' + xzwasmUrl));
+                return;
+            }
             XzReadableStream = self.xzwasm.XzReadableStream;
-            resolve(XzReadableStream);
+            finish();
         };
-        script.onerror = () => reject(new Error('Failed to load xzwasm from ' + xzwasmUrl));
+        script.onerror = () => finish(new Error('Failed to load xzwasm from ' + xzwasmUrl));
+        timer = setTimeout(() => finish(new Error('Timed out loading xzwasm from ' + xzwasmUrl)), 30000);
         document.head.appendChild(script);
     });
+    try { return await xzLoading; }
+    finally { xzLoading = null; }
 }
 
 // Parse TAR archive into Map<path, Uint8Array>
@@ -99,7 +112,7 @@ function parseTar(tarData) {
     return files;
 }
 
-// Note: We use TexLive 2025 for ALL packages for version compatibility
+// Note: We use TexLive 2026 for ALL packages for version compatibility
 
 // Dynamic package name cache (populated by CTAN API lookups)
 const packageNameCache = new Map();
@@ -107,6 +120,21 @@ const packageNameCache = new Map();
 // File-to-package index (loaded from server on first use)
 let fileToPackageIndex = null;
 let fileToPackageLoading = null;
+
+// Font-name-to-package index (loaded from server on first use)
+let fontNameIndex = null;
+let fontNameLoading = null;
+
+/**
+ * Normalize a font family name the way the build-time index keys are normalized:
+ * lowercase, keep only [a-z0-9]. fontspec/fontconfig compare loosely, so
+ * "TeX Gyre Chorus" and "texgyrechorus" must collapse to the same key.
+ * @param {string} name - Font family name
+ * @returns {string} Normalized key
+ */
+export function normalizeFontName(name) {
+    return name.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
 
 /**
  * @typedef {Object} CTANFetcherOptions
@@ -181,6 +209,66 @@ export class CTANFetcher {
     async lookupPackageForFile(fileName) {
         const index = await this.loadFileToPackageIndex();
         return index[fileName] || null;
+    }
+
+    /**
+     * Load font-name-to-package index (maps normalized family name → package).
+     * @returns {Promise<Object<string, string>>} Index mapping font keys to packages
+     */
+    async loadFontNameIndex() {
+        if (fontNameIndex) return fontNameIndex;
+        if (fontNameLoading) return fontNameLoading;
+
+        fontNameLoading = (async () => {
+            try {
+                const response = await fetch(`${this.bundlesUrl}/font-name-to-package.json`);
+                if (response.ok) {
+                    fontNameIndex = await response.json();
+                    this.onLog(`Loaded font-name index: ${Object.keys(fontNameIndex).length} entries`);
+                } else {
+                    this.onLog(`Failed to load font-name index: ${response.status}`);
+                    fontNameIndex = {};
+                }
+            } catch (e) {
+                this.onLog(`Error loading font-name index: ${e.message}`);
+                fontNameIndex = {};
+            }
+            return fontNameIndex;
+        })();
+
+        return fontNameLoading;
+    }
+
+    /**
+     * Look up the TeX Live package that provides a font family.
+     * @param {string} fontName - Font family name (e.g., "EB Garamond")
+     * @returns {Promise<string|null>} Package name or null
+     */
+    async lookupPackageForFontName(fontName) {
+        const index = await this.loadFontNameIndex();
+        return index[normalizeFontName(fontName)] || null;
+    }
+
+    /**
+     * Resolve a list of font family names to the set of packages that provide
+     * them. Unknown names are returned separately so callers can report them.
+     * @param {string[]} fontNames - Font family names from the document
+     * @returns {Promise<{packages: string[], unresolved: string[]}>}
+     */
+    async resolveFontPackages(fontNames) {
+        const index = await this.loadFontNameIndex();
+        const packages = new Set();
+        const unresolved = [];
+        for (const name of fontNames) {
+            const pkg = index[normalizeFontName(name)];
+            if (pkg) {
+                packages.add(pkg);
+            } else {
+                unresolved.push(name);
+                this.onLog(`[FONT] No package found for font "${name}" (will rely on bundled/system fonts)`);
+            }
+        }
+        return { packages: [...packages], unresolved };
     }
 
     /**
@@ -297,7 +385,7 @@ export class CTANFetcher {
         }
 
         this.onLog(`[FETCH] ${packageName}: not in cache, fetching from TexLive${yearLabel}...`);
-        // Try TexLive first for version compatibility with our LaTeX 2022-11-01
+        // Try TexLive first for version compatibility with our TeX Live 2026 kernel
         // (CTAN has latest versions that may require newer LaTeX)
         return this.fetchTexLivePackage(packageName, tlYear);
     }
@@ -325,19 +413,13 @@ export class CTANFetcher {
     }
 
     // Fetch from TexLive archive
-    // tlYear: optional year (2025, 2024, 2023) - if specified, goes directly to CTAN proxy
+    // tlYear: optional year (2026, 2025, 2024, 2023) - if specified, goes directly to CTAN proxy
     async fetchTexLivePackage(packageName, tlYear = null) {
         const yearLabel = tlYear ? ` (TL${tlYear})` : '';
 
-        // If specific TL year requested, go directly to CTAN proxy (skip local archive)
-        // This is used for version fallback when kernel incompatibility is detected
-        if (tlYear) {
-            this.onLog(`[TEXLIVE] Fetching ${packageName} from TL${tlYear} via CTAN proxy...`);
-            return this.fetchCtanPackage(packageName, tlYear);
-        }
-
+        const yearSuffix = tlYear ? `?tlYear=${tlYear}` : '';
         // Check persistent cache (same cache as CTAN)
-        const cached = await this.loadPackageFromCache(packageName);
+        const cached = tlYear ? null : await this.loadPackageFromCache(packageName);
         if (cached) {
             if (cached.notFound) {
                 this.onLog(`Package ${packageName} marked as not found in cache`);
@@ -348,14 +430,14 @@ export class CTANFetcher {
             return cached;
         }
 
-        this.onLog(`[TEXLIVE] Fetching ${packageName} from TexLive 2025 via ${this.proxyUrl}...`);
+        this.onLog(`[TEXLIVE] Fetching ${packageName} from TexLive ${tlYear || TEXLIVE_YEAR} via ${this.proxyUrl}...`);
 
         let response = null;
         let texlivePkg = packageName;
 
         // Try direct package name first
         try {
-            const url = `${this.proxyUrl}/api/texlive/${packageName}`;
+            const url = `${this.proxyUrl}/api/texlive/${packageName}${yearSuffix}`;
             this.onLog(`[TEXLIVE] Trying URL: ${url}`);
             response = await fetch(url);
             this.onLog(`[TEXLIVE] Response status: ${response?.status}`);
@@ -374,7 +456,7 @@ export class CTANFetcher {
                     this.onLog(`${fileName} is in package "${realPkg}", fetching...`);
                     texlivePkg = realPkg;
                     try {
-                        response = await fetch(`${this.proxyUrl}/api/texlive/${texlivePkg}`);
+                        response = await fetch(`${this.proxyUrl}/api/texlive/${texlivePkg}${yearSuffix}`);
                         if (response?.ok) break;
                     } catch (e) {
                         response = null;
@@ -391,7 +473,7 @@ export class CTANFetcher {
                 this.onLog(`${packageName} is in ${realName}, fetching...`);
                 texlivePkg = realName;
                 try {
-                    response = await fetch(`${this.proxyUrl}/api/texlive/${texlivePkg}`);
+                    response = await fetch(`${this.proxyUrl}/api/texlive/${texlivePkg}${yearSuffix}`);
                 } catch (e) {
                     response = null;
                 }
@@ -401,8 +483,8 @@ export class CTANFetcher {
         try {
             if (!response || !response.ok) {
                 this.onLog(`[TEXLIVE] FAILED for ${packageName} (status=${response?.status}), falling back to CTAN...`);
-                // Fall back to CTAN for packages not in TexLive 2025
-                return this.fetchCtanPackage(packageName);
+                // Fall back to CTAN for packages not in TexLive 2026
+                return tlYear ? null : this.fetchCtanPackage(packageName);
             }
             this.onLog(`[TEXLIVE] SUCCESS for ${packageName}, extracting XZ archive...`);
 
@@ -457,28 +539,30 @@ export class CTANFetcher {
             }
 
             // Process files (similar to CTAN fetch)
-            const texExtensions = ['.sty', '.cls', '.def', '.cfg', '.tex', '.fd', '.clo', '.ltx'];
-            const fontExtensions = ['.pfb', '.pfm', '.afm', '.tfm', '.vf', '.map', '.enc'];
             const files = new Map();
             const cacheWrites = [];
 
             await ensureTexliveMounted();
 
             for (const [tarPath, content] of tarFiles) {
-                // Skip docs and source
+                // Skip docs and source directories
                 if (tarPath.includes('/doc/') || tarPath.startsWith('doc/')) continue;
                 if (tarPath.includes('/source/') || tarPath.startsWith('source/')) continue;
 
                 const ext = tarPath.substring(tarPath.lastIndexOf('.')).toLowerCase();
                 const fileName = tarPath.split('/').pop();
 
-                if (texExtensions.includes(ext) || fontExtensions.includes(ext)) {
+                // Include all non-doc/source files — packages may contain
+                // arbitrary data files (.csv, .lua, .html, etc.)
+                if (fileName && ext.startsWith('.')) {
                     // Map to texlive path structure
                     // Note: tar paths may or may not have leading slash
                     let targetPath;
                     if (tarPath.includes('/texmf-dist/') || tarPath.includes('texmf-dist/')) {
                         const idx = tarPath.indexOf('texmf-dist/');
                         targetPath = '/texlive/' + tarPath.substring(idx);
+                    } else if (tarPath.startsWith('bibtex/') || tarPath.includes('/bibtex/')) {
+                        targetPath = '/texlive/texmf-dist/' + tarPath.slice(tarPath.indexOf('bibtex/'));
                     } else if (tarPath.includes('/tex/') || tarPath.startsWith('tex/')) {
                         // Handle both /tex/ and tex/ (no leading slash)
                         const idx = tarPath.indexOf('tex/');
@@ -494,7 +578,7 @@ export class CTANFetcher {
                     files.set(targetPath, fileData);
                     this.mountedFiles.add(targetPath);
                     this.fileCache.set(targetPath, fileData);
-                    cacheWrites.push(fileSystem.writeBinary(targetPath, fileData, { createParents: true }).catch(() => {}));
+                    if (!tlYear) cacheWrites.push(fileSystem.writeBinary(targetPath, fileData, { createParents: true }).catch(() => {}));
                 }
             }
 
@@ -505,7 +589,7 @@ export class CTANFetcher {
 
             if (files.size === 0) {
                 this.onLog(`No TeX files found in ${packageName}, marking as not found`);
-                await savePackageMeta(packageName, {
+                if (!tlYear) await savePackageMeta(packageName, {
                     notFound: true,
                     cacheVersion: CTAN_CACHE_VERSION,
                 });
@@ -518,12 +602,12 @@ export class CTANFetcher {
                 files: [...files.keys()],
                 dependencies: [],
                 cacheVersion: CTAN_CACHE_VERSION,
-                source: 'texlive-2025',
+                source: `texlive-${tlYear || TEXLIVE_YEAR}`,
             };
-            await savePackageMeta(packageName, cacheEntry);
+            if (!tlYear) await savePackageMeta(packageName, cacheEntry);
 
             // Also cache under the resolved name if different (avoids duplicate fetches)
-            if (texlivePkg !== packageName) {
+            if (!tlYear && texlivePkg !== packageName) {
                 await savePackageMeta(texlivePkg, cacheEntry);
                 this.onLog(`Cached under both "${packageName}" and "${texlivePkg}"`);
             }
@@ -538,7 +622,7 @@ export class CTANFetcher {
             this.onLog(`[TEXLIVE] EXTRACTION ERROR for ${packageName}: ${e.message}`);
             this.onLog(`[TEXLIVE] Stack: ${e.stack?.split('\n').slice(0, 3).join(' | ')}`);
             this.onLog(`[TEXLIVE] Falling back to CTAN (WARNING: may have older version)...`);
-            return this.fetchCtanPackage(packageName);
+            return tlYear ? null : this.fetchCtanPackage(packageName);
         }
     }
 
@@ -550,7 +634,7 @@ export class CTANFetcher {
 
         if (packageName === 'enumitem' && !tlYear) {
             this.onLog(`[CTAN-FALLBACK] *** WARNING: enumitem from CTAN may be v3.10 which has known bugs! ***`);
-            this.onLog(`[CTAN-FALLBACK] *** TexLive 2025 should be used for enumitem v3.11 ***`);
+            this.onLog(`[CTAN-FALLBACK] *** TexLive 2026 should be used for enumitem v3.11 ***`);
         }
 
         let response = null;
@@ -600,6 +684,11 @@ export class CTANFetcher {
                     cacheVersion: CTAN_CACHE_VERSION,
                 });
                 return null;
+            }
+
+            // Production may resolve a file/font name to a different TeX Live archive.
+            if (data.useTexLive && typeof data.texlivePackage === 'string') {
+                return this.fetchTexLivePackage(data.texlivePackage, tlYear);
             }
 
             // Process and cache files
@@ -702,56 +791,80 @@ export class CTANFetcher {
         const failed = [];
         const skipped = [];
 
-        // Deduplicate
+        // Deduplicate requested names
         const uniquePackages = [...new Set(packageNames)];
-        const toFetch = [];
 
-        // Check cache first - use memory cache to avoid filesystem reads on every recompile
+        // Resolve each requested package to its CONTAINER package up front. Many
+        // sub-packages share one TeX Live container — e.g. tikz, pgfcore, pgfsys,
+        // pgfkeys, pgfmath, pgffor … all live in "pgf". Without this, each name
+        // independently misses the cache and re-downloads + re-decompresses the
+        // same multi-MB archive (the bug: pgf fetched ~13× per tikz compile).
+        // fetchPackage() would redirect each name to its container anyway, so
+        // collapsing them here is behaviour-preserving but fetches once.
+        const membersOf = new Map();  // container -> [requestedName, ...]
         for (const pkgName of uniquePackages) {
-            // Skip filesystem check if package already loaded into memory this session
-            if (this.loadedPackages.has(pkgName)) {
-                skipped.push(pkgName);
+            let container = pkgName;
+            if (!options.tlYear) {
+                for (const ext of LATEX_FILE_EXTENSIONS) {
+                    const realPkg = await this.lookupPackageForFile(pkgName + ext);
+                    if (realPkg && realPkg !== pkgName) { container = realPkg; break; }
+                }
+            }
+            if (!membersOf.has(container)) membersOf.set(container, []);
+            membersOf.get(container).push(pkgName);
+        }
+
+        const toFetch = [];  // containers needing a network fetch
+
+        // Check cache first (keyed by container) to avoid filesystem reads on recompile.
+        for (const [container, members] of membersOf) {
+            // Already loaded into memory this session (container or any member)?
+            if (this.loadedPackages.has(container) || members.some((m) => this.loadedPackages.has(m))) {
+                this.loadedPackages.add(container);
+                skipped.push(...members);
                 continue;
             }
-
-            const cached = await this.loadPackageFromCache(pkgName);
+            const cached = await this.loadPackageFromCache(container);
             if (cached && cached.files && !cached.notFound) {
-                // Already cached and has files - populate memory cache
                 for (const [path, content] of cached.files) {
                     this.fileCache.set(path, content);
                 }
-                this.loadedPackages.add(pkgName);
-                skipped.push(pkgName);
+                this.loadedPackages.add(container);
+                for (const m of members) this.loadedPackages.add(m);
+                skipped.push(...members);
             } else {
-                toFetch.push(pkgName);
+                toFetch.push(container);
             }
         }
 
         if (toFetch.length === 0) {
+            this.onLog(`[PRE-FETCH] Done: ${fetched.length} fetched, ${failed.length} failed, ${skipped.length} cached`);
             return { fetched, failed, skipped };
         }
 
-        this.onLog(`[PRE-FETCH] Batch fetching ${toFetch.length} packages...`);
+        this.onLog(`[PRE-FETCH] Batch fetching ${toFetch.length} container package${toFetch.length === 1 ? '' : 's'} (from ${uniquePackages.length} requested)...`);
 
         // Fetch in chunks with concurrency limit
         for (let i = 0; i < toFetch.length; i += concurrency) {
             const chunk = toFetch.slice(i, i + concurrency);
             const results = await Promise.allSettled(
-                chunk.map(async (pkgName) => {
-                    const result = await this.fetchPackage(pkgName);
-                    return { pkgName, result };
+                chunk.map(async (container) => {
+                    const result = await this.fetchPackage(container);
+                    return { container, result };
                 })
             );
 
             for (const res of results) {
+                const container = res.status === 'fulfilled' ? res.value.container : null;
+                const members = (container && membersOf.get(container)) || (container ? [container] : []);
                 if (res.status === 'fulfilled' && res.value.result) {
-                    fetched.push(res.value.pkgName);
-                    this.loadedPackages.add(res.value.pkgName);
+                    this.loadedPackages.add(container);
+                    for (const m of members) {
+                        this.loadedPackages.add(m);
+                        fetched.push(m);
+                    }
                 } else {
-                    const pkgName = res.status === 'fulfilled'
-                        ? res.value.pkgName
-                        : 'unknown';
-                    failed.push(pkgName);
+                    failed.push(...(members.length ? members : ['unknown']));
                 }
             }
         }

@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@siglum/engine)](https://www.npmjs.com/package/@siglum/engine)
 [![license](https://img.shields.io/npm/l/@siglum/engine)](https://github.com/SiglumProject/siglum-engine/blob/main/LICENSE)
 
-A browser-based LaTeX compiler. TeX Live 2025 running in WebAssembly, with lazy bundle loading and on-demand package fetching.
+A browser-based LaTeX compiler. TeX Live 2026 running in WebAssembly, with lazy bundle loading and on-demand package fetching.
 
 On initialization, the engine downloads:
 - **WASM binary** (~29MB): the TeX engine
@@ -20,77 +20,47 @@ The full bundle is ~195MB to deploy, but clients only download what their docume
 
 ## Quick Start (Local Demo)
 
-Clone the repo, download the WASM engine and pre-built bundles from [cdn.siglum.org](https://cdn.siglum.org) (or [GitHub Releases](https://github.com/SiglumProject/siglum-engine/releases)), then start the dev server.
+This checkout is the TeX Live 2026 release candidate. Runtime binaries are
+separate from the npm package; do not mix assets from different releases.
 
-We use [Bun](https://bun.sh) for development, it's faster than Node.js and runs TypeScript directly. Install it with:
-
-```bash
-curl -fsSL https://bun.sh/install | bash
-```
-
-Then:
+For development, place `siglum-engine` and `siglum-filesystem` in sibling
+directories. The filesystem override in package.json is for this checkout only;
+package consumers use the published semver dependency.
 
 ```bash
-git clone git@github.com:SiglumProject/siglum-engine.git
-cd siglum-engine
-bun install
-
-# Download WASM and bundles
-mkdir -p busytex/build/wasm
-curl -Lo busytex/build/wasm/busytex.wasm https://cdn.siglum.org/tl2025/busytex.wasm
-curl -Lo busytex/build/wasm/busytex.js https://cdn.siglum.org/tl2025/busytex.js
-curl -LO https://cdn.siglum.org/tl2025/siglum-bundles-v0.1.0.tar.gz
-tar -xzf siglum-bundles-v0.1.0.tar.gz -C packages/
-
-# Start dev server
-bun serve-local.ts
+bun install --frozen-lockfile
+bun run --cwd ../siglum-filesystem build
+# Restore the locally prepared runtime, or build it using docs/building.md.
+bun run prepare:runtime
+bun run dev
 ```
 
-Open http://localhost:8787 to try the playground.
-
-For disk-persistent package caching, run the CTAN proxy in a separate terminal:
-
-```bash
-bun packages/ctan-proxy.ts
-```
+Open http://localhost:8787. The local server includes package proxy routes.
+The four-repository UI workspace can prepare and test all dependencies together.
 
 ## Installation
 
-```bash
-npm install @siglum/engine
-```
+The candidate versions are `@siglum/filesystem@0.3.0` and
+`@siglum/engine@0.2.0`. Publish filesystem first. These versions and their runtime
+must be published before consumers can install them from npm.
 
-### Download Runtime Assets
-
-Download WASM and bundles from [cdn.siglum.org](https://cdn.siglum.org) or [GitHub Releases](https://github.com/SiglumProject/siglum-engine/releases/tag/v0.1.0):
-
-```bash
-curl -LO https://cdn.siglum.org/tl2025/busytex.wasm
-curl -LO https://cdn.siglum.org/tl2025/busytex.js
-curl -LO https://cdn.siglum.org/tl2025/siglum-bundles-v0.1.0.tar.gz
-
-# Extract to your public directory
-tar -xzf siglum-bundles-v0.1.0.tar.gz -C public/
-mv busytex.wasm busytex.js public/
-```
-
-Then configure:
+After publication, download `siglum-runtime-v0.2.0.tar.gz` from the matching
+GitHub release, extract it, and run `scripts/verify-runtime.mjs <directory>`.
+The archive contains `runtime.json`, `wasm/`, bundle files, and `normalized/`.
+Host all of them together under `/releases/<releaseId>/`. The Siglum Cloudflare
+adapter additionally maps `bundles/` URLs to the bundle files in that directory.
 
 ```javascript
 import { SiglumCompiler } from '@siglum/engine';
+import workerUrl from '@siglum/engine/worker?url'; // Vite example
 
+const base = 'https://your-api.example/releases/<releaseId>';
 const compiler = new SiglumCompiler({
-    bundlesUrl: '/bundles',
-    wasmUrl: '/busytex.wasm',
-});
-```
-
-Or use the CDN directly (no self-hosting required):
-
-```javascript
-const compiler = new SiglumCompiler({
-    bundlesUrl: 'https://cdn.siglum.org/tl2025/bundles',
-    wasmUrl: 'https://cdn.siglum.org/tl2025/busytex.wasm',
+    workerUrl,
+    wasmUrl: `${base}/wasm/busytex.wasm`,
+    bundlesUrl: `${base}/bundles`,
+    ctanProxyUrl: base,
+    xzwasmUrl: `${base}/xzwasm.js`,
 });
 ```
 
@@ -218,6 +188,72 @@ const result = await compiler.compile(source, {
 // result.error    — error message (if failed)
 ```
 
+Local `.sty` and `.cls` files are scanned for dependencies and satisfy matching local package/class requests without a CTAN prefetch. Multi-file and nested projects compile without format caching so edits to a local dependency cannot reuse a stale format. Explicit `generateFormat` calls with `additionalFiles` or a nested `mainFile` return `null`.
+
+### Project files and relative paths
+
+`additionalFiles` keys are paths from the **virtual project root**. `mainFile`
+identifies the main source within that root. TeX runs in the main file's directory,
+so `\input`, `\includegraphics`, and other relative references behave like a local
+compilation launched from that directory. The `source` argument supplies the main
+file's contents; do not duplicate it in `additionalFiles`.
+
+For this project:
+
+```text
+main.tex
+logo.jpeg
+figures/plot.pdf
+revision/main.tex
+revision/figures/plot.pdf
+```
+
+Compile the revision with:
+
+```javascript
+const result = await compiler.compile(revisionSource, {
+    mainFile: 'revision/main.tex',
+    additionalFiles: {
+        'logo.jpeg': logoBytes,
+        'figures/plot.pdf': originalPlotBytes,
+        'revision/figures/plot.pdf': revisedPlotBytes,
+    },
+});
+```
+
+Inside `revisionSource`, `\includegraphics{../logo.jpeg}` and
+`\includegraphics{../figures/plot.pdf}` use the root assets;
+`\includegraphics{figures/plot.pdf}` uses the revision asset. The same rule applies
+to `\input{../shared}` and nested chapters. Keep map keys rooted at the project;
+`../logo.jpeg` is a TeX reference, not an `additionalFiles` key that escapes the root.
+A leading `/` on a map key is accepted as a virtual-root alias. No host filesystem
+is exposed. Without `mainFile`, the source is `document.tex` at the virtual root.
+
+The filename also controls `\jobname`, PDF/auxiliary filenames, SyncTeX references,
+and diagnostics. Projects with additional files compile afresh instead of reusing
+a PDF cache keyed only by the main source. Nested documents and projects with local
+dependencies skip the precompiled-preamble cache because those dependencies can change.
+
+### Results and errors in TypeScript
+
+With TypeScript 5.7 or newer, `CompileResult` narrows on `success`. A successful
+result always contains an `ArrayBuffer`-backed PDF; no non-null assertion or
+`BlobPart` cast is needed:
+
+```typescript
+const result = await compiler.compile(source, { mainFile: 'my.tex' });
+if (result.success) {
+    const blob = new Blob([result.pdf], { type: 'application/pdf' });
+} else {
+    console.error(result.error); // e.g. /my.tex:8: Undefined control sequence.
+    console.error(result.log);   // original TeX log, including context
+}
+```
+
+Undefined user commands remain compilation errors. The engine does not generate
+empty replacement commands to make broken source compile. Retries remain available
+when a missing package/bundle can be loaded or a known package-version fallback applies.
+
 ### `compiler.clearCache()`
 
 Clear all cached packages and compiled PDFs.
@@ -295,38 +331,48 @@ The `postinstall` script runs automatically on `npm install`, keeping the worker
 
 Use `engine: 'auto'` to auto-detect based on document content.
 
+BibTeX runs automatically when the document requests a bibliography, followed
+by two TeX passes. Project `.bib` files and nested included chapters are supported.
+Bibliography errors fail the compile instead of returning an unresolved PDF as
+success. Biber is not bundled: use `biblatex` with `backend=bibtex` or provide a
+prebuilt `.bbl`. This release does not claim automatic Biber support.
+
 ## Hosting / Production
 
-Download assets from [cdn.siglum.org](https://cdn.siglum.org) or [GitHub Releases](https://github.com/SiglumProject/siglum-engine/releases/tag/v0.1.0):
+The canonical Cloudflare adapter is tracked in `siglum-web/worker`; the local
+`cloudflare/` directory in this repository is historical and is not deployed by
+this release procedure.
 
-| Asset | Size | Description |
-|-------|------|-------------|
-| `busytex.wasm` | 29 MB | WebAssembly TeX engine |
-| `busytex.js` | 292 KB | Emscripten glue code |
-| `siglum-bundles-v0.1.0.tar.gz` | ~195 MB | LaTeX packages & fonts |
-
-Serve with these headers (required for SharedArrayBuffer):
-
-```
-Cross-Origin-Opener-Policy: same-origin
-Cross-Origin-Embedder-Policy: require-corp
-Access-Control-Allow-Origin: *
-Cross-Origin-Resource-Policy: cross-origin
+```bash
+bun run stage:runtime
+# Prints the immutable release ID and its local directory.
+node scripts/verify-runtime.mjs .local-release/<releaseId>
+DRY_RUN=1 bash scripts/release.sh 0.2.0
 ```
 
-Expected structure after extracting:
+Staging validates TeX Live 2026 WASM banners, bundle coverage and file ranges,
+then hashes every deployed byte. This includes prebuilt packages and raw bundles
+used for HTTP Range requests. Browser bundle, format and document caches are
+namespaced by runtime ID. Older unversioned caches are not reused.
 
+After reviewing and pushing the commits, publish filesystem first, deploy the
+tracked API adapter, then run `scripts/release.sh 0.2.0` to upload immutable
+assets and create the GitHub release. The tag workflow publishes the engine npm
+package. Verify the remote runtime before deploying a UI that references it:
+
+```bash
+node scripts/verify-runtime.mjs https://packages.siglum.org/releases/<releaseId>
 ```
-your-server.com/
-├── busytex.wasm
-├── busytex.js
-└── bundles/
-    ├── bundles.json
-    ├── file-manifest.json
-    ├── file-to-package.json
-    ├── package-deps.json
-    └── *.data.gz (54 bundle files)
-```
+
+The UI must set both `VITE_API_BASE=https://packages.siglum.org` and
+`VITE_ENGINE_RELEASE=<releaseId>`. Keep old release directories available for
+older tabs and rollback. R2 uploads must never overwrite unversioned files as a
+substitute for staging a new release.
+
+Serve the app with COOP `same-origin` and COEP `require-corp` for the faster
+SharedArrayBuffer path. Cross-origin runtime responses need CORS headers. The
+compiler also supports browsers without SharedArrayBuffer, including HTTP LAN
+previews, by loading complete bundles.
 
 ### CTAN Proxy
 
@@ -336,14 +382,17 @@ The CTAN proxy fetches missing LaTeX packages on-demand:
 bun packages/ctan-proxy.ts
 ```
 
-Packages are cached permanently. The proxy tries TexLive 2025 archives first, then falls back to CTAN mirrors.
+The proxy defaults to TeX Live 2026. It uses current tlnet only while its 2026
+marker is present, then uses the historic 2026 archive. Explicit compatibility
+requests for 2025, 2024 or 2023 use separate archive URLs and caches. They never
+silently fall through to current CTAN. Default requests can use CTAN fallback.
 
 For configuration and deployment options, see **[docs/ctan-proxy.md](docs/ctan-proxy.md)**.
 
 ## Browser Requirements
 
 - Modern browser with WebAssembly support
-- SharedArrayBuffer (requires COOP/COEP headers)
+- SharedArrayBuffer is optional; COOP/COEP enables its faster lazy-file path
 - ~512MB RAM for compilation (max heap size)
 
 ## Acknowledgments

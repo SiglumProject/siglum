@@ -1,0 +1,236 @@
+name: Build TeX Live WASM
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_wasm:
+        description: 'Skip WASM build (use cached)'
+        type: boolean
+        default: false
+      create_release:
+        description: 'Create a GitHub release with artifacts'
+        type: boolean
+        default: false
+      release_tag:
+        description: 'Release tag (e.g. v0.2.0)'
+        type: string
+        default: ''
+
+env:
+  EMSCRIPTEN_VERSION: '3.1.43'
+
+jobs:
+  # Download and cache the large source files
+  sources:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Cache TeX Live ISO
+        id: cache-iso
+        uses: actions/cache@v4
+        with:
+          path: busytex/source/texmfrepo
+          key: texmfrepo-${{ hashFiles('busytex/Makefile') }}
+
+      - name: Cache TeX Live source
+        id: cache-src
+        uses: actions/cache@v4
+        with:
+          path: busytex/source/texlive-source*
+          key: texlive-source-${{ hashFiles('busytex/Makefile') }}
+
+      - name: Download ISO and sources
+        if: steps.cache-iso.outputs.cache-hit != 'true'
+        working-directory: busytex
+        run: make source/texmfrepo.txt
+        timeout-minutes: 60
+
+      - name: Download TeX Live source
+        if: steps.cache-src.outputs.cache-hit != 'true'
+        working-directory: busytex
+        run: make source/texlive.txt
+
+  # Build native binary (for format file generation)
+  build-native:
+    needs: sources
+    runs-on: ubuntu-latest
+    container:
+      image: emscripten/emsdk:3.1.43
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gperf p7zip-full icu-devtools file
+
+      - name: Restore source cache
+        uses: actions/cache/restore@v4
+        with:
+          path: busytex/source/texlive-source*
+          key: texlive-source-${{ hashFiles('busytex/Makefile') }}
+
+      - name: Build native
+        working-directory: busytex
+        run: |
+          make source/texlive.txt
+          make -j$(nproc) native
+        timeout-minutes: 60
+
+      - name: Upload native binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-binary
+          path: busytex/build/native/busytex
+          retention-days: 7
+
+  # Build WASM binary (runs in parallel with native)
+  build-wasm:
+    needs: sources
+    if: ${{ !inputs.skip_wasm }}
+    runs-on: ubuntu-latest
+    container:
+      image: emscripten/emsdk:3.1.43
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gperf p7zip-full icu-devtools file
+
+      - name: Restore source cache
+        uses: actions/cache/restore@v4
+        with:
+          path: busytex/source/texlive-source*
+          key: texlive-source-${{ hashFiles('busytex/Makefile') }}
+
+      - name: Build WASM
+        working-directory: busytex
+        run: |
+          make source/texlive.txt
+          make -j$(nproc) wasm-all
+        timeout-minutes: 240
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-binary
+          path: |
+            busytex/build/wasm/busytex.wasm
+            busytex/build/wasm/busytex.js
+          retention-days: 7
+
+  # Generate format files + bundles (needs native binary + ISO)
+  build-bundles:
+    needs: [build-native, build-wasm]
+    if: ${{ always() && needs.build-native.result == 'success' }}
+    runs-on: ubuntu-latest
+    container:
+      image: emscripten/emsdk:3.1.43
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y perl
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> $GITHUB_PATH
+
+      - name: Restore ISO cache
+        uses: actions/cache/restore@v4
+        with:
+          path: busytex/source/texmfrepo
+          key: texmfrepo-${{ hashFiles('busytex/Makefile') }}
+
+      - name: Restore source cache
+        uses: actions/cache/restore@v4
+        with:
+          path: busytex/source/texlive-source*
+          key: texlive-source-${{ hashFiles('busytex/Makefile') }}
+
+      - name: Download native binary
+        uses: actions/download-artifact@v4
+        with:
+          name: native-binary
+          path: busytex/build/native/
+
+      - name: Make native binary executable
+        run: chmod +x busytex/build/native/busytex
+
+      - name: Ensure source is extracted
+        working-directory: busytex
+        run: make source/texmfrepo.txt source/texlive.txt
+
+      - name: Generate TeX Live installation + format files
+        working-directory: busytex
+        run: make build/texlive-basic.txt
+        timeout-minutes: 60
+
+      - name: Package with file_packager
+        working-directory: busytex
+        run: make build/wasm/texlive-basic.js
+
+      - name: Split into bundles
+        run: |
+          cd packages
+          $HOME/.bun/bin/bun run split-bundle.ts \
+            ../busytex/build/wasm/texlive-basic.js \
+            ../busytex/build/wasm/texlive-basic.data \
+            ./bundles
+
+      - name: Create bundle tarball
+        run: tar -czf siglum-bundles.tar.gz -C packages bundles/
+
+      - name: Upload bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundles
+          path: |
+            siglum-bundles.tar.gz
+            packages/bundles/bundles.json
+            packages/bundles/file-manifest.json
+          retention-days: 30
+
+  # Create GitHub release (optional)
+  release:
+    needs: [build-wasm, build-bundles]
+    if: ${{ inputs.create_release && inputs.release_tag != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-binary
+          path: dist/
+
+      - name: Download bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: bundles
+          path: dist/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: ${{ inputs.release_tag }}
+          files: |
+            dist/busytex.wasm
+            dist/busytex.js
+            dist/siglum-bundles.tar.gz
+          draft: true

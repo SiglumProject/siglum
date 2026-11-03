@@ -3,6 +3,8 @@
  * Bundle loading and package resolution for LaTeX compilation.
  */
 
+import { normalizeProjectPath } from './project-paths.js';
+
 import {
     getBundleFromCache,
     saveBundleToCache,
@@ -15,31 +17,19 @@ import {
 
 import { hashPreamble } from './hash.js';
 
-// Check if SharedArrayBuffer is available (requires COOP/COEP headers)
-const sharedArrayBufferSupported = typeof SharedArrayBuffer !== 'undefined';
-
 // Decompression using native CompressionStream
-// Returns SharedArrayBuffer when available for zero-copy sharing with workers
+// Returns regular ArrayBuffer - SharedArrayBuffer causes memory leaks due to V8 GC issues
+// (SABs sent to workers become "strong roots" that persist even after worker termination)
 async function decompress(compressed, format = 'gzip') {
     // If format is 'none', return as-is (already decompressed by browser)
-    let data;
     if (format === 'none') {
-        data = compressed;
-    } else {
-        const ds = new DecompressionStream(format);
-        const blob = new Blob([compressed]);
-        const stream = blob.stream().pipeThrough(ds);
-        data = await new Response(stream).arrayBuffer();
+        return compressed;
     }
 
-    // Convert to SharedArrayBuffer for zero-copy worker access
-    if (sharedArrayBufferSupported) {
-        const shared = new SharedArrayBuffer(data.byteLength);
-        new Uint8Array(shared).set(new Uint8Array(data));
-        return shared;
-    }
-
-    return data;
+    const ds = new DecompressionStream(format);
+    const blob = new Blob([compressed]);
+    const stream = blob.stream().pipeThrough(ds);
+    return await new Response(stream).arrayBuffer();
 }
 
 /**
@@ -58,6 +48,7 @@ export class BundleManager {
      */
     constructor(options = {}) {
         this.bundleBase = options.bundleBase || 'packages/bundles';
+        this.cachePrefix = (this.bundleBase.match(/\/releases\/(tl2026-[a-f0-9]{16})(?:\/|$)/)?.[1] || 'tl2026-r1') + '-';
         this.bundleCache = new Map();  // In-memory bundle cache
         this.fileManifest = null;
         this.packageMap = null;
@@ -105,8 +96,8 @@ export class BundleManager {
         const cachedVersion = await getManifestVersion();
         if (cachedVersion === MANIFEST_CACHE_VERSION) {
             const [manifest, bundlesData] = await Promise.all([
-                getManifestFromCache('file-manifest'),
-                getManifestFromCache('bundles'),
+                getManifestFromCache(this.cachePrefix + 'file-manifest'),
+                getManifestFromCache(this.cachePrefix + 'bundles'),
             ]);
 
             if (manifest && bundlesData) {
@@ -130,8 +121,8 @@ export class BundleManager {
         // Save to cache (await to ensure cache is populated)
         try {
             await Promise.all([
-                saveManifestToCache('file-manifest', this.fileManifest),
-                saveManifestToCache('bundles', bundlesData),
+                saveManifestToCache(this.cachePrefix + 'file-manifest', this.fileManifest),
+                saveManifestToCache(this.cachePrefix + 'bundles', bundlesData),
                 saveManifestVersion(MANIFEST_CACHE_VERSION),
             ]);
             this.onLog('Manifests saved to cache');
@@ -176,7 +167,7 @@ export class BundleManager {
         if (!this.packageDeps) {
             const cachedVersion = await getManifestVersion();
             if (cachedVersion === MANIFEST_CACHE_VERSION) {
-                const packageDeps = await getManifestFromCache('package-deps');
+                const packageDeps = await getManifestFromCache(this.cachePrefix + 'package-deps');
                 if (packageDeps) {
                     this.packageDeps = packageDeps;
                     return this.bundleDeps;
@@ -188,7 +179,7 @@ export class BundleManager {
                 if (packageDepsRes?.ok) {
                     this.packageDeps = await packageDepsRes.json();
                     try {
-                        await saveManifestToCache('package-deps', this.packageDeps);
+                        await saveManifestToCache(this.cachePrefix + 'package-deps', this.packageDeps);
                     } catch (e) {
                         // Cache save failed, continue anyway
                     }
@@ -312,10 +303,26 @@ export class BundleManager {
      * @param {string} source - Main LaTeX source
      * @param {string} engine - Engine (pdflatex, xelatex, etc.)
      * @param {Object} additionalFiles - Optional map of filename → content
+     * @param {string} [mainFile] - Main source path from the virtual project root
      * @returns {{ bundledPackages: string[], ctanPackages: string[] }}
      */
-    prescanForCtanPackages(source, engine = 'pdflatex', additionalFiles = {}) {
+    prescanForCtanPackages(source, engine = 'pdflatex', additionalFiles = {}, mainFile = 'document.tex') {
         const packages = new Set();
+        const extensions = new Map();
+        const mainPath = normalizeProjectPath(mainFile);
+        const directory = mainPath.includes('/') ? mainPath.slice(0, mainPath.lastIndexOf('/') + 1) : '';
+        const localFiles = new Set(Object.keys(additionalFiles).map(normalizeProjectPath));
+        const addPackage = (pkg, extension) => {
+            packages.add(pkg);
+            if (!extensions.has(pkg)) extensions.set(pkg, new Set());
+            extensions.get(pkg).add(extension);
+        };
+        const isLocal = (pkg) => [...(extensions.get(pkg) || ['.sty'])].every(extension => {
+            try {
+                const path = (pkg.startsWith('/') ? pkg : directory + pkg) + extension;
+                return localFiles.has(normalizeProjectPath(path));
+            } catch { return false; }
+        });
 
         // Helper to extract package names from a match
         const extractPackages = (content) => {
@@ -328,33 +335,40 @@ export class BundleManager {
             const usePackageRegex = /\\usepackage(?:\[[^\]]*\])?\{([^}]+)\}/g;
             let match;
             while ((match = usePackageRegex.exec(text)) !== null) {
-                for (const pkg of extractPackages(match[1])) packages.add(pkg);
+                for (const pkg of extractPackages(match[1])) addPackage(pkg, '.sty');
             }
 
             // \RequirePackage[options]{pkg} and \RequirePackageWithOptions{pkg}
             const requireRegex = /\\RequirePackage(?:WithOptions)?(?:\[[^\]]*\])?\{([^}]+)\}/g;
             while ((match = requireRegex.exec(text)) !== null) {
-                for (const pkg of extractPackages(match[1])) packages.add(pkg);
+                for (const pkg of extractPackages(match[1])) addPackage(pkg, '.sty');
             }
 
             // \documentclass[options]{class}
             const docclassMatch = text.match(/\\documentclass(?:\[[^\]]*\])?\{([^}]+)\}/);
             if (docclassMatch) {
-                packages.add(docclassMatch[1]);
+                addPackage(docclassMatch[1], '.cls');
             }
 
             // \LoadClass[options]{class} and \LoadClassWithOptions{class}
             const loadClassRegex = /\\LoadClass(?:WithOptions)?(?:\[[^\]]*\])?\{([^}]+)\}/g;
             while ((match = loadClassRegex.exec(text)) !== null) {
-                packages.add(match[1]);
+                addPackage(match[1].trim(), '.cls');
+            }
+
+            // \DocumentMetadata{...} requires latex-lab support files
+            if (/\\DocumentMetadata/.test(text)) {
+                packages.add('latex-lab');
+                packages.add('pdfmanagement-testphase');
+                packages.add('tagpdf');
             }
         };
 
         // Scan main source
         scanSource(source);
 
-        // Scan additional files (for multi-file documents)
-        const texFiles = Object.entries(additionalFiles).filter(([f]) => f.endsWith('.tex'));
+        // Local styles/classes can declare their own external dependencies.
+        const texFiles = Object.entries(additionalFiles).filter(([f]) => /\.(tex|sty|cls|clo|def|cfg)$/i.test(f));
         if (texFiles.length > 0) {
             const decoder = new TextDecoder(); // Reuse for all files
             for (const [, content] of texFiles) {
@@ -368,7 +382,7 @@ export class BundleManager {
         const visited = new Set();
 
         const expandDeps = (pkg) => {
-            if (visited.has(pkg)) return;
+            if (visited.has(pkg) || isLocal(pkg)) return;
             visited.add(pkg);
 
             const deps = this.packageDeps?.packages?.[pkg] || [];
@@ -396,6 +410,7 @@ export class BundleManager {
         const additionalBundles = new Set();
 
         for (const pkg of expanded) {
+            if (isLocal(pkg)) continue;
             const bundleName = this.packageMap?.[pkg];
             if (bundleName && this.bundleExists(bundleName)) {
                 if (directBundles.has(bundleName)) {
@@ -417,7 +432,7 @@ export class BundleManager {
     /**
      * Load a bundle by name.
      * @param {string} bundleName - Bundle name
-     * @returns {Promise<ArrayBuffer|SharedArrayBuffer>} Bundle data
+     * @returns {Promise<ArrayBuffer>} Bundle data
      */
     async loadBundle(bundleName) {
         // Check memory cache
@@ -426,7 +441,7 @@ export class BundleManager {
         }
 
         // Check filesystem cache
-        const cached = await getBundleFromCache(bundleName);
+        const cached = await getBundleFromCache(this.cachePrefix + bundleName);
         if (cached) {
             this.onLog(`  From cache: ${bundleName}`);
             this.bundleCache.set(bundleName, cached);
@@ -451,7 +466,7 @@ export class BundleManager {
         this.bundleCache.set(bundleName, decompressed);
 
         // Save to cache in background
-        saveBundleToCache(bundleName, decompressed);
+        saveBundleToCache(this.cachePrefix + bundleName, decompressed);
 
         return decompressed;
     }
@@ -459,7 +474,7 @@ export class BundleManager {
     /**
      * Load multiple bundles in parallel.
      * @param {string[]} bundleNames - Bundle names
-     * @returns {Promise<Object<string, ArrayBuffer|SharedArrayBuffer>>} Map of bundle data
+     * @returns {Promise<Object<string, ArrayBuffer>>} Map of bundle data
      */
     async loadBundles(bundleNames) {
         const bundleData = {};
@@ -528,6 +543,59 @@ export function detectEngine(source) {
 
     // pdfLaTeX is default
     return 'pdflatex';
+}
+
+/**
+ * Extract fontspec font *family names* requested by name in the source.
+ * These are not caught by the \usepackage pre-scan, yet each needs its TeX Live
+ * font package fetched so fontconfig can resolve the name at compile time.
+ *
+ * Handles: \setmainfont \setsansfont \setmonofont \setmathfont \setromanfont
+ * \fontspec, and \newfontface/\newfontfamily (which take a control sequence
+ * before the name). Names that are actually file references (containing a path
+ * separator or a font extension) are skipped — those resolve via kpathsea.
+ *
+ * @param {string} source - Main LaTeX source
+ * @param {Object} [additionalFiles] - Optional map of filename → content
+ * @returns {string[]} Unique font family names
+ */
+export function extractFontNames(source, additionalFiles = {}) {
+    const names = new Set();
+
+    // \setmainfont[opts]{Name}, \fontspec[opts]{Name}, etc. The name is the
+    // first brace group, optionally preceded by a bracket option group.
+    const directRegex =
+        /\\(?:setmainfont|setsansfont|setmonofont|setmathfont|setromanfont|fontspec)\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g;
+
+    // \newfontface\Cmd[opts]{Name} / \newfontfamily[opts]\Cmd{Name}: a control
+    // sequence sits between the macro and the name.
+    const newFontRegex =
+        /\\newfontf(?:ace|amily)\s*(?:\[[^\]]*\])?\s*\\[A-Za-z@]+\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g;
+
+    const looksLikeFile = (n) => /[\\/]/.test(n) || /\.(otf|ttf|ttc|pfb|pfa)$/i.test(n);
+
+    const scan = (text) => {
+        let m;
+        for (const re of [directRegex, newFontRegex]) {
+            re.lastIndex = 0;
+            while ((m = re.exec(text)) !== null) {
+                const name = m[1].trim();
+                if (name && !looksLikeFile(name)) names.add(name);
+            }
+        }
+    };
+
+    scan(source);
+
+    const texFiles = Object.entries(additionalFiles).filter(([f]) => f.endsWith('.tex'));
+    if (texFiles.length > 0) {
+        const decoder = new TextDecoder();
+        for (const [, content] of texFiles) {
+            scan(typeof content === 'string' ? content : decoder.decode(content));
+        }
+    }
+
+    return [...names];
 }
 
 /**
