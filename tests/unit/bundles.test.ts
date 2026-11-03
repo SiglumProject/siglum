@@ -472,6 +472,36 @@ describe('bundles module', () => {
                 expect(bundledPackages).toContain('hyperref');
             });
 
+            it('scans local styles and classes without fetching their package names', () => {
+                const result = manager.prescanForCtanPackages('\\documentclass{custom}\\usepackage{local}', 'pdflatex', {
+                    'custom.cls': '\\LoadClass{article}',
+                    'local.sty': new TextEncoder().encode('\\RequirePackage{externaldependency}'),
+                });
+                expect(result.ctanPackages).not.toContain('custom');
+                expect(result.ctanPackages).not.toContain('local');
+                expect(result.ctanPackages).toContain('externaldependency');
+            });
+
+            it('does not confuse tex files or classes with style packages', () => {
+                const result = manager.prescanForCtanPackages('\\usepackage{csquotes,custom}', 'pdflatex', {
+                    'csquotes.tex': 'a chapter', 'custom.cls': 'a class',
+                });
+                expect(result.ctanPackages).toContain('csquotes');
+                expect(result.ctanPackages).toContain('custom');
+            });
+
+            it('resolves nested styles relative to the main directory, including parent paths', () => {
+                const result = manager.prescanForCtanPackages('\\usepackage{styles/local,../shared}', 'pdflatex', {
+                    '/revision/styles/local.sty': '\\RequirePackage{externaldependency}',
+                    'shared.sty': '',
+                }, 'revision/main.tex');
+                expect(result.ctanPackages).not.toContain('styles/local');
+                expect(result.ctanPackages).not.toContain('../shared');
+                expect(result.ctanPackages).toContain('externaldependency');
+                const other = manager.prescanForCtanPackages('\\usepackage{local}', 'pdflatex', {'elsewhere/local.sty': ''});
+                expect(other.ctanPackages).toContain('local');
+            });
+
             it('should return additionalBundles for dependency-only bundles', () => {
                 // This tests packages that are only loaded as dependencies
                 const doc = '\\documentclass{article}\\usepackage{beamer}\\begin{document}\\end{document}';

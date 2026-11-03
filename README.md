@@ -188,6 +188,8 @@ const result = await compiler.compile(source, {
 // result.error    — error message (if failed)
 ```
 
+Local `.sty` and `.cls` files are scanned for dependencies and satisfy matching local package/class requests without a CTAN prefetch. Multi-file and nested projects compile without format caching so edits to a local dependency cannot reuse a stale format. Explicit `generateFormat` calls with `additionalFiles` or a nested `mainFile` return `null`.
+
 ### Project files and relative paths
 
 `additionalFiles` keys are paths from the **virtual project root**. `mainFile`

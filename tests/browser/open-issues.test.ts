@@ -12,6 +12,22 @@ beforeAll(async () => {
 afterAll(() => compiler?.terminate())
 
 describe('open issue regressions', () => {
+ it('#15 compiles nested local styles and rebuilds after a local style changes', async () => {
+  const source='\\documentclass{article}\n\\usepackage{styles/local}\n\\begin{document}\\localtext\\end{document}'
+  const requested: string[] = []
+  const original = compiler.ctanFetcher.batchFetchPackages.bind(compiler.ctanFetcher)
+  compiler.ctanFetcher.batchFetchPackages = async packages => { requested.push(...packages); return original(packages) }
+  try {
+   for (const version of ['ONE','TWO']) {
+    const result=await compiler.compile(source, { mainFile:'revision/main.tex', additionalFiles:{
+     'revision/styles/local.sty':`\\ProvidesPackage{styles/local}\n\\RequirePackage{amsmath}\n\\newcommand{\\localtext}{${version}}\n\\typeout{LOCAL-STYLE-${version}}`
+    }})
+    expect(result.success,result.error+'\n'+result.log).toBe(true)
+    expect(result.log).toContain(`LOCAL-STYLE-${version}`)
+   }
+   expect(requested).not.toContain('styles/local')
+  } finally { compiler.ctanFetcher.batchFetchPackages = original }
+ })
  it('#8 returns Blob-safe bytes on a successful compile', async () => {
   const result=await compiler.compile(minimal,{mainFile:'blob.tex',useCache:false})
   expect(result.success).toBe(true)

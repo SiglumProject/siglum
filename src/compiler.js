@@ -853,7 +853,7 @@ export class SiglumCompiler {
         let depBundles = [];
         if (this.enableCtan) {
             const additionalFilesMap = options.additionalFiles || {};
-            const { ctanPackages, additionalBundles } = this.bundleManager.prescanForCtanPackages(source, engine, additionalFilesMap);
+            const { ctanPackages, additionalBundles } = this.bundleManager.prescanForCtanPackages(source, engine, additionalFilesMap, mainFile);
 
             // Add bundles needed for package dependencies (not detected from direct \usepackage)
             if (additionalBundles && additionalBundles.length > 0) {
@@ -1104,10 +1104,16 @@ export class SiglumCompiler {
     /**
      * Pre-generate a format file for faster subsequent compilations.
      * @param {string} source - LaTeX source with preamble to cache
-     * @param {{engine?: string}} [options] - Options
+     * @param {{engine?: string, mainFile?: string, additionalFiles?: Object<string, string|Uint8Array>}} [options] - Options. Project dependencies disable format caching.
      * @returns {Promise<Uint8Array|null>} Format data or null if not supported
      */
     async generateFormat(source, options = {}) {
+        // The format key covers only the main preamble. Do not return or build a
+        // format that can become stale when a project dependency changes.
+        if (Object.keys(options.additionalFiles || {}).length > 0 || normalizeProjectPath(options.mainFile || 'document.tex').includes('/')) {
+            this._log('Format caching disabled for multi-file or nested projects');
+            return null;
+        }
         const engine = options.engine || 'pdflatex';
 
         // XeTeX can't dump formats with native fonts (fontspec)

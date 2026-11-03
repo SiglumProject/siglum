@@ -540,6 +540,15 @@ describe('compiler module', () => {
             expect(result).toBeNull();
         });
 
+        it('declines dependency-sensitive format generation instead of returning a stale format', async () => {
+            await initCompiler();
+            const first = await compiler.generateFormat(SIMPLE_DOCUMENT, { additionalFiles: { 'local.sty': 'version one' } });
+            const second = await compiler.generateFormat(SIMPLE_DOCUMENT, { additionalFiles: { 'local.sty': 'version two' } });
+            expect(first).toBeNull();
+            expect(second).toBeNull();
+            expect(await compiler.generateFormat(SIMPLE_DOCUMENT, { mainFile: 'revision/main.tex' })).toBeNull();
+        });
+
         it('should throw if no preamble', async () => {
             const { extractPreamble } = await import('../../src/bundles.js');
             vi.mocked(extractPreamble).mockReturnValue(null);

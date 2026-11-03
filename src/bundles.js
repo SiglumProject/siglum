@@ -3,6 +3,8 @@
  * Bundle loading and package resolution for LaTeX compilation.
  */
 
+import { normalizeProjectPath } from './project-paths.js';
+
 import {
     getBundleFromCache,
     saveBundleToCache,
@@ -301,10 +303,26 @@ export class BundleManager {
      * @param {string} source - Main LaTeX source
      * @param {string} engine - Engine (pdflatex, xelatex, etc.)
      * @param {Object} additionalFiles - Optional map of filename → content
+     * @param {string} [mainFile] - Main source path from the virtual project root
      * @returns {{ bundledPackages: string[], ctanPackages: string[] }}
      */
-    prescanForCtanPackages(source, engine = 'pdflatex', additionalFiles = {}) {
+    prescanForCtanPackages(source, engine = 'pdflatex', additionalFiles = {}, mainFile = 'document.tex') {
         const packages = new Set();
+        const extensions = new Map();
+        const mainPath = normalizeProjectPath(mainFile);
+        const directory = mainPath.includes('/') ? mainPath.slice(0, mainPath.lastIndexOf('/') + 1) : '';
+        const localFiles = new Set(Object.keys(additionalFiles).map(normalizeProjectPath));
+        const addPackage = (pkg, extension) => {
+            packages.add(pkg);
+            if (!extensions.has(pkg)) extensions.set(pkg, new Set());
+            extensions.get(pkg).add(extension);
+        };
+        const isLocal = (pkg) => [...(extensions.get(pkg) || ['.sty'])].every(extension => {
+            try {
+                const path = (pkg.startsWith('/') ? pkg : directory + pkg) + extension;
+                return localFiles.has(normalizeProjectPath(path));
+            } catch { return false; }
+        });
 
         // Helper to extract package names from a match
         const extractPackages = (content) => {
@@ -317,25 +335,25 @@ export class BundleManager {
             const usePackageRegex = /\\usepackage(?:\[[^\]]*\])?\{([^}]+)\}/g;
             let match;
             while ((match = usePackageRegex.exec(text)) !== null) {
-                for (const pkg of extractPackages(match[1])) packages.add(pkg);
+                for (const pkg of extractPackages(match[1])) addPackage(pkg, '.sty');
             }
 
             // \RequirePackage[options]{pkg} and \RequirePackageWithOptions{pkg}
             const requireRegex = /\\RequirePackage(?:WithOptions)?(?:\[[^\]]*\])?\{([^}]+)\}/g;
             while ((match = requireRegex.exec(text)) !== null) {
-                for (const pkg of extractPackages(match[1])) packages.add(pkg);
+                for (const pkg of extractPackages(match[1])) addPackage(pkg, '.sty');
             }
 
             // \documentclass[options]{class}
             const docclassMatch = text.match(/\\documentclass(?:\[[^\]]*\])?\{([^}]+)\}/);
             if (docclassMatch) {
-                packages.add(docclassMatch[1]);
+                addPackage(docclassMatch[1], '.cls');
             }
 
             // \LoadClass[options]{class} and \LoadClassWithOptions{class}
             const loadClassRegex = /\\LoadClass(?:WithOptions)?(?:\[[^\]]*\])?\{([^}]+)\}/g;
             while ((match = loadClassRegex.exec(text)) !== null) {
-                packages.add(match[1]);
+                addPackage(match[1].trim(), '.cls');
             }
 
             // \DocumentMetadata{...} requires latex-lab support files
@@ -349,8 +367,8 @@ export class BundleManager {
         // Scan main source
         scanSource(source);
 
-        // Scan additional files (for multi-file documents)
-        const texFiles = Object.entries(additionalFiles).filter(([f]) => f.endsWith('.tex'));
+        // Local styles/classes can declare their own external dependencies.
+        const texFiles = Object.entries(additionalFiles).filter(([f]) => /\.(tex|sty|cls|clo|def|cfg)$/i.test(f));
         if (texFiles.length > 0) {
             const decoder = new TextDecoder(); // Reuse for all files
             for (const [, content] of texFiles) {
@@ -364,7 +382,7 @@ export class BundleManager {
         const visited = new Set();
 
         const expandDeps = (pkg) => {
-            if (visited.has(pkg)) return;
+            if (visited.has(pkg) || isLocal(pkg)) return;
             visited.add(pkg);
 
             const deps = this.packageDeps?.packages?.[pkg] || [];
@@ -392,6 +410,7 @@ export class BundleManager {
         const additionalBundles = new Set();
 
         for (const pkg of expanded) {
+            if (isLocal(pkg)) continue;
             const bundleName = this.packageMap?.[pkg];
             if (bundleName && this.bundleExists(bundleName)) {
                 if (directBundles.has(bundleName)) {
