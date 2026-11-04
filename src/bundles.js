@@ -52,6 +52,7 @@ export class BundleManager {
         this.bundleCache = new Map();  // In-memory bundle cache
         this.fileManifest = null;
         this.packageMap = null;
+        this.sourceCommands = new Map();
         this.bundleDeps = null;
         this.packageDeps = null;
         this.bundleRegistry = null;
@@ -138,6 +139,7 @@ export class BundleManager {
         this.bundleRegistry = new Set(Object.keys(bundlesData.bundles || {}));
         // Extract package map
         this.packageMap = bundlesData.packages || {};
+        this.sourceCommands = new Map(Object.entries(bundlesData.sourceCommands || {}));
         // Extract bundle deps (engines, bundle requires, deferred)
         this.bundleDeps = {
             engines: bundlesData.engines || {},
@@ -148,6 +150,18 @@ export class BundleManager {
         for (const [name, info] of Object.entries(bundlesData.bundles || {})) {
             if (info.requires && info.requires.length > 0) {
                 this.bundleDeps.bundles[name] = { requires: info.requires };
+            }
+        }
+    }
+
+    _addSourceCommandPackages(source, packages) {
+        if (![...this.sourceCommands.keys()].some(command => source.includes('\\' + command))) return;
+
+        // Consume comments and escaped control symbols before looking up commands.
+        for (const [, command] of source.matchAll(/\\([A-Za-z@]+|[^\r\n])|%[^\r\n]*/g)) {
+            const required = this.sourceCommands.get(command);
+            if (Array.isArray(required)) {
+                for (const pkg of required) packages.add(pkg);
             }
         }
     }
@@ -291,6 +305,8 @@ export class BundleManager {
             for (const pkg of pkgList) packages.add(pkg);
         }
 
+        this._addSourceCommandPackages(source, packages);
+
         const bundles = this.resolveBundles([...packages], engine);
         return { packages: [...packages], bundles };
     }
@@ -304,9 +320,10 @@ export class BundleManager {
      * @param {string} engine - Engine (pdflatex, xelatex, etc.)
      * @param {Object} additionalFiles - Optional map of filename → content
      * @param {string} [mainFile] - Main source path from the virtual project root
-     * @returns {{ bundledPackages: string[], ctanPackages: string[] }}
+     * @param {string[]} [plannedBundles] - Bundles already selected from the main source
+     * @returns {{ bundledPackages: string[], ctanPackages: string[], additionalBundles: string[] }}
      */
-    prescanForCtanPackages(source, engine = 'pdflatex', additionalFiles = {}, mainFile = 'document.tex') {
+    prescanForCtanPackages(source, engine = 'pdflatex', additionalFiles = {}, mainFile = 'document.tex', plannedBundles = this.checkPackages(source, engine).bundles) {
         const packages = new Set();
         const extensions = new Map();
         const mainPath = normalizeProjectPath(mainFile);
@@ -356,12 +373,7 @@ export class BundleManager {
                 addPackage(match[1].trim(), '.cls');
             }
 
-            // \DocumentMetadata{...} requires latex-lab support files
-            if (/\\DocumentMetadata/.test(text)) {
-                packages.add('latex-lab');
-                packages.add('pdfmanagement-testphase');
-                packages.add('tagpdf');
-            }
+            this._addSourceCommandPackages(text, packages);
         };
 
         // Scan main source
@@ -398,35 +410,24 @@ export class BundleManager {
             expandDeps(pkg);
         }
 
-        // Get bundles that will be loaded based on direct packages (not deps)
-        const directBundles = new Set(this.resolveBundles([...packages], engine));
+        const directBundles = new Set(plannedBundles);
+        const externalPackages = [...expanded].filter(pkg => !isLocal(pkg));
+        const additionalBundles = this.resolveBundles(externalPackages, engine)
+            .filter(bundle => !directBundles.has(bundle));
 
-        // Categorize expanded packages:
-        // - bundled: in a bundle that will be loaded
-        // - additionalBundles: in a bundle that exists but won't be loaded (dependency-only)
-        // - ctanPackages: not in any bundle, need CTAN fetch
         const bundledPackages = [];
         const ctanPackages = [];
-        const additionalBundles = new Set();
 
-        for (const pkg of expanded) {
-            if (isLocal(pkg)) continue;
+        for (const pkg of externalPackages) {
             const bundleName = this.packageMap?.[pkg];
             if (bundleName && this.bundleExists(bundleName)) {
-                if (directBundles.has(bundleName)) {
-                    // Bundle will be loaded from direct packages
-                    bundledPackages.push(pkg);
-                } else {
-                    // Bundle exists but not in direct list - it's a dependency bundle
-                    bundledPackages.push(pkg);
-                    additionalBundles.add(bundleName);
-                }
+                bundledPackages.push(pkg);
             } else {
                 ctanPackages.push(pkg);
             }
         }
 
-        return { bundledPackages, ctanPackages, additionalBundles: [...additionalBundles] };
+        return { bundledPackages, ctanPackages, additionalBundles };
     }
 
     /**

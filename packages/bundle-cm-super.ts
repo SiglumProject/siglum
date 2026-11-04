@@ -9,6 +9,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as zlib from 'zlib';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
 
 const CTAN_MIRROR = 'https://mirrors.ctan.org';
 // Try TDS zip first, then fall back to regular zip
@@ -19,6 +22,8 @@ const CM_SUPER_URLS = [
 ];
 const OUTPUT_DIR = './bundles';
 const BUNDLE_NAME = 'cm-super';
+const TEX_LIVE_ARCHIVE_SHA512 = '45638ebf4ef2ffb7c4b74669ea089a9f8d3ab4b98e555b3f9b2e9bd9732b48fdba61dc91188e2c8962b8bfa3caaab31c10d1ccd3e0aa9e26197b148e59576f8f';
+const BUNDLED_EXTENSIONS = new Set(['.pfb', '.tfm', '.vf', '.map', '.enc', '.sty', '.fd', '.def']);
 
 interface BundleFile {
   path: string;
@@ -64,14 +69,11 @@ async function downloadAndExtract(): Promise<Map<string, Buffer>> {
   const entries = Object.entries(zip.files);
 
   // Filter for font files we need
-  const fontExtensions = ['.pfb', '.tfm', '.vf', '.map', '.enc'];
-  const texExtensions = ['.sty', '.fd', '.def'];
-
   for (const [filePath, file] of entries) {
     if (file.dir) continue;
 
     const ext = path.extname(filePath).toLowerCase();
-    if (!fontExtensions.includes(ext) && !texExtensions.includes(ext)) continue;
+    if (!BUNDLED_EXTENSIONS.has(ext)) continue;
 
     // Skip doc and source directories
     if (filePath.includes('/doc/') || filePath.includes('/source/')) continue;
@@ -117,6 +119,28 @@ async function downloadAndExtract(): Promise<Map<string, Buffer>> {
 
   console.log(`Extracted ${files.size} font/style files`);
   return files;
+}
+
+function readTeXLiveArchive(archivePath: string): Map<string, Buffer> {
+  const archive = path.resolve(archivePath);
+  const sha512 = createHash('sha512').update(fs.readFileSync(archive)).digest('hex');
+  if (sha512 !== TEX_LIVE_ARCHIVE_SHA512) throw new Error(`Unexpected cm-super archive checksum: ${archive}`);
+
+  const directory = fs.mkdtempSync(path.join(tmpdir(), 'siglum-cm-super-'));
+  try {
+    execFileSync('tar', ['-xJf', archive, '-C', directory]);
+    const files = new Map<string, Buffer>();
+    for (const entry of fs.readdirSync(directory, { recursive: true, withFileTypes: true })) {
+      if (!entry.isFile() || !BUNDLED_EXTENSIONS.has(path.extname(entry.name))) continue;
+      const local = path.join(entry.parentPath, entry.name);
+      const relative = path.relative(directory, local).split(path.sep).join('/');
+      if (!relative.startsWith('fonts/') && !relative.startsWith('tex/')) continue;
+      files.set('/texlive/texmf-dist/' + relative, fs.readFileSync(local));
+    }
+    return files;
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 async function createBundle(files: Map<string, Buffer>): Promise<void> {
@@ -182,6 +206,17 @@ async function createBundle(files: Map<string, Buffer>): Promise<void> {
   // manifest makes git diffs unreviewable and merges painful.
   fs.writeFileSync(manifestPath, JSON.stringify(mergedManifest, null, 2));
 
+  const registryPath = path.join(OUTPUT_DIR, 'bundles.json');
+  if (fs.existsSync(registryPath)) {
+    const registry = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+    registry.bundles[BUNDLE_NAME] = {
+      ...registry.bundles[BUNDLE_NAME],
+      files: bundleFiles.length,
+      size: bundleData.length,
+    };
+    fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2));
+  }
+
   // Update package-map.json
   const mapPath = path.join(OUTPUT_DIR, 'package-map.json');
   let existingMap: Record<string, string> = {};
@@ -228,8 +263,13 @@ async function uploadToR2(): Promise<void> {
 async function main() {
   const args = process.argv.slice(2);
   const shouldUpload = args.includes('--upload');
+  const archiveOption = args.indexOf('--texlive-archive');
+  const archive = archiveOption === -1 ? undefined : args[archiveOption + 1];
+  if (archiveOption !== -1 && (!archive || archive.startsWith('--'))) {
+    throw new Error('--texlive-archive requires a path to the pinned TeX Live cm-super archive');
+  }
 
-  const files = await downloadAndExtract();
+  const files = archive ? readTeXLiveArchive(archive) : await downloadAndExtract();
   await createBundle(files);
 
   if (shouldUpload) {
@@ -239,4 +279,7 @@ async function main() {
   }
 }
 
-main().catch(console.error);
+main().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

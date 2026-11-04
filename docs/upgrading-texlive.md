@@ -38,24 +38,39 @@ files under an existing runtime ID. The deployed Cloudflare adapter is in
 directory are obsolete. npm publication, runtime upload, Worker deployment,
 and Pages deployment are separate operations.
 
-## Upstream review for the 0.2.0 release
+## June 2026 LaTeX format update
+
+This refresh keeps the TeX Live engine and package routes on 2026. The BusyTeX
+fork overlays the 13 packages pinned in `texlive-packages.lock.json` on the March
+ISO installation, then builds the LaTeX2e `2026-06-01` formats with the WASM
+that will load them. Review the package pins and format generator in the fork
+before updating the submodule here.
+
+The build lock governs bundled packages. On-demand dependencies still follow
+the 2026 package-source policy above. Stage a new immutable runtime for the
+updated formats and verify that both pdfLaTeX and XeLaTeX report
+`LaTeX2e <2026-06-01>` in their compilation logs. Exercise a document with
+`\DocumentMetadata{}`, a warmed compile, a fresh offline editor
+reopen, and a bibliography with multiple passes.
+
+## Upstream review for the June release
 
 Reviewed upstream main through
 [`2beec8b`](https://github.com/busytex/busytex/commit/2beec8babad2f00b0429b548f51afcbcd8a53eb4)
-on November 2, 2026. The November 1 changes alter FreeType/ICU build-tool
-invocation and README examples. They are not published security advisories.
-The current fork remains pinned at `c2c008ef28f8058fa6888853dbaf55fa91b19eda`;
-this review does not claim the fork contains every upstream change.
+on November 4, 2026. The fork's published main at `c2c008e` is 10 commits
+ahead and 109 behind. Both Makefiles list the March 1, 2026 ISO. Upstream's
+active archive extraction rule still reads its 2023 cache URLs, and its
+compiler source is also pinned to TeX Live 2023. The June branch uses the
+verified 2026 ISO and overlays the locked June packages. The November 1
+upstream changes alter FreeType/ICU tool invocation and README examples.
 
 [Upstream PR #14](https://github.com/busytex/busytex/pull/14), merged October 16,
 closes file streams retained when reusing a module and restoring its heap.
 Siglum's `src/worker.js` uses fresh modules for each TeX/BibTeX pass via
-`getOrCreateModule` and `resetForPass`; it does not ship the upstream
-`busytex_pipeline.js` reuse path. Do not import the upstream build changes
-blindly into the tested Emscripten 3.1.43 pipeline. If module reuse is introduced,
-carry forward the stream-cleanup fix and test repeated successful and failed
-runs. This is an applicability review of those updates, not a full audit of
-TeX Live's native dependencies.
+`getOrCreateModule` and `resetForPass`. The upstream stream fix applies to
+`busytex_pipeline.js` and its heap-restore reuse path. Bring it into a reuse
+experiment with repeated successful and failed runs. Review upstream build
+changes on a separate branch against the pinned Emscripten 3.1.43 toolchain.
 
 ## Upgrade checks
 

@@ -38,34 +38,76 @@ make source/texmfrepo.txt
 ./build-wasm.sh bundles
 ```
 
-`wasm` builds native tools and the WASM targets; it already invokes
-`make wasm-all`. `wasm-all` is not a wrapper command. `formats` generates the
-formats with the WASM engine, avoiding native/WASM format mismatches.
+`wasm` builds the native tools before the WASM targets in the same checkout.
+`texlive` installs the March 1, 2026 TeX Live base. `formats` applies the
+checksum-verified June 5 package archives listed in
+`busytex/texlive-packages.lock.json` and generates the LaTeX2e `2026-06-01`
+formats with the exact combined BusyTeX WASM from the build. This includes
+pdfLaTeX, XeLaTeX, and LuaHBLaTeX format files. The browser compiler exposes
+pdfLaTeX and XeLaTeX.
+
+`package` verifies the format and runtime hashes before packaging.
 `bundles` splits the data and adds the separate cm-super font bundle.
 Use `./build-wasm.sh all` to run the wrapper's complete pipeline.
+The manual **Build TeX Live WASM** workflow applies the same overlay and
+verifies the packaged format byte ranges against the generated files.
 
-Outputs include `busytex/build/wasm/{busytex,pdftex,xetex}.{js,wasm}` and
-`packages/bundles/`. The formats, engine binaries, and bundled packages must
-belong to the same TeX Live release. `packages/update-bundles-tl2025.ts` is a
-legacy targeted update script, not the 2026 rebuild procedure.
+The bundle registry's `sourceCommands` field declares package dependencies
+for LaTeX commands that load support files implicitly. The engine resolves
+those dependencies through its normal bundle lookup. The build checks that
+each declared package is bundled for offline use.
 
-## Indexes, normalized packages, and staging
+Outputs include `busytex/build/wasm/busytex.{js,wasm}` and
+`packages/bundles/`. Keep the generated formats, engine binaries, and bundled
+packages from the same build together. The ISO alone installs an older LaTeX
+format. The June package lock is part of the build input.
 
-From the engine repository root:
+### Restore CI build outputs
+
+Use the `runtime-build-inputs` artifact from the same engine commit and
+BusyTeX pin. From the engine repository root, set `run_id` to the successful
+workflow run. Keep the downloaded artifacts separate from the source checkout.
 
 ```sh
-bun scripts/build-font-file-index.js
-bun scripts/prebuild-packages.js
-bun run prepare:runtime
-bun run stage:runtime
+export SIGLUM_RUNTIME_INPUTS="$PWD/.local-release/build-$run_id"
+gh run download "$run_id" --name runtime-build-inputs --dir "$SIGLUM_RUNTIME_INPUTS"
+mkdir -p "$SIGLUM_RUNTIME_INPUTS/packages"
+tar -xzf "$SIGLUM_RUNTIME_INPUTS/siglum-bundles.tar.gz" -C "$SIGLUM_RUNTIME_INPUTS/packages"
+```
+
+The artifact carries the combined WASM and glue, the format hashes, the
+bundle indexes and the TeX inputs needed to build normalized packages.
+Generate those packages with the downloaded runtime.
+
+```sh
+build_dir="$SIGLUM_RUNTIME_INPUTS/busytex/build"
+cp "$build_dir/wasm/busytex.js" "$build_dir/wasm/busytex.cjs"
+SIGLUM_BUSYTEX_JS="$build_dir/wasm/busytex.cjs" \
+SIGLUM_BUSYTEX_WASM="$build_dir/wasm/busytex.wasm" \
+SIGLUM_BUSYTEX_TEXMF="$build_dir/texlive-basic/texmf-dist" \
+  bun scripts/prebuild-packages.js
+mkdir -p "$SIGLUM_RUNTIME_INPUTS/packages/bundles/prebuilt"
+cp -R packages/bundles/prebuilt/. "$SIGLUM_RUNTIME_INPUTS/packages/bundles/prebuilt/"
+```
+
+## Stage and verify
+
+When building locally from the ISO, run `bun scripts/build-font-file-index.js`
+and `bun scripts/prebuild-packages.js` first. The font index script reads the
+submodule's TLPDB by default and accepts `TLPDB_PATH` as an override. When using
+CI artifacts, keep `SIGLUM_RUNTIME_INPUTS` set so staging reads those inputs.
+
+```sh
+node scripts/stage-runtime.mjs --combined-only
 node scripts/verify-runtime.mjs "$(node -p "require('./.local-release/current.json').directory")"
 ```
 
-The font index uses the submodule's TLPDB by default (`TLPDB_PATH` overrides it).
-Review all generated bundle/index changes before committing. Staging checks
-bundle byte ranges and creates a content-addressed runtime under
-`.local-release/tl2026-…`; it does not upload anything. Bulk runtime files are
-ignored by Git and must be distributed separately.
+Review all generated bundle and index changes before committing. The June
+runtime-only release uses the combined BusyTeX engine. Staging checks the WASM,
+glue and bundled format bytes against the fork's
+`build/texlive-basic-formats.sha256` and creates a content-addressed runtime
+under `.local-release/tl2026-…`. Git tracks the build inputs. Distribute bulk
+runtime files through the [release steps](releasing.md).
 
 ## Validation
 
@@ -77,9 +119,12 @@ bun run test:proxy
 bun run test:bun-parity
 ```
 
-The browser suite requires Playwright and the locally built runtime. Test
+The browser suite requires Playwright, the local ISO package archives and the
+runtime copies in `dist/` prepared by `bun run prepare:runtime`. Test
 pdfLaTeX, XeLaTeX, bibliography passes, nested projects, fonts, and packages
 fetched through the proxy. Biber is not bundled; use BibTeX or a prebuilt `.bbl`.
+Use the [web release preview](https://github.com/SiglumProject/siglum-web#release-order)
+to test a staged combined-only runtime.
 
 For upgrades see [upgrading TeX Live](upgrading-texlive.md). For publication,
 use [release steps](releasing.md); merging or running a build does not deploy.

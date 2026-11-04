@@ -3,7 +3,7 @@
 // For each curated build-required package: fetch the source archive from CTAN,
 // run the same normalize pipeline the proxy uses (processZipData → provider
 // chain → headless busytex docstrip/build), and write the resulting runtime
-// files to a committed artifact at packages/bundles/prebuilt/<pkg>.json. Any
+// files to a generated artifact at packages/bundles/prebuilt/<pkg>.json. Any
 // host then serves that artifact verbatim — the dev servers read it from disk; a
 // serverless host adapter ships it to its object store and serves it there — so
 // no TeX build runs in a request and the build cost is paid once, globally.
@@ -29,8 +29,8 @@ import {
 } from '../packages/prebuilt-cache.ts';
 import { busytexAssetsAvailable } from '../packages/providers/busytex-engine.ts';
 import buildRequired from '../packages/providers/build-required.json';
+import { TEXLIVE_YEAR } from '../src/texlive.js';
 
-const TL_YEAR = 2025;
 const UA = { 'User-Agent': 'siglum-engine-prebuild/1.0' };
 
 // The curated set is build-required.json alone — list the *bundle* (e.g. acrotex),
@@ -101,7 +101,7 @@ async function buildPackage(pkgName) {
         // live fetch (plan §4): prebuilt-ins / prebuilt-tds / prebuilt-dtx / ….
         source: `prebuilt-${result.provider}`,
         builtFrom: url.split('/').pop(),
-        tlYear: TL_YEAR,
+        tlYear: TEXLIVE_YEAR,
         schema: PREBUILT_SCHEMA,
       };
     }

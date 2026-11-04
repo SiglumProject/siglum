@@ -4,6 +4,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { BundleManager, detectEngine, extractPreamble, hashPreamble } from '../../src/bundles.js';
+import bundleRegistry from '../../packages/bundles/bundles.json';
 import {
     SAMPLE_FILE_MANIFEST,
     SAMPLE_BUNDLES_JSON,
@@ -23,6 +24,11 @@ import {
     PREAMBLE_ONLY,
 } from '../setup/fixtures/latex-samples';
 import { mockFileSystem, resetMockFileSystem } from '../setup/mocks/filesystem';
+
+const COMMAND_BUNDLES = {
+    ...SAMPLE_BUNDLES_JSON,
+    sourceCommands: { FixtureCommand: ['hyperref'] },
+};
 
 // Mock the @siglum/filesystem module. Use an async factory with a dynamic import
 // rather than referencing the top-level mockFileSystem binding: vi.mock is hoisted
@@ -430,6 +436,29 @@ describe('bundles module', () => {
                 const { packages } = manager.checkPackages(DOCUMENT_WITH_CUSTOM_CLASS);
                 expect(packages).toContain('beamer');
             });
+
+            it('loads bare DocumentMetadata support without CTAN', () => {
+                manager._initFromBundlesData(bundleRegistry);
+                const { packages, bundles } = manager.checkPackages('\\DocumentMetadata{}\n' + SIMPLE_DOCUMENT, 'pdflatex');
+                expect(packages).toEqual(expect.arrayContaining(['latex-lab', 'pdfmanagement-testphase', 'tagpdf']));
+                expect(bundles).toContain('tex-latex-misc');
+            });
+
+            it('loads dependencies for a configured command after an escaped percent', () => {
+                manager._initFromBundlesData(COMMAND_BUNDLES);
+                const source = String.raw`\% \FixtureCommand{}` + '\n' + SIMPLE_DOCUMENT;
+                expect(manager.checkPackages(source, 'pdflatex').bundles).toEqual(['base', 'hyperref', 'graphics']);
+            });
+
+            it.each([
+                String.raw`% \FixtureCommand{}`,
+                String.raw`\\FixtureCommand{}`,
+                String.raw`\FixtureCommandOther{}`,
+            ])('ignores a false command match in %s', (text) => {
+                manager._initFromBundlesData(COMMAND_BUNDLES);
+                const { bundles } = manager.checkPackages(text + '\n' + SIMPLE_DOCUMENT, 'pdflatex');
+                expect(bundles).toEqual(['base']);
+            });
         });
 
         describe('prescanForCtanPackages', () => {
@@ -470,6 +499,18 @@ describe('bundles module', () => {
                 };
                 const { bundledPackages } = manager.prescanForCtanPackages(mainDoc, 'pdflatex', additionalFiles);
                 expect(bundledPackages).toContain('hyperref');
+            });
+
+            it('adds command dependencies declared in a project file when CTAN is enabled', () => {
+                manager._initFromBundlesData(COMMAND_BUNDLES);
+                const source = '\\input{settings}\n' + SIMPLE_DOCUMENT;
+                const { bundles } = manager.checkPackages(source, 'pdflatex');
+                const result = manager.prescanForCtanPackages(source, 'pdflatex', {
+                    'settings.tex': '\\FixtureCommand{}',
+                }, 'document.tex', bundles);
+                expect(result.bundledPackages).toContain('hyperref');
+                expect(result.additionalBundles).toEqual(['hyperref', 'graphics']);
+                expect(result.ctanPackages).toEqual([]);
             });
 
             it('scans local styles and classes without fetching their package names', () => {

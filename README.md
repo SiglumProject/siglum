@@ -23,8 +23,9 @@ The full bundle is ~195MB to deploy, but clients only download what their docume
 
 ## Quick Start (Local Demo)
 
-This checkout targets the TeX Live 2026 release. Runtime binaries are
-separate from the npm package; do not mix assets from different releases.
+This checkout builds TeX Live 2026 with the June 2026 LaTeX2e format.
+Runtime binaries are separate from the npm package. Keep assets from the same
+runtime manifest together.
 
 For development, place `siglum-engine` and `siglum-filesystem` in sibling
 directories. The filesystem override in package.json is for this checkout only;
@@ -43,16 +44,21 @@ The four-repository UI workspace can prepare and test all dependencies together.
 
 ## Installation
 
-The release versions are `@siglum/filesystem@0.3.0` and
-`@siglum/engine@0.2.0`. See [release steps](docs/releasing.md) for publication
-order and [self-hosting](docs/self-hosting.md) for runtime setup.
+The June update pairs `@siglum/engine@0.2.1` with its verified June runtime.
+The engine continues to use `@siglum/filesystem@^0.3.0`. See
+[release steps](docs/releasing.md) for publication order and
+[self-hosting](docs/self-hosting.md) for runtime setup.
 
 ```sh
-npm install @siglum/engine@0.2.0
+npm install @siglum/engine@0.2.1
 ```
 
-After publication, download `siglum-runtime-v0.2.0.tar.gz` from the matching
-GitHub release, extract it, and run `scripts/verify-runtime.mjs <directory>`.
+After publication, download `siglum-runtime-v0.2.1.tar.gz` from the matching
+[engine release](https://github.com/SiglumProject/siglum/releases), or
+[build the June format update](docs/building.md). Extract downloaded assets
+and run `scripts/verify-runtime.mjs <directory>`. The previous
+[v0.2.0 release](https://github.com/SiglumProject/siglum/releases/tag/v0.2.0)
+has its own runtime archive.
 The archive contains `runtime.json`, `wasm/`, bundle files, and `normalized/`.
 Host all of them together under `/releases/<releaseId>/`. The Siglum Cloudflare
 adapter additionally maps `bundles/` URLs to the bundle files in that directory.
@@ -382,10 +388,10 @@ The canonical Cloudflare adapter is tracked in `siglum-web/worker`; the local
 this release procedure.
 
 ```bash
-bun run stage:runtime
+node scripts/stage-runtime.mjs --combined-only
 # Prints the immutable release ID and its local directory.
 node scripts/verify-runtime.mjs .local-release/<releaseId>
-DRY_RUN=1 bash scripts/release.sh 0.2.0
+DRY_RUN=1 bash scripts/release.sh --runtime-only
 ```
 
 Staging validates TeX Live 2026 WASM banners, bundle coverage and file ranges,
@@ -393,10 +399,9 @@ then hashes every deployed byte. This includes prebuilt packages and raw bundles
 used for HTTP Range requests. Browser bundle, format and document caches are
 namespaced by runtime ID. Older unversioned caches are not reused.
 
-After reviewing and pushing the commits, publish filesystem first, deploy the
-tracked API adapter, then run `scripts/release.sh 0.2.0` to upload immutable
-assets and create the GitHub release. The tag workflow publishes the engine npm
-package. Verify the remote runtime before deploying a UI that references it:
+Use [the June release steps](docs/releasing.md#june-2026-release) to upload
+the immutable runtime and publish the matching engine patch. Verify the remote
+runtime before deploying a UI that references it:
 
 ```bash
 node scripts/verify-runtime.mjs https://packages.siglum.org/releases/<releaseId>
