@@ -51,9 +51,13 @@ npm publish /path/to/reviewed-package.tgz --access public
 Publishing a tarball does not run the source checkout's build/test hooks; those
 checks must already have passed. Complete npm's browser/2FA prompt if requested.
 Verify registry versions and tarball integrity against the reviewed artifacts.
-Never commit npm credentials. The optional engine tag workflow requires an
-`NPM_TOKEN` secret when publishing an unpublished version; a version already
-published by the maintainer is skipped.
+For automatic tag publishing, configure the
+[npm trusted publisher](https://docs.npmjs.com/trusted-publishers/) for
+`@siglum/engine` to use organization `SiglumProject`, repository `siglum`,
+and workflow `release.yml`, with direct `npm publish` enabled. The workflow
+uses the GitHub-hosted runner's identity and also supports an existing
+`NPM_TOKEN` secret. If you publish the reviewed tarball manually, the tag
+workflow skips the version already in the registry.
 
 ## Runtime and application deployment
 

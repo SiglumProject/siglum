@@ -3,6 +3,8 @@ on:
   push:
     branches: [main, upgrade/texlive-2026]
   pull_request:
+permissions:
+  contents: read
 jobs:
   vitest:
     runs-on: ubuntu-latest
@@ -27,3 +29,22 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Run tests and declaration checks
         run: bun run test:run && bun run test:types
+      - name: Verify the npm tarball
+        run: |
+          staging=$(mktemp -d)
+          cp -R package.json README.md LICENSE src types "$staging/"
+          cd "$staging"
+          npm pkg delete overrides
+          npm pack --json > packed.json
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+
+          const [pack] = JSON.parse(readFileSync('packed.json', 'utf8'));
+          const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
+          const paths = new Set(pack.files.map(file => file.path));
+          assert.equal(pack.version, manifest.version);
+          assert(paths.has('src/index.js'));
+          assert(paths.has('types/index.d.ts'));
+          assert(![...paths].some(path => /\.(wasm|fmt)$/.test(path)));
+          JS

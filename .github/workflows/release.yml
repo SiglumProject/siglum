@@ -22,12 +22,17 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
       # Guard: the pushed tag must match the version in package.json, otherwise
@@ -65,7 +70,8 @@ jobs:
           npm pkg delete overrides
           npm install --no-audit --no-fund
 
-      # prepublishOnly runs `tsc` to emit types/ into the published tarball.
+      # npm uses the configured trusted publisher and can fall back to a token.
+      # prepublishOnly emits the TypeScript declarations.
       - name: Publish to npm
         if: steps.registry.outputs.published != 'true'
         run: npm publish --access public
