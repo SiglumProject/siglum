@@ -16,10 +16,25 @@ The full bundle is ~195MB to deploy, but clients only download what their docume
 
 **Guides:**
 - [Examples & Playground Tutorial](examples/README.md) — Build a LaTeX editor UI
-- [CTAN Proxy Guide](docs/ctan-proxy.md) — Self-host the package proxy for production
+- [CTAN Proxy Guide](docs/ctan-proxy.md) — Use the public package API or run your own proxy
 - [Building from Source](docs/building.md) — Build WASM engine and bundles
-- [Self-hosting](docs/self-hosting.md) — Configure runtime assets and package routes
+- [Runtime setup](docs/self-hosting.md) — Configure hosted or self-hosted runtime assets
 - [Releasing](docs/releasing.md) — Publish npm packages and matched runtime assets
+
+## Hosted runtime and package API
+
+Use a single versioned base URL for the WASM, bundle files and package requests.
+Choose the runtime that matches your engine version.
+
+| Engine | Runtime manifest | Runtime archive and checksums |
+| --- | --- | --- |
+| 0.2.1, June 2026 LaTeX format | [June runtime manifest](https://packages.siglum.org/releases/tl2026-82d0f37405264c2b/runtime.json) | [v0.2.1 on GitHub](https://github.com/SiglumProject/siglum/releases/tag/v0.2.1) |
+| 0.2.0 | [0.2.0 runtime manifest](https://packages.siglum.org/releases/tl2026-a609e31ad3926333/runtime.json) | [v0.2.0 on GitHub](https://github.com/SiglumProject/siglum/releases/tag/v0.2.0) |
+
+The [npm package](https://www.npmjs.com/package/@siglum/engine) provides the
+JavaScript API and worker. The CDN provides the WASM and TeX files. The
+[public package API guide](docs/ctan-proxy.md#public-package-api) has runnable
+examples for TeX Live archives, normalized packages and CTAN metadata.
 
 ## Quick Start (Local Demo)
 
@@ -44,38 +59,34 @@ The four-repository UI workspace can prepare and test all dependencies together.
 
 ## Installation
 
-The June update pairs `@siglum/engine@0.2.1` with its verified June runtime.
-The engine continues to use `@siglum/filesystem@^0.3.0`. See
-[release steps](docs/releasing.md) for publication order and
-[self-hosting](docs/self-hosting.md) for runtime setup.
+Install the engine version that matches your runtime. npm and GitHub
+publish independently. Check the version in npm before installing it.
 
 ```sh
-npm install @siglum/engine@0.2.1
+npm view @siglum/engine version
+npm install @siglum/engine@0.2.0
 ```
 
-After publication, download `siglum-runtime-v0.2.1.tar.gz` from the matching
-[engine release](https://github.com/SiglumProject/siglum/releases), or
-[build the June format update](docs/building.md). Extract downloaded assets
-and run `scripts/verify-runtime.mjs <directory>`. The previous
-[v0.2.0 release](https://github.com/SiglumProject/siglum/releases/tag/v0.2.0)
-has its own runtime archive.
-The archive contains `runtime.json`, `wasm/`, bundle files, and `normalized/`.
-Host all of them together under `/releases/<releaseId>/`. The Siglum Cloudflare
-adapter additionally maps `bundles/` URLs to the bundle files in that directory.
+This Vite example uses the hosted 0.2.0 runtime. To use the June runtime,
+install engine 0.2.1 when it appears in npm and use the June manifest's URL
+without the trailing `/runtime.json`. See the [Vite setup](#usage-with-bundlers-vite-webpack-etc).
 
 ```javascript
 import { SiglumCompiler } from '@siglum/engine';
-import workerUrl from '@siglum/engine/worker?url'; // Vite example
+import workerUrl from '@siglum/engine/worker?url';
 
-const base = 'https://your-api.example/releases/<releaseId>';
+const base = 'https://packages.siglum.org/releases/tl2026-a609e31ad3926333';
 const compiler = new SiglumCompiler({
     workerUrl,
-    wasmUrl: `${base}/wasm/busytex.wasm`,
-    bundlesUrl: `${base}/bundles`,
+    wasmUrl: base + '/wasm/busytex.wasm',
+    bundlesUrl: base + '/bundles',
     ctanProxyUrl: base,
-    xzwasmUrl: `${base}/xzwasm.js`,
+    xzwasmUrl: base + '/xzwasm.js',
 });
+await compiler.init();
 ```
+
+To host the same assets yourself, follow the [self-hosting guide](docs/self-hosting.md).
 
 ## Usage
 

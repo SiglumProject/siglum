@@ -2,6 +2,33 @@
 
 A caching proxy for fetching LaTeX packages from TexLive and CTAN. Extracts packages and serves them as JSON for browser-based LaTeX compilers.
 
+## Public package API
+
+Siglum serves the public proxy and CDN from the same versioned release URL.
+Set `ctanProxyUrl` to the base URL used by your [matching runtime](../README.md#hosted-runtime-and-package-api).
+These examples use the June 2026 runtime.
+
+```sh
+base=https://packages.siglum.org/releases/tl2026-82d0f37405264c2b
+
+# Download a TeX Live package as a .tar.xz archive.
+curl -fL "$base/api/texlive/csquotes?tlYear=2026" -o csquotes.tar.xz
+
+# Get normalized package files as JSON.
+curl -fsS "$base/api/fetch/acrotex?tlYear=2026"
+
+# Get CTAN package metadata as JSON.
+curl -fsS "$base/api/ctan-pkg/enumitem"
+```
+
+The proxy defaults to TeX Live 2026. Use `tlYear=2026` to make that choice
+explicit. The CDN serves the manifest at `/runtime.json` under the same base.
+Existing clients can also use the legacy proxy host.
+[Legacy package response](https://ctan-proxy.siglum.org/enumitem)
+
+The rest of this guide describes the standalone Bun proxy. Its dependency
+and cache statistics endpoints are specific to that server.
+
 ## Architecture
 
 ```

@@ -4,11 +4,18 @@ The npm package contains JavaScript and TypeScript declarations. TeX binaries,
 formats, bundles, and package indexes are separate runtime assets. Cloudflare
 is optional: the engine uses the HTTP endpoints configured by the application.
 
+## Use Siglum's hosted runtime
+
+For an integration that uses Siglum's public CDN and package proxy, see the
+[hosted configuration and runtime links](../README.md#hosted-runtime-and-package-api)
+and the [public package API examples](ctan-proxy.md#public-package-api).
+
 ## Install and configure
 
-For the June runtime, install `@siglum/engine@0.2.1`. It depends on
+For the June runtime, use `@siglum/engine@0.2.1` when that version appears
+in npm. It depends on
 `@siglum/filesystem@^0.3.0`. Use the matching archive from the
-[engine releases](https://github.com/SiglumProject/siglum/releases).
+[v0.2.1 engine release](https://github.com/SiglumProject/siglum/releases/tag/v0.2.1).
 Extract `siglum-runtime-v0.2.1.tar.gz` and verify it from this repository:
 
 ```sh
