@@ -71,6 +71,10 @@ Siglum's `src/worker.js` uses fresh modules for each TeX/BibTeX pass via
 `busytex_pipeline.js` and its heap-restore reuse path. Bring it into a reuse
 experiment with repeated successful and failed runs. Review upstream build
 changes on a separate branch against the pinned Emscripten 3.1.43 toolchain.
+Upstream's stricter link checks are worth evaluating there. The current
+combined relink warns about an unresolved `getpass` symbol. The pdfTeX boolean
+allocation fixes in upstream's 2023 backports already exist in the fork's
+pinned 2026 source.
 
 ## Upgrade checks
 
