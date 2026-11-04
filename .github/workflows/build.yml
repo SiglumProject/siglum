@@ -26,6 +26,8 @@ jobs:
     container:
       image: emscripten/emsdk@sha256:e856cd59d54fd143366c2df314043d63a1ca23ab43521e0f30f9d9a7ce6d43e0
       options: --user root
+    env:
+      EMSCRIPTEN_VERSION: '3.1.43'
     defaults:
       run:
         shell: bash
@@ -62,12 +64,16 @@ jobs:
           key: busytex-${{ runner.os }}-${{ runner.arch }}-${{ steps.busytex.outputs.revision }}-${{ hashFiles('.github/workflows/build.yml') }}
           fail-on-cache-miss: true
 
-      - name: Build native tools and the combined WASM
+      - name: Build native tools
+        if: ${{ !inputs.skip_wasm }}
+        working-directory: busytex
+        run: make native
+
+      - name: Build the combined WASM
         if: ${{ !inputs.skip_wasm }}
         working-directory: busytex
         run: |
           # The WASM rules use the native ICU, FreeType and Web2C tools.
-          make native
           make wasm
           sha256sum build/native/busytex build/wasm/busytex.{js,wasm} > build/compiler.sha256
 
@@ -89,6 +95,12 @@ jobs:
           make build/texlive-basic.txt
           bash regen-formats.sh
           make build/wasm/texlive-basic.js
+
+      - name: Verify the standalone BusyTeX release archive
+        working-directory: busytex
+        run: |
+          make build/versions.txt
+          bash package-wasm-release.sh "$(git rev-parse HEAD)"
 
       - name: Split into bundles
         working-directory: packages
