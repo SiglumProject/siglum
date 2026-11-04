@@ -129,7 +129,9 @@ async function ensureManifestsMounted() {
     if (!fs) return false;
     manifestsMounting = (async () => {
         try {
-            await fs.mountAuto('/manifests');
+            // Mount prefixes are removed by the filesystem. Keep this cache's
+            // version separate from the bundle cache's version on the same backend.
+            await fs.mountAuto('/manifests', { namespace: 'siglum-engine-manifests' });
             manifestsMounted = true;
             return true;
         } catch (e) {

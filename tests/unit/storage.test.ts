@@ -190,7 +190,7 @@ describe('storage module', () => {
 
             it('should call mountAuto for manifests', async () => {
                 await getManifestFromCache('test');
-                expect(mockFileSystem.mountAuto).toHaveBeenCalledWith('/manifests');
+                expect(mockFileSystem.mountAuto).toHaveBeenCalledWith('/manifests', { namespace: 'siglum-engine-manifests' });
             });
         });
 
