@@ -85,6 +85,9 @@ export default defineConfig({
     },
     // Serve static files for WASM and bundles
     server: {
+        // The package server uses packages/packages as a compatibility symlink
+        // back to packages. Vite must not follow it recursively in browser tests.
+        watch: { ignored: ['**/packages/packages'] },
         fs: {
             // Allow serving files from parent directories for linked packages
             allow: ['..'],
