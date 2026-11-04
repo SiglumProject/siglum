@@ -1,6 +1,7 @@
 # Siglum
 
 [![npm version](https://img.shields.io/npm/v/@siglum/engine)](https://www.npmjs.com/package/@siglum/engine)
+[![weekly npm downloads](https://img.shields.io/npm/dw/@siglum/engine)](https://www.npmjs.com/package/@siglum/engine)
 [![license](https://img.shields.io/npm/l/@siglum/engine)](https://github.com/SiglumProject/siglum/blob/main/LICENSE)
 
 A browser-based LaTeX compiler. TeX Live 2026 running in WebAssembly, with lazy bundle loading and on-demand package fetching.
