@@ -6,11 +6,10 @@ is optional: the engine uses the HTTP endpoints configured by the application.
 
 ## Install and configure
 
-Install `@siglum/engine@0.2.0`. It depends on `@siglum/filesystem@^0.3.0`.
-Use the matching runtime archive from the [engine releases](https://github.com/SiglumProject/siglum/releases).
-Do not combine the older v0.1.0 assets with the TeX Live 2026 package.
-
-Extract `siglum-runtime-v0.2.0.tar.gz` and verify it from this repository:
+For the June runtime, install `@siglum/engine@0.2.1`. It depends on
+`@siglum/filesystem@^0.3.0`. Use the matching archive from the
+[engine releases](https://github.com/SiglumProject/siglum/releases).
+Extract `siglum-runtime-v0.2.1.tar.gz` and verify it from this repository:
 
 ```sh
 node scripts/verify-runtime.mjs /path/to/extracted/runtime

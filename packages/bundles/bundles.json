@@ -1,5 +1,8 @@
 {
   "version": 1,
+  "sourceCommands": {
+    "DocumentMetadata": ["latex-lab", "pdfmanagement-testphase", "tagpdf"]
+  },
   "bundles": {
     "amsmath": {
       "files": 30,

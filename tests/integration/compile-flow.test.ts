@@ -432,6 +432,28 @@ describe('Compilation Flow Integration', () => {
     });
 
     describe('Bundle loading', () => {
+        it('sends project dependency bundles to the worker without fetching CTAN packages', async () => {
+            await initCompiler();
+            expect(compiler.enableCtan).toBe(false);
+            const additionalFiles = { 'settings.tex': '\\FixtureCommand{}' };
+            const prescan = vi.mocked(compiler.bundleManager.prescanForCtanPackages).mockReturnValue({
+                bundledPackages: ['hyperref'],
+                ctanPackages: ['unknownpackage'],
+                additionalBundles: ['hyperref', 'graphics'],
+            });
+            const postMessage = vi.spyOn(workerInstances[0], 'postMessage');
+
+            const result = await compiler.compile(SIMPLE_DOCUMENT, { engine: 'pdflatex', additionalFiles });
+
+            expect(result.success).toBe(true);
+            expect(prescan).toHaveBeenCalledWith(SIMPLE_DOCUMENT, 'pdflatex', additionalFiles, 'document.tex', ['base']);
+            expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'compile',
+                bundleNames: expect.arrayContaining(['hyperref', 'graphics']),
+            }), expect.any(Array));
+            expect(compiler.ctanFetcher.batchFetchPackages).not.toHaveBeenCalled();
+        });
+
         it('should request bundles based on packages', async () => {
             await initCompiler();
 

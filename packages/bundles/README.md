@@ -1,50 +1,25 @@
-# TeX Bundles
+# TeX Live bundles
 
-Pre-bundled TeX Live 2025 packages for lazy loading in the browser.
+Siglum loads these TeX Live 2026 bundles as the document needs them. Keep the
+data files, indexes, formats, and BusyTeX WASM from the same immutable runtime.
 
-## Download
+## Get the bundles
 
-Bundle data files are not checked into git. Download from CDN:
-
-```bash
-curl -LO https://cdn.siglum.org/tl2025/siglum-bundles-v0.1.0.tar.gz
-tar -xzf siglum-bundles-v0.1.0.tar.gz -C packages/
-```
-
-Or from [GitHub Releases](https://github.com/SiglumProject/siglum-engine/releases).
+Download the matching runtime from the
+[engine releases](https://github.com/SiglumProject/siglum/releases) or follow
+the [build and restore instructions](../../docs/building.md). The release
+includes a manifest for checking each artifact's size and SHA-256 hash.
 
 ## Files
 
-### Bundle Data (downloaded)
-- `*.data.gz` — Gzipped bundle data containing concatenated file contents
+- `*.data.gz` contains compressed concatenated bundle files.
+- `*.raw` serves the same data for byte-range requests.
+- `bundles.json` lists bundle sizes, file counts, package aliases, and
+  dependencies. Its optional `sourceCommands` object maps TeX control-word
+  names without the leading backslash to package names. The splitter preserves
+  this field.
+- `file-manifest.json` maps each `/texlive/` path to a bundle and byte range.
+- `file-to-package.json` maps filenames to TeX Live package names.
+- `package-deps.json` lists package dependencies.
 
-### Index Files (in git)
-- `bundles.json` — Bundle registry with metadata (sizes, file counts, hashes)
-- `file-manifest.json` — Maps file paths → bundle name + byte offset
-- `file-to-package.json` — Maps filenames (e.g., `geometry.sty`) → CTAN package names
-- `package-deps.json` — Package dependency graph extracted from .sty files
-
-## Building from Source
-
-See **[docs/building.md](../../docs/building.md)** for complete build instructions.
-
-Quick reference — bundles are generated using scripts in the parent `packages/` directory:
-
-```bash
-cd packages
-bun run split-bundle.ts           # Split texlive-basic into bundles
-bun run update-bundles-tl2025.ts  # Update bundles from TeX Live archives
-```
-
-The `file-to-package.json` index maps filenames to CTAN packages:
-
-```bash
-curl -o /tmp/tlpdb.txt https://mirrors.ctan.org/systems/texlive/tlnet/tlpkg/texlive.tlpdb
-node scripts/build-file-index.js packages/bundles/file-to-package.json
-```
-
-## Path Convention
-
-All file paths start with `/texlive/` to match the TeX Live directory structure used by BusyTeX.
-
-Example: `/texlive/texmf-dist/tex/latex/geometry/geometry.sty`
+See [self-hosting](../../docs/self-hosting.md) for serving an immutable runtime.

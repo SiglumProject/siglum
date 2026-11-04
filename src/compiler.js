@@ -843,23 +843,17 @@ export class SiglumCompiler {
             await this._initWorker();
         }
 
-        // Determine required bundles from direct \usepackage commands
+        // Determine required bundles from the main source.
         const { bundles } = this.bundleManager.checkPackages(source, engine);
 
         // Add eager bundles for this engine (these get loaded immediately instead of deferred)
         const eagerBundles = this.getEagerBundles(engine);
 
-        // Pre-scan for CTAN packages and dependency bundles - batch fetch before compilation
-        let depBundles = [];
+        // Resolve bundled project dependencies even with the CTAN proxy disabled.
+        const additionalFilesMap = options.additionalFiles || {};
+        const { ctanPackages, additionalBundles: depBundles = [] } = this.bundleManager.prescanForCtanPackages(
+            source, engine, additionalFilesMap, mainFile, bundles);
         if (this.enableCtan) {
-            const additionalFilesMap = options.additionalFiles || {};
-            const { ctanPackages, additionalBundles } = this.bundleManager.prescanForCtanPackages(source, engine, additionalFilesMap, mainFile);
-
-            // Add bundles needed for package dependencies (not detected from direct \usepackage)
-            if (additionalBundles && additionalBundles.length > 0) {
-                depBundles = additionalBundles;
-            }
-
             // Resolve fontspec named fonts (\setmainfont{EB Garamond}, etc.) to
             // their TeX Live packages so fontconfig can find them at runtime.
             // Only relevant for engines that use fontconfig (xelatex/lualatex).
@@ -1147,14 +1141,8 @@ export class SiglumCompiler {
         // Determine required bundles (same logic as compile)
         const { bundles } = this.bundleManager.checkPackages(source, engine);
 
-        // Get dependency bundles from prescan (e.g., utils for environ)
-        let depBundles = [];
-        if (this.enableCtan) {
-            const { additionalBundles } = this.bundleManager.prescanForCtanPackages(source, engine, {});
-            if (additionalBundles && additionalBundles.length > 0) {
-                depBundles = additionalBundles;
-            }
-        }
+        const { additionalBundles: depBundles = [] } = this.bundleManager.prescanForCtanPackages(
+            source, engine, {}, undefined, bundles);
 
         // Worker-direct bundle loading: send names only
         const bundleNames = [...new Set([...bundles, ...depBundles])];
