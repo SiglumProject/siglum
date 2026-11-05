@@ -75,9 +75,10 @@ export async function publishRuntimeObject(options, fetchResource = globalThis.f
   if (options.copyFrom !== undefined) {
     let xml;
     try { xml = await response.text(); } catch { throw new Error('R2 copy response could not be read'); }
+    const result = xml.match(/^\s*(?:<\?xml\s[^?]*\?>\s*)?<((?:[A-Za-z_][\w.-]*:)?CopyObjectResult)(?:\s[^<>]*)?>([\s\S]*)<\/\1>\s*$/);
+    const etag = result?.[2].match(/<((?:[A-Za-z_][\w.-]*:)?ETag)(?:\s[^<>]*)?>([^<]*)<\/\1>/)?.[2].trim();
     if (/<(?:[A-Za-z0-9_]+:)?Error(?:\s|\/?>)/.test(xml) ||
-        !/<(?:[A-Za-z0-9_]+:)?CopyObjectResult(?:\s|>)/.test(xml) ||
-        !/<(?:[A-Za-z0-9_]+:)?ETag(?:\s|>)/.test(xml)) {
+        !result || !etag || etag === '""' || etag === '&quot;&quot;') {
       throw new Error('R2 copy did not return a successful CopyObjectResult');
     }
   }
