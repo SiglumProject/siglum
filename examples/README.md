@@ -10,6 +10,30 @@ bun serve-local.ts
 
 > **See also:** [CTAN Proxy Guide](../docs/ctan-proxy.md) for self-hosting the package proxy in production.
 
+## Hosted compiler
+
+Install the engine:
+
+```sh
+npm install @siglum/engine
+```
+
+For Vite, apply the [bundler setup](../docs/usage.md#usage-with-bundlers-vite-webpack-etc),
+then resolve the hosted runtime for the installed SDK:
+
+```js
+import { SiglumCompiler, resolveRuntime } from '@siglum/engine';
+import workerUrl from '@siglum/engine/worker?url';
+
+const compiler = new SiglumCompiler({ ...await resolveRuntime(), workerUrl });
+await compiler.init();
+```
+
+The resolver returns immutable asset URLs and caches the verified descriptor and
+manifest together. An offline reopen also needs the engine and the document's
+packages and fonts in cache. The local playground below uses the runtime served
+by the source checkout.
+
 ---
 
 ## Building a LaTeX Playground
@@ -18,14 +42,16 @@ This guide breaks down `playground.html` into its core components.
 
 ### 1. Required Headers
 
-Siglum uses SharedArrayBuffer for WASM memory, which requires these HTTP headers:
+Siglum's faster lazy-file path uses SharedArrayBuffer, which requires these
+HTTP headers:
 
 ```
 Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
 ```
 
-The dev server (`serve-local.ts`) adds these automatically.
+The dev server (`serve-local.ts`) adds these automatically. Browsers without
+SharedArrayBuffer use complete bundle loading instead.
 
 ### 2. Import Map
 
@@ -74,7 +100,9 @@ await compiler.init();
 | `verbose` | false | Log TeX stdout (slower) |
 | `eagerBundles` | {} | Bundles to preload (e.g., `['cm-super']`) |
 
-> **Bundler note:** If using Vite, Webpack, or similar, you must copy `node_modules/@siglum/engine/src/worker.js` to your public folder and pass `workerUrl`. See the main [README](../README.md#usage-with-bundlers-vite-webpack-etc) for details.
+> **Bundler note:** Pass the exported worker as a static asset, or copy it to
+> your public folder and pass its served URL as `workerUrl`. See the main
+> [usage guide](../docs/usage.md#usage-with-bundlers-vite-webpack-etc) for details.
 
 ### 4. Compile a Document
 
@@ -151,9 +179,16 @@ const compiler = new SiglumCompiler({
 
 ### 8. Local vs CDN Mode
 
-Switch between local dev server and CDN-hosted assets:
+Use explicit local URLs with the development server. Hosted applications can
+use `resolveRuntime()` to select a compatible immutable release automatically.
+For manual downloads, the [latest engine release](https://github.com/SiglumProject/siglum/releases/latest)
+and release history provide archives and manifests. See
+[hosted runtime setup](../docs/usage.md#hosted-runtime-and-package-api) for discovery
+routes and their rollout status.
 
 ```javascript
+import { resolveRuntime } from '@siglum/engine';
+
 // Local development
 const localConfig = {
     bundlesUrl: 'http://localhost:8787/bundles',
@@ -161,12 +196,8 @@ const localConfig = {
     ctanProxyUrl: 'http://localhost:8787',
 };
 
-// Production CDN
-const cdnConfig = {
-    bundlesUrl: 'https://cdn.siglum.org/tl2025/bundles',
-    wasmUrl: 'https://cdn.siglum.org/tl2025/busytex.wasm',
-    ctanProxyUrl: 'https://your-ctan-proxy.com',  // You need to host this
-};
+// Hosted discovery for this installed SDK
+const cdnConfig = await resolveRuntime();
 ```
 
 ### 9. Cache Management
@@ -217,13 +248,17 @@ The playground includes these examples:
 ## Troubleshooting
 
 **"SharedArrayBuffer is not defined"**
-Your server isn't sending the required COOP/COEP headers. Use `serve-local.ts` or configure your server.
+Check the server's COOP/COEP headers and use the matching engine worker. The
+engine also supports complete bundle loading when SharedArrayBuffer is
+unavailable.
 
 **"Package not found" errors**
 Make sure `ctanProxyUrl` is set and the proxy is running (`bun packages/ctan-proxy.ts`).
 
 **Slow first compile**
-Initial compile downloads ~16MB of bundles. Subsequent compiles use cached data.
+The first compile loads the engine, bundles, and packages the document needs.
+Later compiles reuse cached data. The selected runtime manifest records asset
+sizes.
 
 **xcolor driver errors**
 Use `\RequirePackage[pdftex]{xcolor}` for pdfLaTeX or detect with `iftex`:

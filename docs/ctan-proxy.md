@@ -5,24 +5,40 @@ A caching proxy for fetching LaTeX packages from TexLive and CTAN. Extracts pack
 ## Public package API
 
 Siglum serves the public proxy and CDN from the same versioned release URL.
-Set `ctanProxyUrl` to the base URL used by your [matching runtime](../README.md#hosted-runtime-and-package-api).
-These examples use the June 2026 runtime.
+Set `ctanProxyUrl` to the base URL used by your [matching runtime](usage.md#hosted-runtime-and-package-api).
+Published runtime archives remain available from the
+[latest engine release](https://github.com/SiglumProject/siglum/releases/latest).
 
-```sh
-base=https://packages.siglum.org/releases/tl2026-82d0f37405264c2b
+```js
+import { resolveRuntime } from '@siglum/engine';
 
-# Download a TeX Live package as a .tar.xz archive.
-curl -fL "$base/api/texlive/csquotes?tlYear=2026" -o csquotes.tar.xz
-
-# Get normalized package files as JSON.
-curl -fsS "$base/api/fetch/acrotex?tlYear=2026"
-
-# Get CTAN package metadata as JSON.
-curl -fsS "$base/api/ctan-pkg/enumitem"
+const runtime = await resolveRuntime();
+const response = await fetch(
+    `${runtime.baseUrl}/api/texlive/csquotes?tlYear=${runtime.texLiveYear}`,
+);
+if (!response.ok) throw new Error(`Package request failed: HTTP ${response.status}`);
+const archive = await response.arrayBuffer();
 ```
 
-The proxy defaults to TeX Live 2026. Use `tlYear=2026` to make that choice
-explicit. The CDN serves the manifest at `/runtime.json` under the same base.
+The resolver selects `/engines/<installed-sdk-version>/latest.json` for the
+installed SDK automatically, verifies the descriptor and manifest, and returns
+an immutable release base. Reuse that resolved base for every request. Relative
+to it, `/api/texlive/:package` returns an archive,
+`/api/fetch/:package` returns normalized files as JSON, and
+`/api/ctan-pkg/:package` returns CTAN metadata.
+
+The discovery routes also include `https://packages.siglum.org/latest`
+for a human-facing redirect to the current manifest and `/latest.json` for the
+current descriptor. Applications use the SDK-specific resolver to keep their
+runtime compatible with the installed package.
+
+A verified descriptor and manifest are cached together for offline metadata
+resolution after a network failure. Offline compilation still needs the engine,
+bundles, packages, and fonts required by the document to have been cached.
+
+The default package year is configured by `TEXLIVE_YEAR` in `src/texlive.js`.
+Set `tlYear` explicitly when choosing among the supported years. The CDN serves
+the manifest at `/runtime.json` under the same base.
 Existing clients can also use the legacy proxy host.
 [Legacy package response](https://ctan-proxy.siglum.org/enumitem)
 
@@ -70,7 +86,7 @@ The proxy runs on `http://localhost:8081` by default.
 When a package is requested:
 
 1. **Check cache** - Memory first, then disk
-2. **Try TexLive** - Pre-built packages from the matching TeX Live year (2026 by default)
+2. **Try TexLive** - Pre-built packages from the configured TeX Live year
 3. **Try CTAN** - Falls back to CTAN mirrors if not in TexLive
 4. **Extract & cache** - Extracts `.sty`, `.cls`, fonts, etc. and caches to disk
 
@@ -92,10 +108,11 @@ extracts and normalizes files on the server and returns JSON.
 
 Without a year, the proxy first looks for `package.r*.tar.xz` in
 `CTAN_TEXLIVE_ARCHIVE_DIR` (default: `busytex/source/texmfrepo/archive` in the repository).
-If no local archive exists, it fetches TeX Live 2026 through `src/texlive.js`. An explicit
-`tlYear` skips the local archive; supported years are 2026, 2025, 2024, and 2023.
-For 2026, tlnet is used only while its `TEXLIVE_2026` marker is present; otherwise
-the historic 2026 `tlnet-final` archive is used.
+If no local archive exists, it fetches the configured `TEXLIVE_YEAR` through
+`src/texlive.js`. An explicit `tlYear` skips the local archive and must be in
+`SUPPORTED_TL_YEARS`. For the configured year, tlnet is used only while its
+matching year marker is present; otherwise that year's historic `tlnet-final`
+archive is used.
 Missing archives return 404, invalid names/years return 400, and upstream failures
 return 502. Responses include the same CORS headers as the other API routes.
 
@@ -197,7 +214,8 @@ The memory cache prevents repeated disk reads. For production with many concurre
 - **Small memory** (default 100): Lower RAM, more disk reads
 - **Large memory** (500-1000): Higher RAM, fewer disk reads
 
-CTAN has ~6000 packages. If your users access a wide variety, increase the cache size. If most users compile similar documents (academic papers, resumes), the default is fine.
+Increase the cache size if users access a wide variety of packages. Repeatedly
+compiling similar documents tends to reuse a smaller package set.
 
 The disk cache is unlimited and permanent. Packages are never evicted from disk.
 
@@ -305,7 +323,8 @@ If a package isn't found:
 
 ### Slow first fetch
 
-First fetch for a package may take 2-5 seconds (network latency to TexLive/CTAN mirrors). Subsequent requests are instant from cache.
+The first fetch includes mirror latency, download, and extraction. Later
+requests reuse cached files.
 
 ### Cache corruption
 

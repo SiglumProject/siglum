@@ -1,6 +1,6 @@
 {
   "name": "@siglum/engine",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "A browser-based LaTeX compiler. TeX Live 2026 running in WebAssembly, with lazy bundle loading and on-demand package fetching.",
   "type": "module",
   "main": "src/index.js",
@@ -37,19 +37,19 @@
     "types/"
   ],
   "scripts": {
-    "dev": "bun serve-local.ts",
+    "dev": "node scripts/generate-package-metadata.mjs && bun serve-local.ts",
     "proxy": "cd packages && bun run ctan-proxy.ts",
-    "build:types": "tsc",
-    "prepublishOnly": "tsc",
+    "build:types": "node scripts/generate-package-metadata.mjs && tsc",
+    "prepublishOnly": "node scripts/generate-package-metadata.mjs && tsc",
     "test": "vitest",
-    "test:run": "vitest run",
+    "test:run": "node scripts/generate-package-metadata.mjs && vitest run",
     "test:coverage": "vitest run --coverage",
     "test:browser": "vitest --config vitest.browser.config.ts",
     "test:browser:run": "vitest run --config vitest.browser.config.ts",
     "test:bun-parity": "bun run scripts/providers-bun-smoke.ts",
     "prebuild-packages": "bun run scripts/prebuild-packages.js",
     "test:proxy": "bun run scripts/ctan-proxy-smoke.ts",
-    "test:types": "tsc && tsc --noEmit --strict --skipLibCheck --moduleResolution bundler --module ESNext --target ES2022 --lib ES2022,DOM tests/typecheck/compile-result.ts",
+    "test:types": "node scripts/generate-package-metadata.mjs && tsc && tsc --noEmit --strict --skipLibCheck --moduleResolution bundler --module ESNext --target ES2022 --lib ES2022,DOM tests/typecheck/compile-result.ts",
     "prepare:runtime": "node scripts/sync-runtime.mjs",
     "stage:runtime": "node scripts/stage-runtime.mjs",
     "verify:runtime": "node scripts/verify-runtime.mjs"
@@ -87,9 +87,6 @@
     "playwright": "1.58.2",
     "typescript": "^5.7.0",
     "vitest": "^2.0.0"
-  },
-  "overrides": {
-    "@siglum/filesystem": "file:../siglum-filesystem"
   },
   "publishConfig": {
     "access": "public"

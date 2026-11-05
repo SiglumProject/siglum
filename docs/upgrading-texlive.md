@@ -8,9 +8,9 @@ does not upgrade the runtime.
 
 1. Review the BusyTeX fork and upstream changes. Update the pinned submodule
    only after reviewing build and runtime compatibility.
-2. Set the release's source and ISO URLs in `busytex/Makefile`. The 2026 ISO is
-   `texlive2026-20260301.iso`; use the checked-in source URL rather than guessing
-   a filename. Remove stale build inputs through a deliberate clean rebuild.
+2. Set the release's source and ISO URLs and checksums in `busytex/Makefile`.
+   Use verified upstream filenames and checksums. Remove stale build inputs
+   through a deliberate clean rebuild.
 3. Follow [building](building.md): native/WASM, TeX installation, WASM formats,
    packaging, and bundle splitting. Do not reuse formats from a different engine.
 4. Preserve the Makefile's `texmf.cnf` rewrite: kpathsea paths must resolve
@@ -22,15 +22,15 @@ does not upgrade the runtime.
 7. Update the engine year and source policy in `src/texlive.js`, its tests,
    and the production adapter in `siglum-web/worker` together.
 8. Run unit, type, browser, proxy, and Bun-provider checks; stage and verify
-   the immutable runtime before publishing. See [release steps](releasing.md).
+   the immutable runtime using the [build guide](building.md#stage-and-verify).
 
 ## Package-source policy
 
-For the 2026 engine, the default fetch year is **2026**, not 2025. Current-year
-packages come from tlnet only while its `TEXLIVE_2026` marker is present. After
-the mirror advances, the resolver switches to historic 2026 `tlnet-final`.
-Explicit older-year compatibility requests remain available. Test both marker
-present and marker absent paths; never let a pinned engine follow a future year.
+`TEXLIVE_YEAR` and `SUPPORTED_TL_YEARS` in `src/texlive.js` define the default
+and compatibility years. Packages for the configured year come from tlnet only
+while its matching year marker is present. After the mirror advances, the
+resolver switches to that year's historic `tlnet-final`. Test both marker-present
+and marker-absent paths so the pinned engine keeps its matching package year.
 
 Publish new assets under a new immutable release prefix. Do not overwrite
 files under an existing runtime ID. The deployed Cloudflare adapter is in
@@ -38,43 +38,36 @@ files under an existing runtime ID. The deployed Cloudflare adapter is in
 directory are obsolete. npm publication, runtime upload, Worker deployment,
 and Pages deployment are separate operations.
 
-## June 2026 LaTeX format update
+## LaTeX format updates
 
-This refresh keeps the TeX Live engine and package routes on 2026. The BusyTeX
-fork overlays the 13 packages pinned in `texlive-packages.lock.json` on the March
-ISO installation, then builds the LaTeX2e `2026-06-01` formats with the WASM
-that will load them. Review the package pins and format generator in the fork
-before updating the submodule here.
+The BusyTeX fork overlays the packages pinned in `texlive-packages.lock.json`
+on the ISO installation, then builds the lock's `formatVersion` with the WASM
+that will load the formats. Review package revisions, checksums, the snapshot,
+and the format generator before updating the submodule here.
 
-The build lock governs bundled packages. On-demand dependencies still follow
-the 2026 package-source policy above. Stage a new immutable runtime for the
-updated formats and verify that both pdfLaTeX and XeLaTeX report
-`LaTeX2e <2026-06-01>` in their compilation logs. Exercise a document with
+The build lock governs bundled packages. On-demand dependencies follow the
+package-source policy above. Stage a new immutable runtime for updated formats.
+Verify that both pdfLaTeX and XeLaTeX report the lock's format version in their
+compilation logs. Exercise a document with
 `\DocumentMetadata{}`, a warmed compile, a fresh offline editor
 reopen, and a bibliography with multiple passes.
 
-## Upstream review for the June release
+## Review upstream changes
 
-Reviewed upstream main through
-[`2beec8b`](https://github.com/busytex/busytex/commit/2beec8babad2f00b0429b548f51afcbcd8a53eb4)
-on November 4, 2026. The fork's published main at `c2c008e` is 10 commits
-ahead and 109 behind. Both Makefiles list the March 1, 2026 ISO. Upstream's
-active archive extraction rule still reads its 2023 cache URLs, and its
-compiler source is also pinned to TeX Live 2023. The June branch uses the
-verified 2026 ISO and overlays the locked June packages. The November 1
-upstream changes alter FreeType/ICU tool invocation and README examples.
+Compare the [Siglum compiler fork](https://github.com/SiglumProject/busytex)
+with [BusyTeX upstream](https://github.com/busytex/busytex) from their merge
+base. Record the reviewed revisions and decisions in the change description or
+[release history](https://github.com/SiglumProject/busytex/releases).
 
-[Upstream PR #14](https://github.com/busytex/busytex/pull/14), merged October 16,
-closes file streams retained when reusing a module and restoring its heap.
-Siglum's `src/worker.js` uses fresh modules for each TeX/BibTeX pass via
-`getOrCreateModule` and `resetForPass`. The upstream stream fix applies to
-`busytex_pipeline.js` and its heap-restore reuse path. Bring it into a reuse
-experiment with repeated successful and failed runs. Review upstream build
-changes on a separate branch against the pinned Emscripten 3.1.43 toolchain.
-Upstream's stricter link checks are worth evaluating there. The current
-combined relink warns about an unresolved `getpass` symbol. The pdfTeX boolean
-allocation fixes in upstream's 2023 backports already exist in the fork's
-pinned 2026 source.
+Review engine security fixes, native dependencies, tool invocation, link
+settings, filesystem behavior, and module lifetime changes. Check the active
+source and extraction rules alongside declared ISO URLs. Evaluate upstream
+build changes against the toolchain pinned by the build wrapper and CI.
+
+For changes involving module reuse or heap restoration, exercise repeated
+successful and failed compiles, file cleanup, and bibliography passes. Verify
+which fixes already exist in the pinned TeX Live source before applying
+backports. Keep engine, ISO, overlays, and format generation compatible.
 
 ## Upgrade checks
 

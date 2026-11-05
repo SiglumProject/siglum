@@ -1,14 +1,36 @@
 # TeX Live bundles
 
-Siglum loads these TeX Live 2026 bundles as the document needs them. Keep the
+Siglum loads these TeX Live bundles as the document needs them. Keep the
 data files, indexes, formats, and BusyTeX WASM from the same immutable runtime.
 
 ## Get the bundles
 
 Download the matching runtime from the
-[engine releases](https://github.com/SiglumProject/siglum/releases) or follow
+[latest engine release](https://github.com/SiglumProject/siglum/releases/latest) or follow
 the [build and restore instructions](../../docs/building.md). The release
 includes a manifest for checking each artifact's size and SHA-256 hash.
+
+Resolve the runtime for the installed SDK and fetch its bundle registry:
+
+```js
+import { resolveRuntime } from '@siglum/engine';
+
+const runtime = await resolveRuntime();
+const response = await fetch(`${runtime.bundlesUrl}/bundles.json`);
+if (!response.ok) throw new Error(`Bundle registry request failed: HTTP ${response.status}`);
+const registry = await response.json();
+```
+
+The resolver automatically chooses
+`/engines/<installed-sdk-version>/latest.json`, verifies its descriptor and
+manifest, and returns immutable asset URLs. Keep those URLs together for the
+compiler's lifetime. `https://packages.siglum.org/latest` redirects
+readers to the current manifest; `/latest.json` provides global discovery.
+
+Cached verified metadata supports offline resolution after a network failure.
+The document's engine, bundles, packages, and fonts must also be cached for
+offline compilation. See the [public package API](../../docs/ctan-proxy.md#public-package-api)
+for discovery and package requests.
 
 ## Files
 

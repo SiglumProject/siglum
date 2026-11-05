@@ -31,8 +31,14 @@ fi
 RUNTIME_DIR="$(node -p "require('./.local-release/current.json').directory")"
 RUNTIME_ID="$(node -p "require('./.local-release/current.json').releaseId")"
 node scripts/verify-runtime.mjs "$RUNTIME_DIR"
-if [ "$RUNTIME_ONLY" = 0 ]; then
-  RUNTIME_VERSION="$(node -p 'require(process.argv[1]).engineVersion' "$RUNTIME_DIR/runtime.json")"
+RUNTIME_VERSION="$(node -p 'require(process.argv[1]).engineVersion' "$RUNTIME_DIR/runtime.json")"
+if [ "$RUNTIME_ONLY" = 1 ]; then
+  TAG="v$RUNTIME_VERSION"
+  # The existing tag supplies the matching SDK and the serialized promotion job.
+  if [ "${DRY_RUN:-0}" != 1 ]; then
+    gh api "repos/{owner}/{repo}/git/ref/tags/$TAG" > /dev/null
+  fi
+else
   if [ "$RUNTIME_VERSION" != "$PACKAGE_VERSION" ]; then echo 'Runtime version must match package.json' >&2; exit 1; fi
 fi
 run() { if [ "${DRY_RUN:-0}" = 1 ]; then echo "DRY: $*"; else "$@"; fi; }
@@ -53,6 +59,8 @@ fi
 if [ "$RUNTIME_ONLY" = 0 ]; then
   TARBALL=".local-release/siglum-runtime-$TAG.tar.gz"
   run tar -czf "$TARBALL" -C "$RUNTIME_DIR" .
-  run gh release create "$TAG" "$TARBALL" --target "$RELEASE_COMMIT" --title "$TAG" --generate-notes
+  run gh release create "$TAG" "$RUNTIME_DIR/runtime.json" "$TARBALL" --target "$RELEASE_COMMIT" --title "$TAG" --generate-notes
+else
+  run gh workflow run release.yml --ref "$TAG" -f "runtime_manifest_url=https://packages.siglum.org/releases/$RUNTIME_ID/runtime.json"
 fi
-printf 'Runtime: %s\nBefore deploying the UI, verify this runtime at the deployed API URL and set VITE_ENGINE_RELEASE=%s.\n' "$RUNTIME_ID" "$RUNTIME_ID"
+printf 'Runtime: %s\nThe release workflow verifies the hosted assets and promotes discovery metadata.\nFor the editor release build, set VITE_ENGINE_RELEASE=%s after verification.\n' "$RUNTIME_ID" "$RUNTIME_ID"
