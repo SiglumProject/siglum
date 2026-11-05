@@ -1,6 +1,7 @@
 import { createHash, webcrypto } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveDemoRuntime } from '../../scripts/demo-runtime.mjs';
 import { ENGINE_VERSION } from '../../src/package-metadata.js';
@@ -10,7 +11,7 @@ const SERVICE = 'https://packages.siglum.org';
 const POINTER = `${SERVICE}/engines/${ENGINE_VERSION}/latest.json`;
 const RELEASE = `https://api.github.com/repos/SiglumProject/siglum/releases/tags/v${ENGINE_VERSION}`;
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
-let directory: string;
+let directory = '';
 
 function runtime() {
   const files = Object.fromEntries(['bundles.json', 'file-manifest.json', 'wasm/busytex.js', 'wasm/busytex.wasm', 'xzwasm.js']
@@ -50,9 +51,12 @@ async function stage(pair = runtime()) {
 
 beforeEach(async () => {
   vi.stubGlobal('crypto', webcrypto);
-  directory = await mkdtemp('/private/tmp/siglum-demo-runtime-unit-');
+  directory = await mkdtemp(join(tmpdir(), 'siglum-demo-runtime-unit-'));
 });
-afterEach(() => rm(directory, { recursive: true, force: true }));
+afterEach(async () => {
+  if (directory) await rm(directory, { recursive: true, force: true });
+  directory = '';
+});
 
 describe('single-checkout playground runtime', () => {
   it('uses the public per-SDK descriptor without consulting GitHub when available', async () => {
