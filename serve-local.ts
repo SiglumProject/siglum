@@ -19,6 +19,7 @@ import {
 } from './packages/ctan-core.ts';
 import { resolveFontPackage } from './packages/font-index.ts';
 import { loadPrebuilt } from './packages/prebuilt-cache.ts';
+import { resolveDemoRuntime } from './scripts/demo-runtime.mjs';
 
 const execAsync = promisify(exec);
 
@@ -31,6 +32,17 @@ const packageCache = new LRUCache<ProcessedPackage>(50);
 
 // Request deduplication
 const inFlightRequests = new Map<string, Promise<Response>>();
+const demoRuntimes = new Map<string, ReturnType<typeof resolveDemoRuntime>>();
+
+function demoRuntime(origin: string, hosted = false) {
+  const key = `${origin}:${hosted}`;
+  if (!demoRuntimes.has(key)) {
+    const resolution = resolveDemoRuntime({ directory: import.meta.dir, origin, hosted })
+      .catch(error => { demoRuntimes.delete(key); throw error; });
+    demoRuntimes.set(key, resolution);
+  }
+  return demoRuntimes.get(key)!;
+}
 
 // CORS headers for all responses
 const corsHeaders = {
@@ -38,6 +50,8 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
   'Cross-Origin-Resource-Policy': 'cross-origin',
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'require-corp',
 };
 
 function jsonResponse(data: any, status = 200): Response {
@@ -257,7 +271,7 @@ async function fetchAndExtractPackage(pkg: string): Promise<Response> {
 // Server
 // ============================================================================
 
-Bun.serve({
+const server = Bun.serve({
   port: parseInt(process.env.SIGLUM_DEV_PORT || '8787', 10),
   hostname: process.env.SIGLUM_DEV_HOST || '127.0.0.1', // Opt in to LAN access when needed
   async fetch(req) {
@@ -281,6 +295,45 @@ Bun.serve({
 
     if (req.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
+    }
+
+    if (path === '/runtime-config.json') {
+      try {
+        const runtime = await demoRuntime(url.origin, url.searchParams.get('mode') === 'hosted');
+        return new Response(JSON.stringify(runtime.config), {
+          headers: { ...noCacheHeaders, 'Content-Type': 'application/json' },
+        });
+      } catch (error) {
+        return jsonResponse({ error: error instanceof Error ? error.message : String(error) }, 502);
+      }
+    }
+
+    if (path.startsWith('/releases/')) {
+      const runtime = await demoRuntime(url.origin);
+      const prefix = `/releases/${runtime.config.releaseId}/`;
+      if (!runtime.directory || !path.startsWith(prefix)) return new Response('Unknown local runtime', { status: 404, headers: corsHeaders });
+      let name = path.slice(prefix.length);
+      if (name.startsWith('bundles/')) name = name.slice('bundles/'.length);
+      if (name !== 'runtime.json' && !Object.hasOwn(runtime.manifest.files, name)) return new Response('Unknown runtime asset', { status: 404, headers: corsHeaders });
+      const file = Bun.file(join(runtime.directory, name));
+      const headers = {
+        ...cacheHeaders,
+        'Content-Type': name.endsWith('.wasm') ? 'application/wasm' : name.endsWith('.js') ? 'application/javascript'
+          : name.endsWith('.json') ? 'application/json' : name.endsWith('.gz') ? 'application/gzip' : 'application/octet-stream',
+        'Accept-Ranges': 'bytes',
+      };
+      const range = req.headers.get('Range');
+      if (range) {
+        const match = /^bytes=(\d+)-(\d*)$/.exec(range);
+        const start = match ? Number(match[1]) : -1;
+        const end = match?.[2] ? Number(match[2]) : file.size - 1;
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= file.size) {
+          return new Response(null, { status: 416, headers: { ...headers, 'Content-Range': `bytes */${file.size}` } });
+        }
+        const last = Math.min(end, file.size - 1);
+        return new Response(file.slice(start, last + 1), { status: 206, headers: { ...headers, 'Content-Range': `bytes ${start}-${last}/${file.size}` } });
+      }
+      return new Response(file, { headers });
     }
 
     // /bundles/* - serve from packages/bundles
@@ -520,7 +573,7 @@ Bun.serve({
   },
 });
 
-console.log('Local dev server: http://localhost:8787');
+console.log(`Local dev server: ${server.url}`);
 console.log('  /             -> ./examples/playground.html');
 console.log('  /examples/*   -> ./examples/');
 console.log('  /bundles/*    -> ./packages/bundles/');

@@ -6,17 +6,40 @@ is optional: the engine uses the HTTP endpoints configured by the application.
 
 ## Use Siglum's hosted runtime
 
-For an integration that uses Siglum's public CDN and package proxy, see the
-[hosted configuration and runtime links](../README.md#hosted-runtime-and-package-api)
-and the [public package API examples](ctan-proxy.md#public-package-api).
+A hosted integration can resolve its matching runtime without copying a release
+ID into application configuration.
 
-## Install and configure
+```sh
+npm install @siglum/engine
+```
 
-For the June runtime, use `@siglum/engine@0.2.1` when that version appears
-in npm. It depends on
-`@siglum/filesystem@^0.3.0`. Use the matching archive from the
-[v0.2.1 engine release](https://github.com/SiglumProject/siglum/releases/tag/v0.2.1).
-Extract `siglum-runtime-v0.2.1.tar.gz` and verify it from this repository:
+```js
+import { SiglumCompiler, resolveRuntime } from '@siglum/engine';
+import workerUrl from '@siglum/engine/worker?url';
+
+const runtime = await resolveRuntime();
+const compiler = new SiglumCompiler({ ...runtime, workerUrl });
+await compiler.init();
+```
+
+Apply the [bundler configuration](usage.md#usage-with-bundlers-vite-webpack-etc),
+including the optional BLAKE3 dependency workaround. `resolveRuntime()` selects
+`/engines/<installed-sdk-version>/latest.json` from the package service and
+verifies the referenced manifest. Keep its returned immutable URLs for the
+compiler's lifetime. `https://packages.siglum.org/latest` redirects to the
+current manifest; `/latest.json` provides global discovery metadata.
+
+The resolver caches the verified descriptor and manifest as one pair for offline
+metadata reopen. The engine and document dependencies must also be cached before
+offline compilation. A new package or font can still require a network connection.
+
+## Host the runtime yourself
+
+Download the runtime archive and checksums from the
+[latest engine release](https://github.com/SiglumProject/siglum/releases/latest).
+Check that the archive's `runtime.json` has the same `engineVersion` as your
+installed package. Extract the matching archive and verify it from this
+repository.
 
 ```sh
 node scripts/verify-runtime.mjs /path/to/extracted/runtime
@@ -31,35 +54,42 @@ prefix need a server; static hosting alone cannot provide on-demand packages.
 import { SiglumCompiler } from '@siglum/engine';
 import workerUrl from '@siglum/engine/worker?url'; // Vite asset import
 
-const base = 'https://your-host.example/releases/<releaseId>';
+const RUNTIME_BASE = import.meta.env.VITE_SIGLUM_RUNTIME_BASE;
 const compiler = new SiglumCompiler({
   workerUrl,
-  wasmUrl: `${base}/wasm/busytex.wasm`,
-  bundlesUrl: `${base}/bundles`,
-  ctanProxyUrl: base,
-  xzwasmUrl: `${base}/xzwasm.js`,
+  wasmUrl: `${RUNTIME_BASE}/wasm/busytex.wasm`,
+  bundlesUrl: `${RUNTIME_BASE}/bundles`,
+  ctanProxyUrl: RUNTIME_BASE,
+  xzwasmUrl: `${RUNTIME_BASE}/xzwasm.js`,
 });
 await compiler.init();
 ```
 
-See [bundler configuration](../README.md#usage-with-bundlers-vite-webpack-etc)
+Set `VITE_SIGLUM_RUNTIME_BASE` to your own immutable runtime URL without a trailing slash, such as
+`https://your-host.example/releases/<releaseId>`, using the selected manifest's
+release ID. See [bundler configuration](usage.md#usage-with-bundlers-vite-webpack-etc)
 for the optional BLAKE3 dependency workaround. Serve WASM as
 `application/wasm`, preserve binary bytes, and provide CORS headers for any
 cross-origin assets. Use HTTPS outside localhost.
+
+A self-hosted discovery adapter can expose the same descriptor routes and use
+`resolveRuntime({ baseUrl: 'https://your-host.example' })`. The reference
+Cloudflare adapter implements those routes; the standalone Bun package proxy
+does not create release descriptors.
 
 ## Proxy contract
 
 | Route relative to `ctanProxyUrl` | Response |
 | --- | --- |
-| `/api/fetch/<pkg>?tlYear=2026` | Normalized package JSON, including file contents |
-| `/api/texlive/<pkg>?tlYear=2026` | Raw TeX Live `.tar.xz` archive |
+| `/api/fetch/<pkg>?tlYear=<year>` | Normalized package JSON, including file contents |
+| `/api/texlive/<pkg>?tlYear=<year>` | Raw TeX Live `.tar.xz` archive |
 | `/api/ctan-pkg/<pkg>` | CTAN package metadata |
 
-The default package year is **2026**. The shared resolver in `src/texlive.js`
-checks the current repository's `TEXLIVE_2026` marker before using it. Once
-that marker is unavailable, it uses the historic 2026 `tlnet-final` archive;
-it does not silently upgrade a 2026 engine to next year's packages. Explicit
-compatibility years 2025, 2024, and 2023 are also supported.
+Use the `texLiveYear` from the selected runtime manifest. The shared resolver
+in `src/texlive.js` configures the default and supported package years. It checks
+the current repository's marker for the configured year before using it. Once
+that marker is unavailable, it uses that year's historic `tlnet-final` archive.
+Explicit compatibility years use separate archives and caches.
 
 Omitting `ctanProxyUrl` disables on-demand package fetching. Bundled packages
 remain available. See the [proxy guide](ctan-proxy.md) for caches and routes.

@@ -1,31 +1,32 @@
 # Building Siglum Engine
 
 The npm library and TeX runtime have separate builds. For a prebuilt runtime,
-use the matching [GitHub release](https://github.com/SiglumProject/siglum/releases)
-and follow [self-hosting](self-hosting.md). Do not use older release assets with
-the TeX Live 2026 engine.
+use a matching [GitHub release](https://github.com/SiglumProject/siglum/releases/latest)
+and follow [self-hosting](self-hosting.md). Match the runtime manifest's
+`engineVersion` to the installed engine package and keep its assets together.
 
 ## Source checkout
 
-Clone `SiglumProject/siglum` as `siglum-engine`, with `siglum-filesystem` beside
-it. Initialize the pinned BusyTeX submodule and build the filesystem dependency:
+Clone `SiglumProject/siglum` and install its published package dependencies.
+Initialize the pinned BusyTeX submodule when building the compiler runtime.
 
 ```sh
 git submodule update --init --recursive
 bun install --frozen-lockfile
-bun run --cwd ../siglum-filesystem build
 bun run build:types
 ```
 
-The local filesystem override is for development. Published npm consumers use
-`@siglum/filesystem@^0.3.0`. See [release steps](releasing.md) for packing without
-local overrides.
+The default filesystem dependency uses the range in `package.json`. Use the Bun
+tooling pinned by the CI workflows and the checked-in lockfile. For coordinated
+source changes across packages, use the editor's optional
+[source workspace](https://github.com/SiglumProject/siglum-web/blob/main/docs/development.md#workspace).
 
-## TeX Live 2026 runtime
+## TeX Live runtime
 
-The supported build wrapper is `busytex/build-wasm.sh`, using Podman and
-Emscripten **3.1.43**. Install Podman, Bun, Python 3, and the archive tools used
-by the Makefile. Start the Podman machine before building. Reserve substantial
+The supported build wrapper is `busytex/build-wasm.sh`, using Podman and its
+digest-pinned Emscripten image. Keep the wrapper and CI toolchain inputs aligned.
+Install Podman, Bun, Python, and the archive tools used by the Makefile.
+Start the Podman machine before building. Reserve substantial
 working space for the ISO, extracted sources, native build, and WASM build.
 
 ```sh
@@ -39,10 +40,10 @@ make source/texmfrepo.txt
 ```
 
 `wasm` builds the native tools before the WASM targets in the same checkout.
-`texlive` installs the March 1, 2026 TeX Live base. `formats` applies the
-checksum-verified June 5 package archives listed in
-`busytex/texlive-packages.lock.json` and generates the LaTeX2e `2026-06-01`
-formats with the exact combined BusyTeX WASM from the build. This includes
+`texlive` installs the TeX Live base pinned in `busytex/Makefile`. `formats`
+applies the checksum-verified package archives listed in
+`busytex/texlive-packages.lock.json` and generates LaTeX formats for its
+`formatVersion` with the exact combined BusyTeX WASM from the build. This includes
 pdfLaTeX, XeLaTeX, and LuaHBLaTeX format files. The browser compiler exposes
 pdfLaTeX and XeLaTeX.
 
@@ -59,8 +60,8 @@ each declared package is bundled for offline use.
 
 Outputs include `busytex/build/wasm/busytex.{js,wasm}` and
 `packages/bundles/`. Keep the generated formats, engine binaries, and bundled
-packages from the same build together. The ISO alone installs an older LaTeX
-format. The June package lock is part of the build input.
+packages from the same build together. The ISO supplies the base installation;
+the package lock and format-generation step are also required build inputs.
 
 ### Restore CI build outputs
 
@@ -102,12 +103,12 @@ node scripts/stage-runtime.mjs --combined-only
 node scripts/verify-runtime.mjs "$(node -p "require('./.local-release/current.json').directory")"
 ```
 
-Review all generated bundle and index changes before committing. The June
-runtime-only release uses the combined BusyTeX engine. Staging checks the WASM,
+Review all generated bundle and index changes before committing. The
+`--combined-only` option stages the combined BusyTeX engine. Staging checks the WASM,
 glue and bundled format bytes against the fork's
 `build/texlive-basic-formats.sha256` and creates a content-addressed runtime
-under `.local-release/tl2026-…`. Git tracks the build inputs. Distribute bulk
-runtime files through the [release steps](releasing.md).
+under `.local-release/<releaseId>`. Git tracks the build inputs. See
+[self-hosting](self-hosting.md) to serve a verified runtime for your application.
 
 ## Validation
 
@@ -123,8 +124,7 @@ The browser suite requires Playwright, the local ISO package archives and the
 runtime copies in `dist/` prepared by `bun run prepare:runtime`. Test
 pdfLaTeX, XeLaTeX, bibliography passes, nested projects, fonts, and packages
 fetched through the proxy. Biber is not bundled; use BibTeX or a prebuilt `.bbl`.
-Use the [web release preview](https://github.com/SiglumProject/siglum-web#release-order)
-to test a staged combined-only runtime.
+Use the [web development guide](https://github.com/SiglumProject/siglum-web/blob/main/docs/development.md)
+to test the runtime in the editor.
 
-For upgrades see [upgrading TeX Live](upgrading-texlive.md). For publication,
-use [release steps](releasing.md); merging or running a build does not deploy.
+For upgrades see [upgrading TeX Live](upgrading-texlive.md).

@@ -78,8 +78,8 @@
             <option value="tikz">TikZ Diagram</option>
         </select>
         <select id="modeSelect">
-            <option value="local">Local Dev Server</option>
-            <option value="cdn">CDN (cdn.siglum.org)</option>
+            <option value="local">Automatic runtime</option>
+            <option value="cdn">Hosted runtime</option>
         </select>
         <label>
             <input type="checkbox" id="enableVerbose">
@@ -240,36 +240,26 @@ This is a custom environment with colored text.
             document.getElementById('ctanCount').textContent = stats.ctan.fetchCount;
         }
 
-        function getConfig(mode) {
-            if (mode === 'cdn') {
-                const CDN_BASE = 'https://cdn.siglum.org/tl2025';
-                return {
-                    bundlesUrl: CDN_BASE + '/bundles',
-                    wasmUrl: CDN_BASE + '/busytex.wasm',
-                    ctanProxyUrl: 'http://localhost:8787', // Still need local proxy for CTAN
-                };
-            } else {
-                const API_BASE = 'http://localhost:8787';
-                return {
-                    bundlesUrl: API_BASE + '/bundles',
-                    wasmUrl: API_BASE + '/wasm/busytex.wasm',
-                    ctanProxyUrl: API_BASE,
-                };
-            }
+        async function getConfig(mode) {
+            const response = await fetch('/runtime-config.json' + (mode === 'cdn' ? '?mode=hosted' : ''));
+            const config = await response.json();
+            if (!response.ok) throw new Error(config.error || 'Runtime configuration is unavailable');
+            return config;
         }
 
         async function init(mode) {
             currentMode = mode;
             const badge = document.getElementById('modeBadge');
-            badge.textContent = mode === 'cdn' ? 'CDN' : 'Local';
-            badge.className = 'badge ' + (mode === 'cdn' ? 'cdn' : 'local');
 
             document.getElementById('compileBtn').disabled = true;
             document.getElementById('status').textContent = '';
-            log('Initializing compiler (' + mode + ' mode)...');
+            log('Resolving compiler runtime...');
             updateStatus('Initializing...');
 
-            const config = getConfig(mode);
+            const config = await getConfig(mode);
+            badge.textContent = config.mode === 'local' ? 'Local build' : 'Hosted runtime';
+            badge.className = 'badge ' + (config.mode === 'local' ? 'local' : 'cdn');
+            log('Initializing compiler (' + config.mode + ' runtime)...');
             log('Bundles: ' + config.bundlesUrl);
             log('WASM: ' + config.wasmUrl);
 
@@ -278,10 +268,8 @@ This is a custom environment with colored text.
             }
 
             compiler = new SiglumCompiler({
-                bundlesUrl: config.bundlesUrl,
-                wasmUrl: config.wasmUrl,
-                ctanProxyUrl: config.ctanProxyUrl,
-                xzwasmUrl: 'http://localhost:8787/xzwasm.js',
+                ...config,
+                workerUrl: '/src/worker.js',
                 verbose: document.getElementById('enableVerbose').checked,
                 eagerBundles: { pdflatex: ['cm-super'] },
                 onLog: log,

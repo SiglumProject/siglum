@@ -1,10 +1,10 @@
 name: Release (npm publish)
 
-# Publishing the engine to npm is the only release step this repo owns in CI.
+# Publish the SDK and promote its verified runtime discovery metadata.
 #
 #   - Runtime assets (busytex.wasm/.js + bundles) are uploaded to Cloudflare R2
-#     from the maintainer's working tree via `scripts/release.sh` (the WASM and
-#     bundle artifacts are gitignored, so CI has nothing to upload).
+#     from the maintainer's working tree via `scripts/release.sh`. CI verifies
+#     those hosted assets before writing the small discovery descriptors.
 #   - The Cloudflare Worker / Pages that *serve* those assets live in their own
 #     repo (the host adapter is intentionally not tracked here).
 #
@@ -15,6 +15,16 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      runtime_manifest_url:
+        description: 'Optional immutable manifest URL for a runtime-only update. Run on its matching SDK release tag.'
+        required: false
+        type: string
+
+concurrency:
+  group: siglum-engine-release-channel
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -22,6 +32,7 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
@@ -47,6 +58,62 @@ jobs:
           fi
           echo "Publishing @siglum/engine@$pkg_version"
 
+      - name: Check runtime promotion credentials
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          if [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Configure bucket-scoped R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and CLOUDFLARE_ACCOUNT_ID for runtime promotion."
+            exit 1
+          fi
+
+      - name: Retrieve the release manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RUNTIME_MANIFEST_URL: ${{ inputs.runtime_manifest_url }}
+        run: |
+          mkdir -p .local-release/source
+          if [ -n "$RUNTIME_MANIFEST_URL" ]; then
+            node --input-type=module <<'JS'
+          import { writeFile } from 'node:fs/promises';
+          const url = process.env.RUNTIME_MANIFEST_URL;
+          if (!/^https:\/\/packages\.siglum\.org\/releases\/tl\d{4}-[a-f0-9]{16}\/runtime\.json$/.test(url)) throw new Error('Expected an immutable public runtime manifest URL');
+          const response = await fetch(url, { redirect: 'error', cache: 'no-store' });
+          if (!response.ok) throw new Error(`Runtime manifest: HTTP ${response.status}`);
+          await writeFile('.local-release/source/runtime.json', Buffer.from(await response.arrayBuffer()));
+          JS
+          else
+          for attempt in $(seq 1 20); do
+            if gh release download "$RELEASE_TAG" --pattern runtime.json --dir .local-release/source --clobber; then
+              break
+            fi
+            # Older releases carry the manifest inside the runtime archive.
+            if gh release download "$RELEASE_TAG" --pattern "siglum-runtime-$RELEASE_TAG.tar.gz" --dir .local-release/source --clobber; then
+              tar -xzf ".local-release/source/siglum-runtime-$RELEASE_TAG.tar.gz" -C .local-release/source ./runtime.json
+              break
+            fi
+            sleep 10
+          done
+          fi
+          test -s .local-release/source/runtime.json
+
+      - name: Verify hosted runtime and prepare discovery metadata
+        id: runtime
+        run: |
+          node scripts/prepare-runtime-promotion.mjs .local-release/source/runtime.json .local-release/promotion
+
+      # Make this SDK's compatible runtime available before npm exposes the SDK.
+      - name: Publish the compatible SDK runtime
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RUNTIME_ENGINE_VERSION: ${{ steps.runtime.outputs.engine_version }}
+        run: node scripts/publish-runtime-object.mjs "engines/$RUNTIME_ENGINE_VERSION/latest.json" --file .local-release/promotion/runtime.json --content-type application/json --cache-control no-store
+
       - name: Check whether maintainer already published this version
         id: registry
         run: |
@@ -65,9 +132,7 @@ jobs:
       - name: Install dependencies
         if: steps.registry.outputs.published != 'true'
         run: |
-          # Local checkouts use a sibling override; release installation must use
-          # the published dependency. Publish filesystem 0.3.0 first.
-          npm pkg delete overrides
+          # Release installation uses the published dependency without sibling checkouts.
           npm install --no-audit --no-fund
 
       # npm uses the configured trusted publisher and can fall back to a token.
@@ -77,3 +142,16 @@ jobs:
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Verify publication and current npm latest tag
+        id: published
+        run: node scripts/prepare-runtime-promotion.mjs --published .local-release/promotion
+
+      # An older release finishing later must not replace the current latest.
+      - name: Promote the latest published runtime
+        if: steps.published.outputs.promote_latest == 'true'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: node scripts/publish-runtime-object.mjs channels/latest.json --file .local-release/promotion/runtime.json --content-type application/json --cache-control no-store

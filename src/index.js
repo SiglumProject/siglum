@@ -30,3 +30,6 @@ export {
     listAllCachedPackages,
 } from './storage.js';
 export { createBatchedLogger } from './utils.js';
+export { resolveRuntime } from './runtime.js';
+/** @typedef {import('./runtime.js').ResolvedRuntime} ResolvedRuntime */
+/** @typedef {import('./runtime.js').ResolveRuntimeOptions} ResolveRuntimeOptions */
