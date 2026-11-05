@@ -132,9 +132,7 @@ jobs:
       - name: Install dependencies
         if: steps.registry.outputs.published != 'true'
         run: |
-          # Local checkouts use a sibling override; release installation must use
-          # the published dependency. Publish filesystem first.
-          npm pkg delete overrides
+          # Release installation uses the published dependency without sibling checkouts.
           npm install --no-audit --no-fund
 
       # npm uses the configured trusted publisher and can fall back to a token.

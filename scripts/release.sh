@@ -45,7 +45,7 @@ run() { if [ "${DRY_RUN:-0}" = 1 ]; then echo "DRY: $*"; else "$@"; fi; }
 if [ "${SKIP_R2:-0}" != 1 ]; then
   # runtime.json is uploaded last; the UI must only be deployed after remote verification.
   while IFS=$'\t' read -r asset content_type; do
-    run bunx wrangler r2 object put "siglum-bundles/releases/$RUNTIME_ID/$asset" --remote --file="$RUNTIME_DIR/$asset" --content-type="$content_type"
+    run bunx wrangler@4.158.0 r2 object put "siglum-bundles/releases/$RUNTIME_ID/$asset" --remote --file="$RUNTIME_DIR/$asset" --content-type="$content_type"
   done < <(node --input-type=module - "$RUNTIME_DIR" <<'JS'
 import {readFileSync} from 'node:fs';
 const manifest=JSON.parse(readFileSync(process.argv[2]+'/runtime.json','utf8'));
