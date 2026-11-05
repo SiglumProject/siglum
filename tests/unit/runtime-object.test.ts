@@ -83,4 +83,21 @@ describe('bucket-scoped runtime object publishing', () => {
       await expect(publishRuntimeObject({ ...credentials, key: 'destination', copyFrom: 'source' }, async () => new Response(xml))).rejects.toThrow('successful CopyObjectResult');
     }
   });
+
+  it('requires a complete copy result and a nonempty, closed ETag', async () => {
+    const copy = { ...credentials, key: 'destination', copyFrom: 'source' };
+    for (const xml of [
+      '<CopyObjectResult><ETag>"fixture"</ETag>',
+      '<CopyObjectResult><ETag>"fixture"</CopyObjectResult>',
+      '<CopyObjectResult><ETag></ETag></CopyObjectResult>',
+      '<CopyObjectResult><ETag>  </ETag></CopyObjectResult>',
+      '<CopyObjectResult><ETag>""</ETag></CopyObjectResult>',
+      '<CopyObjectResult><ETag>&quot;&quot;</ETag></CopyObjectResult>',
+      '<s3:CopyObjectResult><s3:ETag>"fixture"</s3:ETag></other:CopyObjectResult>',
+    ]) {
+      await expect(publishRuntimeObject(copy, async () => new Response(xml))).rejects.toThrow('successful CopyObjectResult');
+    }
+    const complete = '<?xml version="1.0" encoding="UTF-8"?>\n<s3:CopyObjectResult xmlns:s3="http://s3.amazonaws.com/doc/2006-03-01/"><s3:ETag>&quot;fixture&quot;</s3:ETag></s3:CopyObjectResult>\n';
+    await expect(publishRuntimeObject(copy, async () => new Response(complete))).resolves.toBeUndefined();
+  });
 });
