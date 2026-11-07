@@ -34,7 +34,7 @@ async function ensureWasmCacheMounted() {
 
 const CTAN_CACHE_VERSION = 12; // TL2026 sources and preserved BibTeX package paths.
 const BUNDLE_CACHE_VERSION = 6; // Bumped: TL2026 clean rebuild — regenerated bundles + re-merged cm-super
-const MANIFEST_CACHE_VERSION = 7; // Bumped: TL2026 clean rebuild — regenerated file-manifest.json (+ cm-super)
+const MANIFEST_CACHE_VERSION = 10; // Refresh exact package and bitmap font manifests.
 
 // CTAN cache mount
 let ctanCacheMounted = false;
@@ -207,25 +207,18 @@ async function ensureBundleCacheMounted() {
     bundleCacheMounting = (async () => {
         try {
             await fs.mountAuto('/bundle-cache');
-            bundleCacheMounted = true;
-
-            // Check version and clear if outdated
+            // Mounts can share a backend, so keep the marker inside the bundle directory.
+            const versionPath = '/bundle-cache/bundles/.version';
             try {
-                const versionStr = await fs.readFile('/bundle-cache/version');
-                const version = parseInt(versionStr) || 0;
+                const version = parseInt(await fs.readFile(versionPath)) || 0;
                 if (version < BUNDLE_CACHE_VERSION) {
-                    if (version > 0) {
-                        console.log(`Bundle cache version upgrade (${version} → ${BUNDLE_CACHE_VERSION}), clearing...`);
-                    }
-                    await fs.rmdir('/bundle-cache', { recursive: true });
-                    await fs.mountAuto('/bundle-cache');
+                    await fs.rmdir('/bundle-cache/bundles', { recursive: true });
                 }
-            } catch (e) {
-                // Version file doesn't exist, will be created on first write
+            } catch {
+                // Older installations have no bundle-specific marker. Keep their cached bundles.
             }
-
-            // Write current version
-            await fs.writeFile('/bundle-cache/version', String(BUNDLE_CACHE_VERSION));
+            await fs.writeFile(versionPath, String(BUNDLE_CACHE_VERSION), { createParents: true });
+            bundleCacheMounted = true;
             return true;
         } catch (e) {
             console.warn('Failed to mount bundle-cache filesystem:', e);
@@ -246,7 +239,8 @@ export async function getBundleFromCache(bundleName) {
     try {
         if (!await ensureBundleCacheMounted()) return null;
         const fs = getFileSystem();
-        const data = await fs.readBinary(`/bundle-cache/bundles/${bundleName}.data`);
+        // A bundle can contain a single gzipped TeX format. Preserve its bytes and offsets.
+        const data = await fs.readBinary(`/bundle-cache/bundles/${bundleName}.data`, { autoDecompress: false });
         return data?.buffer || null;
     } catch (e) {
         return null;
@@ -405,10 +399,12 @@ export async function getAuxCache(preambleHash) {
  * Save aux files for a preamble hash.
  * @param {string} preambleHash - Hash of the document preamble
  * @param {Object} auxFiles - Aux files to cache
+ * @param {Object|null} [checkpoint] - Full-build input fingerprints for chapter preview
+ * @param {Array} [fontRanges] - Exact deferred font ranges read by TeX
  * @returns {Promise<void>}
  */
-export async function saveAuxCache(preambleHash, auxFiles) {
-    const entry = { hash: preambleHash, files: auxFiles, timestamp: Date.now() };
+export async function saveAuxCache(preambleHash, auxFiles, checkpoint = undefined, fontRanges = undefined) {
+    const entry = { hash: preambleHash, files: auxFiles, timestamp: Date.now(), checkpoint, fontRanges };
 
     // LRU: delete first to ensure it moves to end on set
     const exists = auxMemoryCache.has(preambleHash);
@@ -421,13 +417,13 @@ export async function saveAuxCache(preambleHash, auxFiles) {
     }
     auxMemoryCache.set(preambleHash, entry);
 
-    // Fire-and-forget write to disk (memory cache already has the data)
-    // Don't await - matches original IndexedDB behavior where transaction was queued but not awaited
-    ensureAuxCacheMounted().then(mounted => {
+    const write = ensureAuxCacheMounted().then(async mounted => {
         if (!mounted) return;
         const fs = getFileSystem();
-        fs.writeFile(`/aux-cache/${preambleHash}.json`, JSON.stringify(entry), { createParents: true }).catch(() => {});
-    });
+        await fs.writeFile(`/aux-cache/${preambleHash}.json`, JSON.stringify(entry), { createParents: true });
+    }).catch(() => {});
+    // A full-build checkpoint must survive an immediate offline reopen.
+    if (checkpoint !== undefined) await write;
 }
 
 // Document cache for compiled PDFs

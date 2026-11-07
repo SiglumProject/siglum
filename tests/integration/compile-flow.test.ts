@@ -5,7 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockFileSystem, resetMockFileSystem } from '../setup/mocks/filesystem';
-import { MockCompilerWorker } from '../setup/mocks/worker';
+import { MockCompilerWorker, type CompileMessage } from '../setup/mocks/worker';
 import {
     SIMPLE_DOCUMENT,
     XELATEX_DOCUMENT,
@@ -140,6 +140,7 @@ vi.mock('../../src/bundles.js', () => {
         BundleManager: vi.fn().mockImplementation(() => createMockBundleManager()),
         detectEngine: vi.fn().mockReturnValue('pdflatex'),
         extractPreamble: vi.fn().mockReturnValue('\\documentclass{article}'),
+        getKomaExtendedSize: vi.fn().mockReturnValue(null),
         hashPreamble: vi.fn().mockReturnValue('preamblehash'),
     };
 });
@@ -428,6 +429,110 @@ describe('Compilation Flow Integration', () => {
             await compilePromise;
 
             expect(compiler.ctanFetcher.batchFetchPackages).toHaveBeenCalledWith(['tikz']);
+        });
+
+        type CtanCompileMessage = CompileMessage & {
+            ctanFilesDelta?: {
+                baseRevision: string | null;
+                paths?: string[];
+                changed?: Record<string, Uint8Array>;
+            };
+        };
+
+        it('retains exact CTAN bytes across builds and sends changed views and removals', async () => {
+            await initCompiler();
+            compiler.workerCtanFileDeltas = true;
+            const worker = workerInstances[0];
+            const posts = vi.spyOn(worker, 'postMessage');
+            const source = new Uint8Array([0xee, 1, 2, 3, 0xff]);
+            const data = {
+                '/texlive/old.sty': new Uint8Array([17]),
+                '/texlive/view.sty': source.subarray(1, 4),
+            };
+            let cached: Record<string, Uint8Array> = data;
+            compiler.ctanFetcher.getCachedFiles = () => cached;
+            let success = true;
+            worker.setHandler('compile', raw => {
+                const msg = raw as CtanCompileMessage;
+                return createCompileResponse({
+                    id: msg.id,
+                    ctanFileRevision: msg.ctanFilesDelta?.paths ? msg.id : msg.ctanFilesDelta?.baseRevision,
+                    success,
+                });
+            });
+            const build = () => compiler.compile(SIMPLE_DOCUMENT, { mainFile: 'project/main.tex' });
+            const postedCompile = () => posts.mock.calls.filter(([message]) =>
+                (message as CompileMessage).type === 'compile').at(-1)! as [CtanCompileMessage, ArrayBuffer[]];
+
+            expect((await build()).success).toBe(true);
+            const [cold, coldTransfer] = postedCompile();
+            expect(cold.ctanFilesDelta?.baseRevision).toBeNull();
+            expect(cold.ctanFilesDelta?.paths).toEqual(Object.keys(data));
+            expect(cold.ctanFilesDelta?.changed?.['/texlive/view.sty']).toEqual(new Uint8Array([1, 2, 3]));
+            expect(coldTransfer).toHaveLength(2);
+            expect(cold.ctanFiles).toEqual({});
+
+            success = false;
+            expect((await build()).success).toBe(false);
+            const [warm, warmTransfer] = postedCompile();
+            expect(warm.ctanFilesDelta).toEqual({ baseRevision: cold.id });
+            expect(warmTransfer).toHaveLength(0);
+
+            // A mutable cache view can change even when the Uint8Array identity is unchanged.
+            source[2] = 9;
+            cached = { '/texlive/view.sty': data['/texlive/view.sty'] };
+            success = true;
+            expect((await build()).success).toBe(true);
+            const [updated, updatedTransfer] = postedCompile();
+            expect(updated.ctanFilesDelta?.baseRevision).toBe(cold.id);
+            expect(updated.ctanFilesDelta?.paths).toEqual(['/texlive/view.sty']);
+            expect(updated.ctanFilesDelta?.changed?.['/texlive/view.sty']).toEqual(new Uint8Array([1, 9, 3]));
+            expect(updatedTransfer).toHaveLength(1);
+            expect(updatedTransfer[0].byteLength).toBe(3);
+        });
+
+        it('resends a complete CTAN snapshot after a stale revision or worker rotation', async () => {
+            await initCompiler();
+            compiler.workerCtanFileDeltas = true;
+            const worker = workerInstances[0];
+            const cache = { '/texlive/local.sty': new Uint8Array([1, 2, 3]) };
+            compiler.ctanFetcher.getCachedFiles = () => cache;
+            const messages: CtanCompileMessage[] = [];
+            worker.setHandler('compile', raw => {
+                const msg = raw as CtanCompileMessage;
+                messages.push(msg);
+                if (messages.length === 2) {
+                    return { type: 'compile-response', id: msg.id, success: false, ctanFilesNeedReset: true };
+                }
+                return createCompileResponse({ id: msg.id, ctanFileRevision: msg.id });
+            });
+            const build = () => compiler.compile(SIMPLE_DOCUMENT, { mainFile: 'project/main.tex' });
+            expect((await build()).success).toBe(true);
+            expect((await build()).success).toBe(true);
+            expect(messages.map(msg => msg.ctanFilesDelta?.baseRevision)).toEqual([null, messages[0].id, null]);
+            expect(messages[2].ctanFilesDelta?.changed).toEqual(cache);
+
+            compiler.terminate();
+            await initCompiler();
+            compiler.workerCtanFileDeltas = true;
+            const replacement = workerInstances.at(-1)!;
+            const posts = vi.spyOn(replacement, 'postMessage');
+            expect((await build()).success).toBe(true);
+            const [full] = posts.mock.calls.find(([msg]) => (msg as CompileMessage).type === 'compile')!;
+            expect((full as CtanCompileMessage).ctanFilesDelta?.baseRevision).toBeNull();
+            expect((full as CtanCompileMessage).ctanFilesDelta?.changed).toEqual(cache);
+        });
+
+        it('sends exact CTAN byte views to workers without snapshot support', async () => {
+            await initCompiler();
+            const posts = vi.spyOn(workerInstances[0], 'postMessage');
+            const path = '/texlive/asset.dat';
+            compiler.ctanFetcher.getCachedFiles = () => ({ [path]: new Uint8Array([0xee, 1, 2, 0xff]).subarray(1, 3) });
+            await compiler.compile(SIMPLE_DOCUMENT, { mainFile: 'project/main.tex' });
+            const [message] = posts.mock.calls.find(([msg]) => (msg as CompileMessage).type === 'compile')!;
+            const compile = message as CtanCompileMessage;
+            expect(compile.ctanFilesDelta).toBeUndefined();
+            expect(compile.ctanFiles?.[path]).toEqual(new Uint8Array([1, 2]));
         });
     });
 

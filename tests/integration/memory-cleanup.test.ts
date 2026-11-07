@@ -101,6 +101,7 @@ vi.mock('../../src/bundles.js', () => {
         BundleManager: vi.fn().mockImplementation(() => createMockBundleManager()),
         detectEngine: vi.fn().mockReturnValue('pdflatex'),
         extractPreamble: vi.fn().mockReturnValue('\\documentclass{article}'),
+        getKomaExtendedSize: vi.fn().mockReturnValue(null),
         hashPreamble: vi.fn().mockReturnValue('preamblehash'),
     };
 });

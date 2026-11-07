@@ -1,10 +1,12 @@
 name: Test
 on:
   push:
-    branches: [main, upgrade/texlive-2026]
+    branches: [main, upgrade/texlive-2026, performance-optimization]
   pull_request:
 permissions:
   contents: read
+env:
+  PERFORMANCE_SOURCES: ${{ (github.ref_name == 'performance-optimization' || github.head_ref == 'performance-optimization') && 'true' || 'false' }}
 jobs:
   vitest:
     runs-on: ubuntu-latest
@@ -18,7 +20,23 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.3.4'
+      - name: Check out matching performance filesystem
+        if: env.PERFORMANCE_SOURCES == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: SiglumProject/siglum-filesystem
+          ref: performance-optimization
+          path: engine/.local-release/filesystem-source
+          persist-credentials: false
+      - name: Install source workspace
+        if: env.PERFORMANCE_SOURCES == 'true'
+        run: |
+          mkdir -p .local-release/ci-workspace
+          node --input-type=module -e "import { writeFileSync } from 'node:fs'; writeFileSync('.local-release/ci-workspace/package.json', JSON.stringify({name:'siglum-engine-source-ci', private:true, workspaces:['../..','../filesystem-source']}))"
+          bun install --cwd .local-release/ci-workspace --ignore-scripts
+          bun run --cwd .local-release/filesystem-source build
       - name: Install dependencies
+        if: env.PERFORMANCE_SOURCES != 'true'
         run: bun install --frozen-lockfile
       - name: Run tests and declaration checks
         run: bun run test:run && bun run test:types

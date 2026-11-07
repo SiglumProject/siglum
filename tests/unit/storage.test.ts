@@ -255,6 +255,16 @@ describe('storage module', () => {
         });
 
         describe('saveAuxCache', () => {
+            it('preserves learned font ranges with a full-build checkpoint', async () => {
+                const ranges = [['fonts-cm', 10, 18]];
+                await saveAuxCache('font-plan', { '.aux': 'aux content' }, null, ranges);
+                const cached = await getAuxCache('font-plan');
+                expect(cached?.fontRanges).toEqual(ranges);
+                expect(mockFileSystem.writeFile).toHaveBeenCalledWith(
+                    '/aux-cache/font-plan.json', expect.stringContaining('"fontRanges":[["fonts-cm",10,18]]'), expect.any(Object),
+                );
+            });
+
             it('should save aux files', async () => {
                 const files = { 'doc.aux': 'aux content', 'doc.toc': 'toc content' };
                 await saveAuxCache('myhash', files);

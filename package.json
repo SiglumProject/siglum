@@ -30,7 +30,12 @@
       "types": "./types/texlive.d.ts",
       "default": "./src/texlive.js"
     },
-    "./worker": "./src/worker.js"
+    "./worker": "./src/worker.js",
+    "./checkpoint": "./src/checkpoint-api.bundle.mjs",
+    "./process-tools": {
+      "types": "./types/process-tools.d.ts",
+      "default": "./src/process-tools.js"
+    }
   },
   "files": [
     "src/",
@@ -39,8 +44,8 @@
   "scripts": {
     "dev": "node scripts/generate-package-metadata.mjs && bun serve-local.ts",
     "proxy": "cd packages && bun run ctan-proxy.ts",
-    "build:types": "node scripts/generate-package-metadata.mjs && tsc",
-    "prepublishOnly": "node scripts/generate-package-metadata.mjs && tsc",
+    "build:types": "bun run build:checkpoint && node scripts/generate-package-metadata.mjs && tsc",
+    "prepublishOnly": "bun run build:checkpoint && node scripts/generate-package-metadata.mjs && tsc",
     "test": "vitest",
     "test:run": "node scripts/generate-package-metadata.mjs && vitest run",
     "test:coverage": "vitest run --coverage",
@@ -52,7 +57,9 @@
     "test:types": "node scripts/generate-package-metadata.mjs && tsc && tsc --noEmit --strict --skipLibCheck --moduleResolution bundler --module ESNext --target ES2022 --lib ES2022,DOM tests/typecheck/compile-result.ts",
     "prepare:runtime": "node scripts/sync-runtime.mjs",
     "stage:runtime": "node scripts/stage-runtime.mjs",
-    "verify:runtime": "node scripts/verify-runtime.mjs"
+    "verify:runtime": "node scripts/verify-runtime.mjs",
+    "build:checkpoint": "bun build ./src/checkpoint-api.js --target browser --format esm --outfile ./src/checkpoint-api.bundle.mjs",
+    "stage:experimental": "node scripts/stage-experimental-runtime.mjs"
   },
   "repository": {
     "type": "git",

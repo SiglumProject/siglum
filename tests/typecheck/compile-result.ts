@@ -22,3 +22,6 @@ export async function compileBlob(compiler: SiglumCompiler, source: string): Pro
   const invalid: Uint8Array<ArrayBuffer> = result.pdf
   throw new Error(message)
 }
+
+// Initialization hints are constructor configuration; compile() may switch engines.
+export const initializeXeTeX = () => new SiglumCompiler({ initialEngine: 'xelatex' })

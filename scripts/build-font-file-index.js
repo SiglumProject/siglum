@@ -1,4 +1,5 @@
-// Build a font-file-stem → package index from the TeX Live package database.
+// Build a compact font-resource → package index from the TeX Live database.
+// Retain legacy stem aliases and store exact-name overrides for provider collisions.
 //
 // When TeX can't find a font it asks for it by *file stem* — `phvr8t` for the
 // Helvetica T1 metrics, `ec-lmr10`, `cmr10`, `qplr`, … — which names no CTAN /
@@ -30,6 +31,7 @@ const FONT_FILE_EXT = /\.(tfm|vf|pfb|afm|otf|ttf|ttc)$/i;
 
 function build(tlpdb) {
   const index = {};
+  const exact = {};
   let pkg = null;
   let inRunfiles = false;
 
@@ -47,9 +49,17 @@ function build(tlpdb) {
       if (!pkg || pkg.startsWith('00')) continue; // skip collection/scheme meta-packages
       const base = file.split('/').pop();
       const stem = base.replace(FONT_FILE_EXT, '');
+      // Preserve the extension: metrics and outlines can have different providers.
+      if (/^(?:RELOC|texmf-dist)\/fonts\//.test(file) && exact[base] === undefined) exact[base] = pkg;
       // First package to claim a stem wins (matches build-file-index.js).
       if (index[stem] === undefined) index[stem] = pkg;
     }
+  }
+  // Most resource extensions share their stem's provider. Store exact keys only
+  // for collisions, keeping the lookup as small as the legacy stem index.
+  for (const [file, provider] of Object.entries(exact)) {
+    const stem = file.replace(FONT_FILE_EXT, '');
+    if (index[file] === undefined && index[stem] !== provider) index[file] = provider;
   }
   return index;
 }
@@ -59,7 +69,7 @@ const index = build(tlpdb);
 const json = JSON.stringify(index);
 fs.writeFileSync(OUTPUT, json);
 
-console.log(`Indexed ${Object.keys(index).length} font-file stems`);
+console.log(`Indexed ${Object.keys(index).length} font lookup keys`);
 for (const probe of ['phvr8t', 'ptmr8t', 'pcrr8t', 'ec-lmr10', 'cmr10', 'qplr', 'SourceSansPro-Regular']) {
   console.log(`  ${probe} -> ${index[probe] ?? '(not found)'}`);
 }

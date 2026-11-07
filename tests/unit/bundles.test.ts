@@ -124,6 +124,20 @@ describe('bundles module', () => {
             expect(preamble).not.toContain('Hello with packages');
         });
 
+        it('ignores document delimiters inside comments and macro definitions', () => {
+            const prefix = '% example: \\begin{document}\n\\documentclass{article}\n\\newcommand{\\later}{\\begin{document}}\n';
+            expect(extractPreamble(prefix + '\\begin{document}Actual body')).toBe(prefix);
+        });
+        it('keeps escaped percent signs and accepts whitespace before the document argument', () => {
+            const prefix = '\\documentclass{article}\n\\newcommand{\\percentage}{10\\%}\n';
+            expect(extractPreamble(prefix + '\\begin {document}Actual body')).toBe(prefix);
+        });
+        it('declines uncertain preamble execution instead of caching a guessed boundary', () => {
+            for (const prefix of ['\\iffalse ', '\\catcode37=12 ', '\\begin{filecontents}{local.tex} ']) {
+                expect(extractPreamble(prefix + '\\begin{document}')).toBe('');
+            }
+        });
+
         it('should handle empty string', () => {
             expect(extractPreamble('')).toBe('');
         });
@@ -267,7 +281,49 @@ describe('bundles module', () => {
                 });
 
                 await manager.loadManifest();
-                expect(manager.packageMap).toEqual(SAMPLE_BUNDLES_JSON.packages);
+                expect(manager.packageMap).toEqual({ ...SAMPLE_BUNDLES_JSON.packages, amsgen: 'amsmath', keyval: 'graphics' });
+            });
+
+            it('infers any uniquely bundled style or class without changing cached metadata', () => {
+                manager.fileManifest = {
+                    '/texlive/tex/latex/arbitrary/custom.sty': { bundle: 'one' },
+                    '/texlive/tex/latex/arbitrary/customclass.cls': { bundle: 'two' },
+                    '/texlive/tex/latex/arbitrary/ignored.sty': { bundle: 'missing' },
+                } as any;
+                const metadata = { packages: {}, bundles: { one: {}, two: {} } };
+                manager._initFromBundlesData(metadata);
+                expect(manager.packageMap).toEqual({ custom: 'one', customclass: 'two' });
+                expect(metadata.packages).toEqual({});
+            });
+
+            it('keeps explicit owners and refuses ambiguous inferred names', () => {
+                manager.fileManifest = {
+                    '/texlive/one/explicit.sty': { bundle: 'one' },
+                    '/texlive/one/shared.sty': { bundle: 'one' },
+                    '/texlive/two/shared.sty': { bundle: 'two' },
+                } as any;
+                manager._initFromBundlesData({ packages: { explicit: 'two' }, bundles: { one: {}, two: {} } });
+                expect(manager.packageMap).toEqual({ explicit: 'two' });
+            });
+
+            it('routes a bundled type1ec style through CM-Super without CTAN prefetch', async () => {
+                const type1ecPath = '/texlive/texmf-dist/tex/latex/cm-super/type1ec.sty';
+                const manifest = {
+                    ...SAMPLE_FILE_MANIFEST,
+                    [type1ecPath]: { bundle: 'cm-super', start: 0, end: 16, size: 16 },
+                };
+                const bundles = { ...SAMPLE_BUNDLES_JSON, bundles: {
+                    ...SAMPLE_BUNDLES_JSON.bundles, 'cm-super': { files: 1, size: 16 },
+                } };
+                fetchMock.mockImplementation(async (url: string) => ({
+                    ok: true,
+                    json: async () => url.includes('file-manifest.json') ? manifest : bundles,
+                }));
+                await manager.loadManifest();
+
+                const source = String.raw`\usepackage{type1ec}`;
+                expect(manager.checkPackages(source, 'pdflatex').bundles).toContain('cm-super');
+                expect(manager.prescanForCtanPackages(source).ctanPackages).not.toContain('type1ec');
             });
 
             it('should initialize bundleRegistry', async () => {
@@ -492,13 +548,53 @@ describe('bundles module', () => {
                 expect(ctanPackages).toContain('unknownpackage');
             });
 
+            it.each([
+                ['\\documentclass[a4paper,9pt]{scrartcl}', true],
+                ['\\documentclass[fontsize={14.0 pt}]{scrbook}', true],
+                ['\\documentclass[11pt,8pt]{scrreprt}', true],
+                ['\\documentclass[9pt,fontsize=11pt]{scrartcl}', false],
+                ['\\documentclass[fontsize=9.5pt]{scrartcl}', false],
+                ['\\documentclass{scrartcl}', false],
+                ['\\documentclass[9pt]{article}', false],
+            ])('detects optional size data for %s', (source, expected) => {
+                const { ctanPackages } = manager.prescanForCtanPackages(source);
+                expect(ctanPackages.includes('extsizes')).toBe(expected);
+            });
+
+            it('keeps project-local KOMA classes and size files ahead of the optional archive', () => {
+                const source = '\\documentclass[9pt]{scrartcl}';
+                for (const override of ['scrartcl.cls', 'scrsize9pt.clo', 'size9.clo']) {
+                    const { ctanPackages } = manager.prescanForCtanPackages(source, 'pdflatex', {
+                        ['revision/' + override]: '',
+                    }, 'revision/main.tex');
+                    expect(ctanPackages).not.toContain('extsizes');
+                }
+            });
+
             it('should scan additional files', () => {
                 const mainDoc = '\\documentclass{article}\\begin{document}\\input{chapter}\\end{document}';
                 const additionalFiles = {
                     'chapter.tex': '\\usepackage{hyperref}',
                 };
-                const { bundledPackages } = manager.prescanForCtanPackages(mainDoc, 'pdflatex', additionalFiles);
+                const { bundledPackages, additionalBundles } = manager.prescanForCtanPackages(mainDoc, 'pdflatex', additionalFiles);
                 expect(bundledPackages).toContain('hyperref');
+                expect(additionalBundles).toEqual(['hyperref', 'graphics']);
+            });
+
+            it('plans bundled dependencies of local preambles without changing plain article bundles', () => {
+                const article = '\\documentclass{article}\\begin{document}Hello\\end{document}';
+                expect(manager.prescanForCtanPackages(article)).toEqual({
+                    bundledPackages: ['article'], ctanPackages: [], additionalBundles: [],
+                });
+
+                const source = '\\documentclass{local}\\begin{document}Hello\\end{document}';
+                const local = { 'local.cls': '\\LoadClass{article}\\RequirePackage{hyperref}' };
+                const planned = manager.checkPackages(source, 'pdflatex').bundles;
+                expect(manager.prescanForCtanPackages(source, 'pdflatex', local, 'main.tex', planned)).toEqual({
+                    bundledPackages: expect.arrayContaining(['article', 'hyperref']),
+                    ctanPackages: [],
+                    additionalBundles: ['hyperref', 'graphics'],
+                });
             });
 
             it('adds command dependencies declared in a project file when CTAN is enabled', () => {
@@ -529,6 +625,44 @@ describe('bundles module', () => {
                 });
                 expect(result.ctanPackages).toContain('csquotes');
                 expect(result.ctanPackages).toContain('custom');
+            });
+
+            it('prefetches exact package files without affecting class-only or local overrides', () => {
+                manager.packageDeps = {
+                    filePrefetch: {
+                        'standalone.sty': [['currfile', 3876], ['filemod', 3572], ['gincltex', 1924]],
+                    },
+                };
+                const source = String.raw`\documentclass{standalone}`;
+                const baseline = manager.prescanForCtanPackages(source);
+                expect(baseline.ctanPackages).toEqual(['standalone']);
+                expect(manager.prescanForCtanPackages(source + '\n% ' + String.raw`\usepackage{standalone}`)).toEqual(baseline);
+                expect(manager.prescanForCtanPackages(source + '\n' + String.raw`\\usepackage{standalone}`)).toEqual(baseline);
+
+                const withPackage = source + '\n' + String.raw`\% \usepackage{standalone}`;
+                expect(manager.prescanForCtanPackages(withPackage).ctanPackages)
+                    .toEqual(['standalone', 'currfile', 'filemod', 'gincltex']);
+                expect(manager.prescanForCtanPackages(withPackage, 'pdflatex', {
+                    'nested/standalone.sty': '',
+                }, 'nested/main.tex')).toEqual(baseline);
+
+                expect(manager.prescanForCtanPackages(source, 'pdflatex', {
+                    'local.sty': String.raw`\RequirePackage{standalone}`,
+                }).ctanPackages).toEqual(['standalone', 'currfile', 'filemod', 'gincltex']);
+            });
+
+            it('admits complete file plans within the shared archive count and byte budgets', () => {
+                manager.packageDeps = {
+                    filePrefetch: {
+                        'standalone.sty': [['shared', 20_000], ['extra', 10_000]],
+                        'large.sty': [['shared', 20_000], ['oversized', 3_000]],
+                        'many.sty': Array.from({ length: 5 }, (_, i) => ['archive' + i, 1]),
+                        'small.sty': [['shared', 20_000], ['last', 1_000]],
+                    },
+                };
+                const source = String.raw`\usepackage{standalone,large,many,small}`;
+                expect(manager.prescanForCtanPackages(source).ctanPackages)
+                    .toEqual(['standalone', 'large', 'many', 'small', 'shared', 'extra', 'last']);
             });
 
             it('resolves nested styles relative to the main directory, including parent paths', () => {

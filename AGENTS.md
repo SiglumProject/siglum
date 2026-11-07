@@ -60,3 +60,15 @@ builds. Stage a combined runtime with
 publication procedures in ignored local notes, outside public documentation.
 Builds, npm publication, runtime uploads, and web deployment are separate
 operations.
+
+## Fix the underlying cause first
+
+Before adding a compatibility exception, reproduce the unchanged input and classify the failure: native engine/ABI, VFS/path handling, package resolution, missing external program, unsupported source, or missing project data. Compare against the matching native runtime when available.
+
+Fix native, ABI, VFS and resolver defects in that component, with a regression for the failure class. A provider must not conceal an engine defect or bypass normal package discovery. Use explicit tool providers only for genuinely separate programs. Keep their protocols, filenames and executable assets outside the generic engine.
+
+Do not alter fixtures, invent output, substitute figures/fonts or silently rewrite source to improve pass counts. Existing legacy source compatibility is a separate migration concern, not a pattern for new engine fixes. Read `docs/tool-providers.md` before changing tool execution.
+
+Verify actual output content, cancellation, bounds and partial-failure behavior. Check ordinary documents and the full-build fallback. Browser changes need desktop and mobile WebKit verification, fresh offline reload/edit checks, and memory-lifetime review. Preserve immutable artifact identities and saved user storage. Do not equate a valid PDF with correct content when placeholders are possible.
+
+Useful checks: `bun run test:run`, `bun run test:types`, and the relevant browser/regression harness. Generated declarations come from TypeScript; do not edit them by hand.

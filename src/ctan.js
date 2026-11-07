@@ -14,6 +14,17 @@ import {
 
 // Common LaTeX file extensions for file-to-package lookups
 // Used when package name doesn't match file name (e.g., algorithm.sty → algorithms package)
+const NEGATIVE_CACHE_TTL = 5 * 60 * 1000;
+async function cacheGeneration(payload) {
+    if (globalThis.crypto?.subtle && payload) {
+        const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', payload));
+        return Array.from(hash, b => b.toString(16).padStart(2, '0')).join('');
+    }
+    return Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+}
+
+const packageCacheKey = (name, year = null) => `pkg-v1-${year ? "tl" + year : TEXLIVE_YEAR}-${encodeURIComponent(name)}`;
+
 const LATEX_FILE_EXTENSIONS = ['.sty', '.cls', '.def', '.clo', '.fd', '.cfg', '.tex'];
 
 // Lazy load xzwasm when needed (UMD module loaded via script tag)
@@ -117,9 +128,8 @@ function parseTar(tarData) {
 // Dynamic package name cache (populated by CTAN API lookups)
 const packageNameCache = new Map();
 
-// File-to-package index (loaded from server on first use)
-let fileToPackageIndex = null;
-let fileToPackageLoading = null;
+// Share successful index loads only among fetchers using the same asset URL.
+const fileToPackageByUrl = new Map();
 
 // Font-name-to-package index (loaded from server on first use)
 let fontNameIndex = null;
@@ -163,7 +173,9 @@ export class CTANFetcher {
         this.bundlesUrl = options.bundlesUrl || this.proxyUrl + '/bundles';
         this.mountedFiles = new Set();
         this.fileCache = new Map(); // Memory cache for file contents
-        this.loadedPackages = new Set(); // Track packages already loaded into memory
+        this.loadedPackages = new Set();
+        this.cacheGenerations = new Map();
+        this.packageFetches = new Map(); // Track packages already loaded into memory
         this.fetchCount = 0;
         this.onLog = options.onLog || (() => {});
 
@@ -178,27 +190,58 @@ export class CTANFetcher {
      * @returns {Promise<Object<string, string>>} Index mapping filenames to packages
      */
     async loadFileToPackageIndex() {
-        if (fileToPackageIndex) return fileToPackageIndex;
-        if (fileToPackageLoading) return fileToPackageLoading;
+        return this._loadOwnershipIndex('file-to-package.json');
+    }
 
-        fileToPackageLoading = (async () => {
-            try {
-                const response = await fetch(`${this.bundlesUrl}/file-to-package.json`);
-                if (response.ok) {
-                    fileToPackageIndex = await response.json();
-                    this.onLog(`Loaded file-to-package index: ${Object.keys(fileToPackageIndex).length} entries`);
-                } else {
-                    this.onLog(`Failed to load file-to-package index: ${response.status}`);
-                    fileToPackageIndex = {};
+    /** @private @param {string} name @returns {Promise<Object<string, string>>} */
+    async _loadOwnershipIndex(name) {
+        const url = `${this.bundlesUrl}/${name}`;
+        let loading = fileToPackageByUrl.get(url);
+        if (!loading) {
+            loading = (async () => {
+                let cache;
+                try {
+                    if (typeof caches !== 'undefined') cache = await caches.open('siglum-ctan-index-v1');
+                } catch {}
+                const readIndex = async response => {
+                    if (!response?.ok) return null;
+                    const index = await response.json();
+                    return index && typeof index === 'object' && !Array.isArray(index) ? index : null;
+                };
+                const readSaved = async () => {
+                    try { return await readIndex(await cache?.match(url)); }
+                    catch { return null; }
+                };
+                const immutable = /\/releases\/tl2026-[a-f0-9]{16}\//.test(url);
+                if (immutable) {
+                    const saved = await readSaved();
+                    if (saved) return saved;
                 }
-            } catch (e) {
-                this.onLog(`Error loading file-to-package index: ${e.message}`);
-                fileToPackageIndex = {};
-            }
-            return fileToPackageIndex;
-        })();
+                try {
+                    const response = await fetch(url);
+                    const index = await readIndex(response);
+                    if (index) {
+                        // Persist ownership independently of service-worker installation.
+                        try {
+                            await cache?.put(url, new Response(JSON.stringify(index), {
+                                headers: { 'Content-Type': 'application/json' },
+                            }));
+                        } catch {}
+                        this.onLog(`Loaded file-to-package index: ${Object.keys(index).length} entries`);
+                        return index;
+                    }
+                    this.onLog(`Failed to load file-to-package index: ${response.status}`);
+                } catch (e) {
+                    this.onLog(`Error loading file-to-package index: ${e.message}`);
+                }
+                return immutable ? null : readSaved();
+            })();
+            fileToPackageByUrl.set(url, loading);
+        }
 
-        return fileToPackageLoading;
+        const index = await loading;
+        if (!index && fileToPackageByUrl.get(url) === loading) fileToPackageByUrl.delete(url);
+        return index || {};
     }
 
     /**
@@ -208,7 +251,18 @@ export class CTANFetcher {
      */
     async lookupPackageForFile(fileName) {
         const index = await this.loadFileToPackageIndex();
-        return index[fileName] || null;
+        if (Object.hasOwn(index, fileName) && typeof index[fileName] === 'string') return index[fileName];
+        // TeX reports missing metrics by stem, including case-sensitive names.
+        // Consult the release's generated ownership data rather than guessing a
+        // package from that stem or relying on a server's local archive layout.
+        if (!/^[A-Za-z0-9_.+-]+$/.test(fileName)
+            || fileName.includes('.') && !/\.(?:tfm|vf|pfb|pfm|afm|otf|ttf|ttc|map|enc)$/i.test(fileName)) return null;
+        const fonts = await this._loadOwnershipIndex('font-file-to-package.json');
+        const stem = fileName.replace(/\.(?:tfm|vf|pfb|pfm|afm|otf|ttf|ttc|map|enc)$/i, '');
+        for (const key of [fileName, stem]) {
+            if (Object.hasOwn(fonts, key) && typeof fonts[key] === 'string') return fonts[key];
+        }
+        return null;
     }
 
     /**
@@ -285,63 +339,104 @@ export class CTANFetcher {
      * @param {string} packageName - Package name
      * @returns {Promise<PackageResult|null>} Package result or null if not cached
      */
-    async loadPackageFromCache(packageName) {
+    async loadPackageFromCache(packageName, tlYear = null) {
         try {
-            const meta = await getPackageMeta(packageName);
-            if (!meta) {
-                this.onLog(`[Cache] ${packageName}: no metadata found - will fetch fresh`);
-                return null;
+            const key = packageCacheKey(packageName, tlYear);
+            // Read old positive entries for offline compatibility. Old negative
+            // markers cannot distinguish a missing package from a network outage.
+            const meta = await getPackageMeta(key) || (!tlYear && await getPackageMeta(packageName));
+            if (!meta || meta.cacheVersion !== CTAN_CACHE_VERSION) return null;
+            if (meta.notFound) {
+                const age = Date.now() - meta.checkedAt;
+                return meta.status === 404 && meta.proxyUrl === this.proxyUrl
+                    && meta.year === (tlYear || TEXLIVE_YEAR)
+                    && age >= 0 && age < NEGATIVE_CACHE_TTL ? { notFound: true } : null;
             }
-
-            // Check cache version
-            if (meta.cacheVersion !== CTAN_CACHE_VERSION) {
-                this.onLog(`[Cache] ${packageName}: version mismatch (cached=${meta.cacheVersion}, current=${CTAN_CACHE_VERSION}) - will refetch`);
-                return null;
-            }
-            this.onLog(`[Cache] ${packageName}: loading from cache (v${meta.cacheVersion}, source=${meta.source || 'unknown'})`);
-
-            // Check if it's a "not found" marker
-            if (meta.notFound) return { notFound: true };
-
-            // Check memory cache first, then filesystem
+            if (!Array.isArray(meta.files) || !meta.files.length) return null;
+            const sourceYear = /^texlive-(\d+)$/.exec(meta.source || '')?.[1];
+            if (sourceYear && Number(sourceYear) !== (tlYear || TEXLIVE_YEAR)) return null;
+            const fromMemory = !tlYear && (!meta.generation || this.cacheGenerations.get(key) === meta.generation);
             const files = new Map();
-            if (meta.files && meta.files.length > 0) {
-                const filesToLoad = [];
-                for (const filePath of meta.files) {
-                    if (this.fileCache.has(filePath)) {
-                        files.set(filePath, this.fileCache.get(filePath));
-                        this.mountedFiles.add(filePath);
-                    } else {
-                        filesToLoad.push(filePath);
-                    }
+            await ensureTexliveMounted();
+            const results = await Promise.all(meta.files.map(async path => {
+                if (fromMemory && this.fileCache.has(path)) return [path, this.fileCache.get(path)];
+                const content = await fileSystem.readBinary(meta.storagePaths?.[path] || path).catch(() => null);
+                return content ? [path, new Uint8Array(content)] : null;
+            }));
+            // An evicted or incomplete package must be repaired, not advertised
+            // as a cache hit. Never mount a partial package on that path.
+            if (results.some(result => !result)) return null;
+            for (const [path, content] of results) files.set(path, content);
+            if (!tlYear) {
+                for (const [path, content] of files) {
+                    this.fileCache.set(path, content);
+                    this.mountedFiles.add(path);
                 }
-
-                // Load any missing files from filesystem cache
-                if (filesToLoad.length > 0) {
-                    await ensureTexliveMounted();
-                    const results = await Promise.all(
-                        filesToLoad.map(async (filePath) => {
-                            const content = await fileSystem.readBinary(filePath).catch(() => null);
-                            return content ? [filePath, new Uint8Array(content)] : null;
-                        })
-                    );
-                    for (const result of results) {
-                        if (result) {
-                            files.set(result[0], result[1]);
-                            this.mountedFiles.add(result[0]);
-                            this.fileCache.set(result[0], result[1]); // Cache in memory
-                        }
-                    }
-                }
+                this.cacheGenerations.set(key, meta.generation);
             }
-
-            return {
-                files,
-                dependencies: meta.dependencies || [],
-            };
-        } catch (e) {
+            this.onLog(`[Cache] ${packageName}: ${files.size} files (${meta.source || 'legacy'})`);
+            return { files, dependencies: meta.dependencies || [] };
+        } catch {
             return null;
         }
+    }
+
+    async _cachePackageResult(packageName, resolvedName, files, dependencies, source, tlYear, generation = null) {
+        if (!files.size) return null;
+        const key = packageCacheKey(packageName, tlYear);
+        // Historical compatibility packages are compilation inputs, not the
+        // current TeX tree. Do not leak them into a later document's file delta.
+        if (!tlYear) {
+            for (const [path, content] of files) {
+                this.fileCache.set(path, content);
+                this.mountedFiles.add(path);
+            }
+        }
+        try {
+            // Content-addressed storage makes a failed refresh harmless to the
+            // previous package. Random generations also work on insecure LAN
+            // origins where SubtleCrypto is unavailable.
+            generation ||= await cacheGeneration();
+            await ensureTexliveMounted();
+            const prefix = `/texlive/.siglum-cache/v1/${tlYear ? "tl" + tlYear : TEXLIVE_YEAR}/${encodeURIComponent(resolvedName)}/${generation}`;
+            const storagePaths = {};
+            const writes = await Promise.allSettled([...files].map(async ([path, content]) => {
+                // Proxy paths are VFS names, never filesystem traversal inputs.
+                if (!path.startsWith('/texlive/') || path.split('/').some(part => part === '.' || part === '..')) {
+                    throw new Error('Invalid package file path');
+                }
+                const savedPath = prefix + path.slice('/texlive'.length);
+                await fileSystem.writeBinary(savedPath, content, { createParents: true });
+                storagePaths[path] = savedPath;
+            }));
+            if (writes.some(result => result.status === 'rejected')) throw new Error('Incomplete package cache write');
+            const meta = {
+                name: resolvedName, files: [...files.keys()], storagePaths,
+                dependencies, source, generation, cacheVersion: CTAN_CACHE_VERSION,
+            };
+            const saved = await savePackageMeta(key, meta);
+            if (saved && !tlYear) this.cacheGenerations.set(key, generation);
+            if (saved && resolvedName !== packageName) {
+                await savePackageMeta(packageCacheKey(resolvedName, tlYear), meta);
+                if (!tlYear) this.cacheGenerations.set(packageCacheKey(resolvedName, tlYear), generation);
+            }
+        } catch (error) {
+            this.onLog(`[Cache] ${packageName}: not persisted (${error.message}); usable in this compilation`);
+        }
+        this.fetchCount++;
+        if (!tlYear) {
+            this.loadedPackages.add(packageName);
+            this.loadedPackages.add(resolvedName);
+        }
+        return { files, dependencies };
+    }
+
+    async _cacheNotFound(packageName, tlYear) {
+        await savePackageMeta(packageCacheKey(packageName, tlYear), {
+            notFound: true, status: 404, checkedAt: Date.now(),
+            proxyUrl: this.proxyUrl, year: tlYear || TEXLIVE_YEAR,
+            cacheVersion: CTAN_CACHE_VERSION,
+        });
     }
 
     /**
@@ -351,14 +446,22 @@ export class CTANFetcher {
      * @returns {Promise<PackageResult|null>} Package result or null if not found
      */
     async fetchPackage(packageName, options = {}) {
+        const key = (options.tlYear ? 'tl' + options.tlYear : 'default' + TEXLIVE_YEAR) + ':' + packageName;
+        const pending = this.packageFetches.get(key);
+        if (pending) return pending;
+        const task = this._fetchPackage(packageName, options);
+        this.packageFetches.set(key, task);
+        try { return await task; }
+        finally { if (this.packageFetches.get(key) === task) this.packageFetches.delete(key); }
+    }
+
+    async _fetchPackage(packageName, options = {}) {
         const { tlYear } = options;
         const yearLabel = tlYear ? ` (TL${tlYear})` : '';
         this.onLog(`[FETCH] ${packageName}${yearLabel}: starting fetch`);
 
-        // Skip cache for version-specific requests - we want a different version
-        if (!tlYear) {
-            // Check persistent cache
-            const cached = await this.loadPackageFromCache(packageName);
+        {
+            const cached = await this.loadPackageFromCache(packageName, tlYear);
             if (cached) {
                 if (cached.notFound) {
                     // Package itself doesn't exist - but maybe the file is in a different package
@@ -377,11 +480,9 @@ export class CTANFetcher {
                     return null;
                 }
                 this.onLog(`[FETCH] ${packageName}: loaded from cache`);
-                this.loadedPackages.add(packageName);
+                if (!tlYear) this.loadedPackages.add(packageName);
                 return cached;
             }
-        } else {
-            this.onLog(`[FETCH] ${packageName}: skipping cache for TL${tlYear} request`);
         }
 
         this.onLog(`[FETCH] ${packageName}: not in cache, fetching from TexLive${yearLabel}...`);
@@ -419,14 +520,14 @@ export class CTANFetcher {
 
         const yearSuffix = tlYear ? `?tlYear=${tlYear}` : '';
         // Check persistent cache (same cache as CTAN)
-        const cached = tlYear ? null : await this.loadPackageFromCache(packageName);
+        const cached = await this.loadPackageFromCache(packageName, tlYear);
         if (cached) {
             if (cached.notFound) {
                 this.onLog(`Package ${packageName} marked as not found in cache`);
                 return null;
             }
             this.onLog(`Package ${packageName} loaded from cache (TexLive)`);
-            this.loadedPackages.add(packageName);
+            if (!tlYear) this.loadedPackages.add(packageName);
             return cached;
         }
 
@@ -490,6 +591,7 @@ export class CTANFetcher {
 
             // Get XZ-compressed TAR
             let xzData = await response.arrayBuffer();
+            const generation = await cacheGeneration(xzData);
             const downloadedSize = xzData.byteLength;
             this.onLog(`Downloaded ${(downloadedSize / 1024).toFixed(1)} KB, decompressing...`);
 
@@ -540,9 +642,6 @@ export class CTANFetcher {
 
             // Process files (similar to CTAN fetch)
             const files = new Map();
-            const cacheWrites = [];
-
-            await ensureTexliveMounted();
 
             for (const [tarPath, content] of tarFiles) {
                 // Skip docs and source directories
@@ -576,48 +675,13 @@ export class CTANFetcher {
 
                     const fileData = new Uint8Array(content);
                     files.set(targetPath, fileData);
-                    this.mountedFiles.add(targetPath);
-                    this.fileCache.set(targetPath, fileData);
-                    if (!tlYear) cacheWrites.push(fileSystem.writeBinary(targetPath, fileData, { createParents: true }).catch(() => {}));
+
                 }
             }
 
-            // Parallel filesystem cache writes
-            await Promise.all(cacheWrites);
-
             this.onLog(`Processed ${files.size} TeX/font files from ${packageName}`);
-
-            if (files.size === 0) {
-                this.onLog(`No TeX files found in ${packageName}, marking as not found`);
-                if (!tlYear) await savePackageMeta(packageName, {
-                    notFound: true,
-                    cacheVersion: CTAN_CACHE_VERSION,
-                });
-                return null;
-            }
-
-            // Cache metadata under the requested package name
-            const cacheEntry = {
-                name: texlivePkg, // The actual package that provided the files
-                files: [...files.keys()],
-                dependencies: [],
-                cacheVersion: CTAN_CACHE_VERSION,
-                source: `texlive-${tlYear || TEXLIVE_YEAR}`,
-            };
-            if (!tlYear) await savePackageMeta(packageName, cacheEntry);
-
-            // Also cache under the resolved name if different (avoids duplicate fetches)
-            if (!tlYear && texlivePkg !== packageName) {
-                await savePackageMeta(texlivePkg, cacheEntry);
-                this.onLog(`Cached under both "${packageName}" and "${texlivePkg}"`);
-            }
-
-            this.fetchCount++;
-            this.loadedPackages.add(packageName);
-            if (texlivePkg !== packageName) {
-                this.loadedPackages.add(texlivePkg);
-            }
-            return { files, dependencies: [] };
+            return this._cachePackageResult(packageName, texlivePkg, files, [],
+                `texlive-${tlYear || TEXLIVE_YEAR}`, tlYear, generation);
         } catch (e) {
             this.onLog(`[TEXLIVE] EXTRACTION ERROR for ${packageName}: ${e.message}`);
             this.onLog(`[TEXLIVE] Stack: ${e.stack?.split('\n').slice(0, 3).join(' | ')}`);
@@ -668,21 +732,14 @@ export class CTANFetcher {
 
         try {
             if (!response || !response.ok) {
-                this.onLog(`CTAN package ${packageName} not found (404)`);
-                await savePackageMeta(packageName, {
-                    notFound: true,
-                    cacheVersion: CTAN_CACHE_VERSION,
-                });
+                this.onLog(`CTAN package ${packageName} unavailable (status=${response?.status || 'network'})`);
+                if (response?.status === 404) await this._cacheNotFound(packageName, tlYear);
                 return null;
             }
 
             const data = await response.json();
             if (data.error) {
                 this.onLog(`CTAN fetch failed: ${data.error}`);
-                await savePackageMeta(packageName, {
-                    notFound: true,
-                    cacheVersion: CTAN_CACHE_VERSION,
-                });
                 return null;
             }
 
@@ -693,8 +750,7 @@ export class CTANFetcher {
 
             // Process and cache files
             const files = new Map();
-            const cacheWrites = [];
-            await ensureTexliveMounted();
+
             for (const [path, info] of Object.entries(data.files)) {
                 let content;
                 if (info.encoding === 'base64') {
@@ -709,45 +765,13 @@ export class CTANFetcher {
                     content = new Uint8Array(info.content);
                 }
                 files.set(path, content);
-                this.mountedFiles.add(path);
-                this.fileCache.set(path, content);
-                cacheWrites.push(fileSystem.writeBinary(path, content, { createParents: true }).catch(() => {}));
+
             }
 
-            // Parallel filesystem cache writes
-            await Promise.all(cacheWrites);
-
-            // Cache metadata under the requested package name
-            const cacheEntry = {
-                name: ctanPkg, // The actual package that provided the files
-                files: [...files.keys()],
-                dependencies: data.dependencies || [],
-                cacheVersion: CTAN_CACHE_VERSION,
-                source: 'ctan',
-            };
-            await savePackageMeta(packageName, cacheEntry);
-
-            // Also cache under the resolved name if different (avoids duplicate fetches)
-            if (ctanPkg !== packageName) {
-                await savePackageMeta(ctanPkg, cacheEntry);
-                this.onLog(`Cached under both "${packageName}" and "${ctanPkg}"`);
-            }
-
-            this.fetchCount++;
-            this.loadedPackages.add(packageName);
-            if (ctanPkg !== packageName) {
-                this.loadedPackages.add(ctanPkg);
-            }
-            return {
-                files,
-                dependencies: data.dependencies || [],
-            };
+            return this._cachePackageResult(packageName, ctanPkg, files,
+                data.dependencies || [], tlYear ? `texlive-${tlYear}` : 'ctan', tlYear);
         } catch (e) {
             this.onLog(`CTAN fetch error: ${e.message}`);
-            await savePackageMeta(packageName, {
-                notFound: true,
-                cacheVersion: CTAN_CACHE_VERSION,
-            });
             return null;
         }
     }
@@ -819,18 +843,18 @@ export class CTANFetcher {
         // Check cache first (keyed by container) to avoid filesystem reads on recompile.
         for (const [container, members] of membersOf) {
             // Already loaded into memory this session (container or any member)?
-            if (this.loadedPackages.has(container) || members.some((m) => this.loadedPackages.has(m))) {
+            if (!options.tlYear && (this.loadedPackages.has(container) || members.some((m) => this.loadedPackages.has(m)))) {
                 this.loadedPackages.add(container);
                 skipped.push(...members);
                 continue;
             }
-            const cached = await this.loadPackageFromCache(container);
+            const cached = await this.loadPackageFromCache(container, options.tlYear);
             if (cached && cached.files && !cached.notFound) {
-                for (const [path, content] of cached.files) {
-                    this.fileCache.set(path, content);
+                if (!options.tlYear) {
+                    for (const [path, content] of cached.files) this.fileCache.set(path, content);
+                    this.loadedPackages.add(container);
+                    for (const m of members) this.loadedPackages.add(m);
                 }
-                this.loadedPackages.add(container);
-                for (const m of members) this.loadedPackages.add(m);
                 skipped.push(...members);
             } else {
                 toFetch.push(container);
@@ -849,7 +873,7 @@ export class CTANFetcher {
             const chunk = toFetch.slice(i, i + concurrency);
             const results = await Promise.allSettled(
                 chunk.map(async (container) => {
-                    const result = await this.fetchPackage(container);
+                    const result = await this.fetchPackage(container, { tlYear: options.tlYear });
                     return { container, result };
                 })
             );
@@ -858,9 +882,9 @@ export class CTANFetcher {
                 const container = res.status === 'fulfilled' ? res.value.container : null;
                 const members = (container && membersOf.get(container)) || (container ? [container] : []);
                 if (res.status === 'fulfilled' && res.value.result) {
-                    this.loadedPackages.add(container);
+                    if (!options.tlYear) this.loadedPackages.add(container);
                     for (const m of members) {
-                        this.loadedPackages.add(m);
+                        if (!options.tlYear) this.loadedPackages.add(m);
                         fetched.push(m);
                     }
                 } else {
@@ -938,14 +962,16 @@ export function isValidPackageName(name) {
  */
 export async function forceRefreshPackage(packageName) {
     try {
-        await savePackageMeta(packageName, {
+        const invalid = {
             name: packageName,
             notFound: false,
             cacheVersion: 0,  // Force version mismatch on next load
             files: [],
             clearedAt: Date.now()
-        });
-        return true;
+        };
+        const saved = await savePackageMeta(packageCacheKey(packageName), invalid);
+        const legacy = await savePackageMeta(packageName, invalid);
+        return Boolean(saved && legacy);
     } catch (e) {
         return false;
     }

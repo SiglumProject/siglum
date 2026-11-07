@@ -31,6 +31,16 @@ describe('real BibTeX pipeline', () => {
   expect(result.log).toContain('BIBLIOGRAPHY-UPDATED')
   expect(result.log).not.toContain('BIBLIOGRAPHY-TYPESET')
  })
+ it('typesets a freshly generated bibliography when BibTeX reports only warnings', async () => {
+  const warningBib = bib.replace(', journal={Test Journal}', '')
+  const result = await compiler.compile(source, {
+   mainFile: 'warnings.tex', additionalFiles: { 'references.bib': warningBib }, useCache: false,
+  })
+  expect(result.success, result.error + '\n' + result.log).toBe(true)
+  expect(result.log).toContain('BIBLIOGRAPHY-TYPESET')
+  expect(result.log).toContain('Warning--empty journal')
+  expect(result.log).not.toMatch(/Citation .*undefined|There were undefined references/)
+ })
  it('supports biblatex with the BibTeX backend', async () => {
   const source='\\documentclass{article}\n\\usepackage[backend=bibtex]{biblatex}\n\\addbibresource{references.bib}\n\\begin{document}\nReference: \\cite{chris2026}.\n\\printbibliography\n\\end{document}'
   const result=await compiler.compile(source,{mainFile:'biblatex.tex',additionalFiles:{'references.bib':bib},useCache:false})
@@ -45,9 +55,34 @@ describe('real BibTeX pipeline', () => {
   expect(result.error).toContain('requires Biber')
  })
  it('returns an error for missing bib files instead of a successful unresolved PDF', async () => {
-  const result = await compiler.compile(source.replace('{references}','{missing-library}'),{mainFile:'missing.tex',useCache:false})
+  const result = await compiler.compile(source.replace('{references}','{missing-library}'), {
+   mainFile: 'missing.tex', additionalFiles: {
+    'missing.bbl': '\\begin{thebibliography}{1}\\bibitem{chris2026} Stale entry.\\end{thebibliography}',
+   }, useCache: false,
+  })
   expect(result.success).toBe(false)
   expect(result.error).toContain('BibTeX failed')
   expect(result.log).toContain('missing-library')
  })
+})
+
+it('builds a nested MakeIndex index again when aux data changes its page numbers', async () => {
+ const source = String.raw`\documentclass{article}
+\usepackage{makeidx}
+\makeindex
+\newcommand{\indexcheckpage}[1]{\typeout{INDEX-PAGE=#1}#1}
+\makeatletter
+\begin{document}
+\ifdefined\siglumnewpage
+ First page.\newpage
+\fi
+\immediate\write\@auxout{\string\gdef\string\siglumnewpage{1}}
+Indexed text.\index{Zebra|indexcheckpage}
+\printindex
+\end{document}`
+ const result = await compiler.compile(source, { mainFile: 'index/nested.tex', useCache: false })
+ expect(result.success, result.error + '\n' + result.log).toBe(true)
+ expect(result.log).toContain('INDEX-PAGE=2')
+ expect(result.log).not.toContain('INDEX-PAGE=1')
+ expect(result.log).not.toContain('No file nested.ind')
 })

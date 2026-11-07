@@ -1,4 +1,6 @@
 // Font-file → package resolution (server-side).
+// Exact filename exceptions distinguish metrics and outlines with different
+// providers; legacy stem aliases remain the fallback.
 //
 // TeX requests fonts it can't find by *file stem* (e.g. `phvr8t` for the
 // Helvetica T1 metrics), which names no CTAN / TeX Live package, so a direct
@@ -55,7 +57,7 @@ export async function resolveFontPackage(name: string): Promise<string | null> {
   return index[name] || index[stem] || fontPackageForFile(name);
 }
 
-// Test/diagnostic helper: number of indexed stems (0 if the index is absent).
+// Test/diagnostic helper: number of lookup keys (0 if the index is absent).
 export async function fontIndexSize(): Promise<number> {
   return Object.keys(await getIndex()).length;
 }

@@ -118,6 +118,7 @@ describe('ctan module', () => {
     describe('forceRefreshPackage', () => {
         it('should clear package from cache', async () => {
             const { savePackageMeta } = await import('../../src/storage.js');
+            vi.mocked(savePackageMeta).mockResolvedValue(true);
             const result = await forceRefreshPackage('testpkg');
 
             expect(result).toBe(true);
@@ -256,6 +257,19 @@ describe('ctan module', () => {
                 expect(pkg).toBe('algorithms');
             });
 
+            it('uses generated ownership for case-sensitive metric stems', async () => {
+                const fonts = new CTANFetcher({ bundlesUrl: 'https://test.invalid/font-ownership' });
+                fetchMock.mockImplementation(async (url: string) => ({
+                    ok: true,
+                    json: async () => String(url).endsWith('/font-file-to-package.json')
+                        ? { 'Vendor-Diagram': 'vendor-fonts' } : {},
+                }));
+                expect(await fonts.lookupPackageForFile('Vendor-Diagram')).toBe('vendor-fonts');
+                expect(await fonts.lookupPackageForFile('Vendor-Diagram.tfm')).toBe('vendor-fonts');
+                expect(await fonts.lookupPackageForFile('vendor-diagram.tfm')).toBeNull();
+                expect(await fonts.lookupPackageForFile('../Vendor-Diagram')).toBeNull();
+            });
+
             it('should return null for unknown file', async () => {
                 const pkg = await fetcher.lookupPackageForFile('unknown.sty');
                 expect(pkg).toBeNull();
@@ -326,7 +340,7 @@ describe('ctan module', () => {
 
                 await fetcher.fetchPackage('nonexistent');
 
-                expect(savePackageMeta).toHaveBeenCalledWith('nonexistent', expect.objectContaining({
+                expect(savePackageMeta).toHaveBeenCalledWith('pkg-v1-2026-nonexistent', expect.objectContaining({
                     notFound: true,
                 }));
             });
@@ -497,7 +511,7 @@ describe('ctan module', () => {
                 expect(result).toBeNull();
             });
 
-            it('should return notFound marker', async () => {
+            it('ignores old ambiguous notFound markers', async () => {
                 const { getPackageMeta } = await import('../../src/storage.js');
                 (getPackageMeta as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
                     notFound: true,
@@ -505,7 +519,7 @@ describe('ctan module', () => {
                 });
 
                 const result = await fetcher.loadPackageFromCache('notfound');
-                expect(result?.notFound).toBe(true);
+                expect(result).toBeNull();
             });
 
             it('should check cache version', async () => {

@@ -35338,5 +35338,315 @@
     "bundle": "cm-super",
     "start": 59932135,
     "end": 59933435
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/labi1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 0,
+    "end": 3604
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/labl1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 3604,
+    "end": 7172
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/labm1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 7172,
+    "end": 10476
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/labx1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 10476,
+    "end": 13812
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lacc1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 13812,
+    "end": 16980
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/laci1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 16980,
+    "end": 20520
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/ladh1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 20520,
+    "end": 23784
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lafb1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 23784,
+    "end": 27120
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/laff1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 27120,
+    "end": 30456
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lafi1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 30456,
+    "end": 33936
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lafs1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 33936,
+    "end": 37504
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lait1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 37504,
+    "end": 38780
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/laoc1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 38780,
+    "end": 42232
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/larb1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 42232,
+    "end": 45572
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/larm1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 45572,
+    "end": 48836
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lasc1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 48836,
+    "end": 52232
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lasi1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 52232,
+    "end": 55792
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lasl1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 55792,
+    "end": 59284
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/laso1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 59284,
+    "end": 62856
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lass1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 62856,
+    "end": 66188
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/last1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 66188,
+    "end": 67468
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lasx1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 67468,
+    "end": 70812
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/latc1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 70812,
+    "end": 72096
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lati1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 72096,
+    "end": 75636
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/latt1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 75636,
+    "end": 76912
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/laui1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 76912,
+    "end": 80228
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lavi1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 80228,
+    "end": 83692
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lavt1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 83692,
+    "end": 86900
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/laxc1095.tfm": {
+    "bundle": "fonts-lh-t2a-1095",
+    "start": 86900,
+    "end": 90124
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/labi1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 0,
+    "end": 3592
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/labl1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 3592,
+    "end": 7132
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/labm1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 7132,
+    "end": 10420
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/labx1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 10420,
+    "end": 13728
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lacc1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 13728,
+    "end": 16892
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/laci1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 16892,
+    "end": 20404
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/ladh1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 20404,
+    "end": 23648
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lafb1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 23648,
+    "end": 26972
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/laff1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 26972,
+    "end": 30296
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lafi1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 30296,
+    "end": 33752
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lafs1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 33752,
+    "end": 37308
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lait1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 37308,
+    "end": 38580
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/laoc1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 38580,
+    "end": 42020
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/larb1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 42020,
+    "end": 45332
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/larm1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 45332,
+    "end": 48572
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lasc1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 48572,
+    "end": 51964
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lasi1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 51964,
+    "end": 55524
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lasl1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 55524,
+    "end": 58996
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/laso1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 58996,
+    "end": 62556
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lass1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 62556,
+    "end": 65884
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/last1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 65884,
+    "end": 67160
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lasx1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 67160,
+    "end": 70492
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/latc1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 70492,
+    "end": 71772
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lati1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 71772,
+    "end": 75284
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/latt1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 75284,
+    "end": 76556
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/laui1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 76556,
+    "end": 79868
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lavi1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 79868,
+    "end": 83304
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/lavt1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 83304,
+    "end": 86496
+  },
+  "/texlive/texmf-dist/fonts/tfm/lh/lh-t2a/laxc1200.tfm": {
+    "bundle": "fonts-lh-t2a-1200",
+    "start": 86496,
+    "end": 89708
+  },
+  "/texlive/texmf-dist/fonts/tfm/public/gothic/yinit.tfm": {
+    "bundle": "fonts-pk-yinit",
+    "start": 0,
+    "end": 188
+  },
+  "/texlive/texmf-dist/fonts/pk/ljfour/public/gothic/yinit.657pk": {
+    "bundle": "fonts-pk-yinit",
+    "start": 188,
+    "end": 166756
+  },
+  "/texlive/texmf-dist/fonts/tfm/public/cm-mf-extra-bold/cmttb10.tfm": {
+    "bundle": "fonts-pk-cmttb10",
+    "start": 0,
+    "end": 704
+  },
+  "/texlive/texmf-dist/fonts/pk/ljfour/public/cm-mf-extra-bold/cmttb10.600pk": {
+    "bundle": "fonts-pk-cmttb10",
+    "start": 704,
+    "end": 9396
   }
 }
