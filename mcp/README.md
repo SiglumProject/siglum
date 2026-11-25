@@ -14,34 +14,31 @@ browser UI.
 
 ## Setup
 
-The server isn't published to npm yet, so run it from a checkout:
-
-```sh
-git clone https://github.com/SiglumProject/siglum.git
-cd siglum/mcp
-npm install
-```
-
 **Claude Code**
 
 ```sh
-claude mcp add siglum -- node /absolute/path/to/siglum/mcp/src/server.mjs
+claude mcp add siglum -- npx -y @siglum/mcp
 ```
 
 `claude mcp list` should show `siglum: ... ✔ Connected`.
 
 **Claude Desktop and other clients:** add this to the client's MCP config. For
 Claude Desktop on macOS that's `~/Library/Application Support/Claude/claude_desktop_config.json`.
-The desktop app doesn't use your shell's `PATH`, so if `node` isn't found, give its
-full path (`which node`).
+The desktop app doesn't use your shell's `PATH`, so if `npx` isn't found, give its
+full path (`which npx`).
 
 ```json
 {
   "mcpServers": {
-    "siglum": { "command": "node", "args": ["/absolute/path/to/siglum/mcp/src/server.mjs"] }
+    "siglum": { "command": "npx", "args": ["-y", "@siglum/mcp"] }
   }
 }
 ```
+
+**From a checkout** (before `@siglum/mcp` is published, or to work on it): run
+`npm install` in `mcp/`, then use `node /absolute/path/to/siglum/mcp/src/server.mjs`
+as the command. This serves the engine from the checkout's `src/` instead of the
+npm package.
 
 ## Tools
 
