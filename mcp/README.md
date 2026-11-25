@@ -22,10 +22,8 @@ claude mcp add siglum -- npx -y @siglum/mcp
 
 `claude mcp list` should show `siglum: ... ✔ Connected`.
 
-**Claude Desktop and other clients:** add this to the client's MCP config. For
-Claude Desktop on macOS that's `~/Library/Application Support/Claude/claude_desktop_config.json`.
-The desktop app doesn't use your shell's `PATH`, so if `npx` isn't found, give its
-full path (`which npx`).
+**Other MCP clients:** add this to the client's MCP config. If the client can't find
+`npx`, give its full path (`which npx`).
 
 ```json
 {
