@@ -1,53 +1,44 @@
 # Siglum MCP server
 
-An [MCP](https://modelcontextprotocol.io) server that lets agents (Claude Code,
-Claude Desktop, Cursor, and others) compile LaTeX with the Siglum engine. The agent
-calls a tool and gets a PDF on disk. It never opens or drives a browser UI.
+An [MCP](https://modelcontextprotocol.io) server that compiles LaTeX to PDF with
+the Siglum engine. Agents call a tool and get a PDF on disk, without driving a
+browser UI.
 
-![A two-page resume compiled by an agent through this server](docs/example-resume.png)
+![A two-page resume compiled through this server](docs/example-resume.png)
 
-## How it works
+## Requirements
 
-`@siglum/engine` targets browsers: it compiles in a Web Worker and caches
-bundles in OPFS, IndexedDB and Cache Storage. Instead of porting those layers to
-Node, this server runs the **unchanged engine** in a hidden headless Chromium:
+- Node.js 20.6 or later
+- Google Chrome, Microsoft Edge, or Playwright's Chromium (`npx playwright install chromium`)
+- Internet access for the first compile, and for packages that aren't cached yet
 
-```text
-agent ──stdio/MCP──▶ siglum-mcp (Node)
-                       ├─ 127.0.0.1 static server: engine src + tiny host page
-                       └─ headless Chromium ──▶ SiglumCompiler ──▶ hosted runtime (packages.siglum.org)
-```
+## Setup
 
-- Same code path and results as the Siglum editor.
-- A persistent browser profile (`~/.cache/siglum-mcp/profile`) keeps the runtime,
-  bundles and packages, so later compiles take about 1 s and work offline once cached.
-- Compiles are serialized. A compile that hangs past its timeout restarts the browser.
-
-The `compile_latex` tool is independent of the backend. A native Node/Bun backend can
-replace `HeadlessSiglum` later without changing what agents see.
-
-## Install
+The server isn't published to npm yet, so run it from a checkout:
 
 ```sh
-cd mcp
+git clone https://github.com/SiglumProject/siglum.git
+cd siglum/mcp
 npm install
 ```
 
-The server uses Playwright's Chromium if it is installed (`npx playwright install chromium`).
-Otherwise it falls back to an installed Google Chrome or Microsoft Edge.
-
-### Claude Code
+**Claude Code**
 
 ```sh
-claude mcp add siglum -- node /path/to/siglum/mcp/src/server.mjs
+claude mcp add siglum -- node /absolute/path/to/siglum/mcp/src/server.mjs
 ```
 
-### Other MCP clients
+`claude mcp list` should show `siglum: ... ✔ Connected`.
+
+**Claude Desktop and other clients:** add this to the client's MCP config. For
+Claude Desktop on macOS that's `~/Library/Application Support/Claude/claude_desktop_config.json`.
+The desktop app doesn't use your shell's `PATH`, so if `node` isn't found, give its
+full path (`which node`).
 
 ```json
 {
   "mcpServers": {
-    "siglum": { "command": "node", "args": ["/path/to/siglum/mcp/src/server.mjs"] }
+    "siglum": { "command": "node", "args": ["/absolute/path/to/siglum/mcp/src/server.mjs"] }
   }
 }
 ```
@@ -56,53 +47,91 @@ claude mcp add siglum -- node /path/to/siglum/mcp/src/server.mjs
 
 ### `compile_latex`
 
-| Argument | Description |
+Pass either `path` or `source`.
+
+| Argument | |
 | --- | --- |
-| `path` | Main `.tex` file on disk. The files in its directory (or in `projectRoot`) are included: `\input` chapters, images, `.bib`, local `.sty`/`.cls`. |
-| `source` | Inline LaTeX, used instead of `path` for quick snippets. `files` adds extra text files. |
+| `path` | Main `.tex` file. Everything in its directory (or `projectRoot`) is available to TeX: `\input` files, images, `.bib`, local `.sty`/`.cls`. |
+| `source` | Inline LaTeX. Use `files` to add extra text files, e.g. `{"refs.bib": "..."}`. |
 | `engine` | `auto` (default), `pdflatex`, or `xelatex`. |
-| `outputPath` | PDF destination. Defaults to `<main>.pdf` next to the source, like `pdflatex`. |
-| `logLines` | Number of trailing TeX log lines returned (default 40). The full log is always written next to the PDF. |
+| `outputPath` | PDF destination. Defaults to `<main>.pdf` next to `path`, or a temp file for `source`. |
+| `logLines` | Trailing TeX log lines in the reply (default 40). The full log is always written next to the PDF. |
 
-The tool returns text for the agent plus `structuredContent`
-(`success`, `error`, `pdfPath`, `pdfBytes`, `logPath`, `elapsedMs`, `skippedFiles`).
-A failed compile sets `isError` and returns the engine's first error, for example
-`/main.tex:3: Undefined control sequence.`
+On success:
 
-Hidden directories, `node_modules`, and build output (`.aux`, `.log`, the previous PDF, and so on)
-are not sent. Limits: 2,000 files, 50 MB per file, 200 MB per project.
+```text
+Compiled successfully in 829 ms → /work/resume/resume.pdf (187690 bytes).
+Full log: /work/resume/resume.log
+```
+
+On failure, `isError` is set, no PDF is written, and the reply starts with the TeX error:
+
+```text
+Compilation failed: /document.tex:3: Undefined control sequence.
+```
+
+`structuredContent` carries the same data: `success`, `error`, `pdfPath`, `pdfBytes`,
+`logPath`, `elapsedMs`, and `skippedFiles`.
+
+Not sent to TeX: hidden directories, `node_modules`, build output (`.aux`, `.log`,
+the previous PDF, …), and anything past 2,000 files, 50 MB per file, or 200 MB in total.
 
 ### `clear_cache`
 
-Clears cached packages and PDFs.
+Deletes cached packages and compiled PDFs.
 
-## CLI
+## How it works
 
-The same backend is available without MCP:
+The engine needs Web Workers, OPFS and IndexedDB, so the server runs it unchanged
+in a headless browser. A local server on `127.0.0.1:47787` serves the engine to that
+browser, and the runtime is fetched from `packages.siglum.org`.
 
-```sh
-node src/cli.mjs paper.tex -o paper.pdf --engine pdflatex
-```
+The browser profile in `~/.cache/siglum-mcp/profile` keeps everything it downloads.
+The first compile fetches the runtime; after that, compiles take about a second.
+Compiles run one at a time.
+
+## Limitations
+
+- XeLaTeX currently fails against the hosted runtime with
+  `internal error; cannot read font names`. This is an engine/runtime issue (the
+  published `@siglum/engine` 0.2.2 fails the same way). Use pdfLaTeX for now.
+- Biber isn't available. Use `biblatex` with `backend=bibtex`, or BibTeX.
+- Only one server process can use the persistent cache. A second one, for example from
+  another client running at the same time, works but starts with an empty cache.
+
+## Troubleshooting
+
+| Message | Fix |
+| --- | --- |
+| `No Chromium-based browser found` | Install Chrome, or run `npx playwright install chromium` in `mcp/`. |
+| `Could not fetch runtime metadata from …` | No network or a wrong `SIGLUM_RUNTIME_SERVICE_URL`. |
+| Stale or broken package | Call `clear_cache`, or delete `~/.cache/siglum-mcp`. |
+
+Set `SIGLUM_MCP_DEBUG=1` to forward engine logs to the server's stderr.
 
 ## Configuration
 
-| Variable | Purpose |
+| Variable | |
 | --- | --- |
-| `SIGLUM_RUNTIME_SERVICE_URL` | Runtime discovery service passed to `resolveRuntime()` (default `https://packages.siglum.org`). |
-| `SIGLUM_RUNTIME_CONFIG_URL` | URL returning a full `SiglumCompiler` config, e.g. `http://localhost:8787/runtime-config.json` from `bun run dev` to use a locally staged runtime. |
-| `SIGLUM_ENGINE_SRC` | Engine `src/` to serve. Defaults to this checkout, then the installed `@siglum/engine`. |
-| `SIGLUM_MCP_CACHE_DIR` | Browser profile and cache location. |
-| `SIGLUM_MCP_PORT` | Local host port (default 47787). Storage is per-origin, so a fixed port keeps the cache. A second instance uses a temporary port and profile. |
-| `SIGLUM_MCP_BROWSER_CHANNEL` | Force an installed browser (`chrome`, `msedge`). |
+| `SIGLUM_RUNTIME_SERVICE_URL` | Runtime discovery service (default `https://packages.siglum.org`). |
+| `SIGLUM_RUNTIME_CONFIG_URL` | Full compiler config URL, e.g. `http://localhost:8787/runtime-config.json` from `bun run dev`, to use a locally staged runtime. |
+| `SIGLUM_ENGINE_SRC` | Engine `src/` to serve. Default: this checkout, otherwise the installed `@siglum/engine`. |
+| `SIGLUM_MCP_CACHE_DIR` | Cache location (default `~/.cache/siglum-mcp`). |
+| `SIGLUM_MCP_PORT` | Local port (default 47787). Browser storage is per origin, so changing it starts a fresh cache. |
+| `SIGLUM_MCP_BROWSER_CHANNEL` | Use a specific installed browser: `chrome` or `msedge`. |
 | `SIGLUM_MCP_WARM` | Start the engine when the server starts instead of on the first compile. |
-| `SIGLUM_MCP_DEBUG` | Forward engine and page logs to stderr. |
+
+## CLI
+
+```sh
+node src/cli.mjs paper.tex -o paper.pdf
+```
+
+Prints the PDF path, or the TeX error and log path with exit code 1.
 
 ## Tests
 
 ```sh
-npm test                                   # project loading (no browser)
-npm run smoke                              # full MCP round-trip: spawn server, compile, check errors
-node test/smoke.mjs test/fixtures/resume/resume.tex
+npm test          # project loading, no browser
+npm run smoke     # spawns the server over stdio and compiles through MCP
 ```
-
-The smoke test needs a Chromium-based browser, plus network access on its first run.
