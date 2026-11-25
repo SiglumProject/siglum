@@ -15,6 +15,8 @@ Git integration, and BusyTeX compiler fork.
 - `busytex/` is the pinned Siglum BusyTeX submodule. Compiler build changes
   belong in that fork, with its reviewed commit pinned here.
 - `tests/` separates unit/integration tests from real-browser worker/WASM tests.
+- `mcp/` is a separate package: an MCP server and CLI that run the unchanged
+  engine in headless Chromium so agents can compile LaTeX without a browser UI.
 - `docs/` covers building, hosting, and runtime upgrades. `examples/`
   contains consumer integrations.
 

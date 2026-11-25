@@ -1,0 +1,158 @@
+\documentclass[10pt]{article}
+\usepackage[margin=0.7in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{tabularx}
+\usepackage{tikz}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{accent}{HTML}{8B4513}
+\definecolor{muted}{HTML}{555555}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlist[itemize]{leftmargin=1.2em, itemsep=0pt, topsep=2pt}
+
+\titleformat{\section}{\large\bfseries\color{accent}}{}{0pt}{}[\vspace{1pt}{\color{accent}\titlerule[0.8pt]}]
+\titlespacing*{\section}{0pt}{9pt}{4pt}
+
+\newcommand{\role}[4]{%
+  \textbf{#1} \hfill {\color{muted}#3}\\
+  \textit{#2} \hfill {\color{muted}\small #4}\par\vspace{2pt}}
+
+\newcommand{\skillbar}[2]{%
+  #1 & \begin{tikzpicture}[baseline=-0.6ex]
+    \fill[black!10] (0,0) rectangle (4,0.18);
+    \fill[accent] (0,0) rectangle (#2*0.4,0.18);
+  \end{tikzpicture}\\[1pt]}
+
+\input{sections/header}
+
+\begin{document}
+
+\resumeheader
+
+\section{Professional Summary}
+Visionary technologist with over four decades of experience in systems that
+the industry has bravely moved on from. Recognized authority on keeping
+mission-critical fax machines alive, coaxing data off 5.25-inch floppies, and
+explaining to executives why the mainframe in the basement \emph{cannot}
+simply be ``unplugged for a second.'' Fluent in COBOL, Morse, and the subtle
+body language of a dot-matrix printer about to jam.
+
+\section{Core Competencies}
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\skillbar{Floppy disk data recovery (3.5'', 5.25'', 8'')}{10}
+\skillbar{Fax machine diplomacy and toner negotiation}{9.5}
+\skillbar{COBOL, FORTRAN 77, and stern comments in JCL}{9}
+\skillbar{Dial-up modem handshake vocal imitation}{8.5}
+\skillbar{VHS tracking adjustment (by feel alone)}{9}
+\skillbar{Punch card proofreading}{7.5}
+\skillbar{Modern cloud technologies}{0.5}
+\end{tabularx}
+
+\section{Experience}
+
+\role{Chief Legacy Officer}{Consolidated Widgets \& Telegraph Co.}{1998 -- Present}{Peoria, IL}
+\begin{itemize}
+  \item Kept a 1983 mainframe in continuous operation for 27 years using
+        spare parts sourced from three estate sales and one very confused museum.
+  \item Reduced fax transmission failures by 64\% by installing a dedicated
+        phone line and asking everyone to stop standing on the cord.
+  \item Successfully migrated the company's payroll from punch cards to
+        magnetic tape in 2019, a mere four decades behind schedule.
+  \item Authored the internal guide \emph{``Have You Tried Blowing On It?''},
+        now in its eleventh printing.
+\end{itemize}
+
+\role{Senior Floppy Disk Whisperer}{DataSafe Archival Solutions}{1989 -- 1998}{Dayton, OH}
+\begin{itemize}
+  \item Recovered 14,000 corrupted spreadsheets from disks that had been
+        used as coasters, bookmarks, and on one occasion, a door wedge.
+  \item Pioneered the ``gentle shake'' method for unsticking 5.25-inch
+        disks, later adopted as a regional best practice.
+  \item Trained 40 junior technicians in the ancient art of write-protect
+        tab management.
+\end{itemize}
+
+\role{Modem Acoustics Specialist}{BaudCo Telecommunications}{1984 -- 1989}{Akron, OH}
+\begin{itemize}
+  \item Diagnosed connection problems purely by listening to handshake
+        tones, with a reported accuracy of 97\%.
+  \item Achieved a then-record 2400 baud connection during a thunderstorm.
+  \item Was asked to stop humming the handshake in the break room.
+\end{itemize}
+
+\role{Junior Telegraph Operator}{Midwestern Wire \& Signal}{1979 -- 1984}{Toledo, OH}
+\begin{itemize}
+  \item Transmitted over 200,000 messages, only three of which were
+        accidentally the lyrics to a popular song.
+  \item Introduced the office to the concept of ``STOP'' as punctuation
+        and as a lifestyle.
+\end{itemize}
+
+
+
+\section{Notable Projects}
+\begin{itemize}
+  \item \textbf{Project Rewind (2004):} Built a climate-controlled vault for
+        the company's VHS training library, including the beloved 1987
+        classic \emph{Lifting Boxes Safely: The Musical}.
+  \item \textbf{Operation Beige Box (2011):} Restored 32 beige desktop towers
+        to working order, each named after a member of the 1985 office
+        bowling team.
+  \item \textbf{The Great Y2K Non-Event (1999):} Spent New Year's Eve in the
+        server room with a flashlight, a thermos, and a laminated backup
+        plan. Nothing happened. Takes full credit.
+  \item \textbf{Fax-to-Email Bridge (2016):} Engineered a system in which
+        incoming emails are printed, faxed to the next room, and scanned
+        back in, ``for the paper trail.''
+\end{itemize}
+
+\section{Education}
+\role{B.S. in Electrical Engineering}{Lake Erie Polytechnic Institute}{1979}{Cleveland, OH}
+Thesis: \emph{On the Emotional Needs of Vacuum Tubes}. Graduated
+\emph{cum laude} and with a lifetime supply of soldering burns.
+
+\section{Certifications}
+\begin{itemize}
+  \item Certified Rolodex Administrator (CRA), Level III
+  \item Advanced Overhead Projector Transparency Handling
+  \item Microfiche Reader Operator, with Distinction
+  \item Pager Etiquette and Numeric Code Interpretation (``143'' track)
+\end{itemize}
+
+\section{Awards \& Recognition}
+\begin{itemize}
+  \item \textbf{Employee of the Decade}, Consolidated Widgets \& Telegraph Co.\ (2000--2010) --- the only decade they awarded.
+  \item \textbf{Golden Floppy}, Tri-County Retro Computing Society (2008, 2009, 2013)
+  \item \textbf{Honorable Mention}, Regional Typewriter Speed Trials, Correction Tape Division
+\end{itemize}
+
+\section{Publications}
+\begin{itemize}
+  \item Floppington, B.\ (1996). \emph{Defragmentation as a Form of Meditation}.
+        Journal of Peripheral Studies, 12(3), 44--51.
+  \item Floppington, B.\ (2007). \emph{Why Your Printer Hates You: A Field Guide}.
+        Self-published, distributed exclusively by fax.
+  \item Floppington, B.\ (2015). \emph{The Cloud Is Just Someone Else's Mainframe}.
+        Keynote, Legacy Systems Anonymous Annual Gathering.
+\end{itemize}
+
+\section{Interests}
+Restoring rotary telephones, competitive cassette tape rewinding (pencil
+method only), collecting AOL trial CDs (current count: 1,204), and teaching
+his grandchildren what the save icon actually is.
+
+\section{References}
+Available upon request, by fax only. Please allow 6--8 weeks for the cover
+sheet to arrive.
+
+\vfill
+\begin{center}
+{\color{muted}\small This document was typeset by an AI agent through the Siglum MCP server, with no browser UI involved.}
+\end{center}
+
+\end{document}
