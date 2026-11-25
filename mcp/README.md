@@ -34,7 +34,7 @@ claude mcp add siglum -- npx -y @siglum/mcp
 ```
 
 **From a checkout** (before `@siglum/mcp` is published, or to work on it): run
-`npm install` in `mcp/`, then use `node /absolute/path/to/siglum/mcp/src/server.mjs`
+`bun install` in `mcp/`, then use `node /absolute/path/to/siglum/mcp/src/server.mjs`
 as the command. This serves the engine from the checkout's `src/` instead of the
 npm package.
 
@@ -126,7 +126,11 @@ Prints the PDF path, or the TeX error and log path with exit code 1.
 
 ## Tests
 
+From the repository root:
+
 ```sh
-npm test          # project loading, no browser
-npm run smoke     # spawns the server over stdio and compiles through MCP
+bun run test:run   # includes tests/unit/mcp-project.test.ts (project loading, no browser)
+bun run test:mcp   # spawns the server over stdio and compiles through MCP
 ```
+
+CI runs both on every pull request.

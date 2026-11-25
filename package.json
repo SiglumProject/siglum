@@ -49,6 +49,7 @@
     "test:bun-parity": "bun run scripts/providers-bun-smoke.ts",
     "prebuild-packages": "bun run scripts/prebuild-packages.js",
     "test:proxy": "bun run scripts/ctan-proxy-smoke.ts",
+    "test:mcp": "cd mcp && bun install --frozen-lockfile && node test/smoke.mjs",
     "test:types": "node scripts/generate-package-metadata.mjs && tsc && tsc --noEmit --strict --skipLibCheck --moduleResolution bundler --module ESNext --target ES2022 --lib ES2022,DOM tests/typecheck/compile-result.ts",
     "prepare:runtime": "node scripts/sync-runtime.mjs",
     "stage:runtime": "node scripts/stage-runtime.mjs",

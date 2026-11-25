@@ -37,8 +37,9 @@ bun run test:types
 
 Use `bun run test:browser:run` for real Chromium, Workers, and WASM. It requires
 Playwright, the local TeX Live package archives, and runtime files in `dist/`
-prepared with `bun run prepare:runtime`. Run `bun run test:proxy` for proxy changes
-and `bun run test:bun-parity` for provider changes. The default unit suite uses
+prepared with `bun run prepare:runtime`. Run `bun run test:proxy` for proxy changes,
+`bun run test:mcp` for `mcp/` changes (it needs Chromium and network access), and
+`bun run test:bun-parity` for provider changes. The default unit suite uses
 happy-dom and does not establish browser compilation or offline correctness.
 
 Keep exported API behavior and generated declarations aligned. Resolve package,

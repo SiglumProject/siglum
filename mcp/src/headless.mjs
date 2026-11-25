@@ -6,7 +6,7 @@
 // browser, local static server and runtime resolution are internal.
 
 import { createServer } from 'node:http';
-import { readFile, stat, mkdir, mkdtemp } from 'node:fs/promises';
+import { readFile, stat, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve, sep, extname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -61,7 +61,14 @@ function defaultCacheDir() {
 }
 
 async function serveFile(res, root, relativePath) {
-    const target = resolve(root, '.' + sep + decodeURIComponent(relativePath));
+    let decoded;
+    try {
+        decoded = decodeURIComponent(relativePath);
+    } catch {
+        res.writeHead(400, ISOLATION_HEADERS).end();
+        return;
+    }
+    const target = resolve(root, '.' + sep + decoded);
     if (target !== root && !target.startsWith(root + sep)) {
         res.writeHead(403, ISOLATION_HEADERS).end();
         return;
@@ -80,7 +87,16 @@ async function serveFile(res, root, relativePath) {
 
 function createHostServer({ engineSrc, fsEntry, settings }) {
     const indexHtml = readFileSync(join(HOST_DIR, 'index.html'), 'utf8').replace('__FS_ENTRY__', fsEntry.file);
-    return createServer(async (req, res) => {
+    // Any local process or web page can reach this port, so a bad request must
+    // never take down the MCP server.
+    return createServer((req, res) => {
+        handle(req, res).catch(() => {
+            if (!res.headersSent) res.writeHead(500, ISOLATION_HEADERS);
+            res.end();
+        });
+    });
+
+    async function handle(req, res) {
         const path = new URL(req.url, 'http://localhost').pathname;
         if (path === '/' || path === '/index.html') {
             res.writeHead(200, { ...ISOLATION_HEADERS, 'Content-Type': CONTENT_TYPES['.html'] }).end(indexHtml);
@@ -95,7 +111,7 @@ function createHostServer({ engineSrc, fsEntry, settings }) {
         } else {
             res.writeHead(404, ISOLATION_HEADERS).end();
         }
-    });
+    }
 }
 
 function listen(server, port) {
@@ -181,8 +197,14 @@ export class HeadlessSiglum {
             }
         }
         if (!persistent) {
-            this.context = await launch(await mkdtemp(join(tmpdir(), 'siglum-mcp-')));
+            this.tempProfileDir = await mkdtemp(join(tmpdir(), 'siglum-mcp-'));
+            this.context = await launch(this.tempProfileDir);
         }
+        // If Chromium dies (crash, OOM, killed), start a fresh one on the next call.
+        const context = this.context;
+        context.on('close', () => {
+            if (this.context === context) this._reset();
+        });
 
         this.page = this.context.pages()[0] || await this.context.newPage();
         if (process.env.SIGLUM_MCP_DEBUG) {
@@ -211,52 +233,76 @@ export class HeadlessSiglum {
      */
     compile(request) {
         return this._enqueue(async () => {
-            await this.start();
-            const timeoutMs = request.timeoutMs ?? 300_000;
-            const { timeoutMs: _ignored, ...payload } = request;
-            let timer;
-            const timeout = new Promise((_, reject) => {
-                timer = setTimeout(() => reject(new Error(`Compilation timed out after ${timeoutMs} ms`)), timeoutMs);
-            });
             try {
-                const result = await Promise.race([
-                    this.page.evaluate((req) => window.siglumHost.compile(req), payload),
-                    timeout,
-                ]);
-                return {
-                    success: result.success,
-                    error: result.error,
-                    log: result.log,
-                    elapsedMs: result.elapsedMs,
-                    pdf: result.pdfBase64 ? Buffer.from(result.pdfBase64, 'base64') : null,
-                };
+                return await this._compileOnce(request);
             } catch (error) {
-                if (/timed out/.test(error.message)) {
-                    // The worker may be wedged; start fresh next time.
-                    await this.close();
-                    this.startPromise = null;
-                }
-                throw error;
-            } finally {
-                clearTimeout(timer);
+                // A crashed renderer or browser is replaced by _reset(); retry once
+                // on the fresh one so a single crash doesn't fail the agent's call.
+                if (!/Target crashed|Target page, context or browser has been closed/.test(error.message)) throw error;
+                log(`Browser crashed (${error.message.split('\n')[0]}); retrying once.`);
+                return await this._compileOnce(request);
             }
         });
+    }
+
+    async _compileOnce(request) {
+        await this.start();
+        const timeoutMs = request.timeoutMs ?? 300_000;
+        const { timeoutMs: _ignored, ...payload } = request;
+        let timer;
+        const timeout = new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`Compilation timed out after ${timeoutMs} ms`)), timeoutMs);
+        });
+        try {
+            const result = await Promise.race([
+                this.page.evaluate((req) => window.siglumHost.compile(req), payload),
+                timeout,
+            ]);
+            return {
+                success: result.success,
+                error: result.error,
+                log: result.log,
+                elapsedMs: result.elapsedMs,
+                pdf: result.pdfBase64 ? Buffer.from(result.pdfBase64, 'base64') : null,
+            };
+        } catch (error) {
+            // A timeout may leave the worker wedged, and a crashed page or
+            // browser can't recover. Restart on the next call; with the
+            // persistent cache that costs a few seconds.
+            await this._reset();
+            throw error;
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
     clearCache() {
         return this._enqueue(async () => {
             await this.start();
-            await this.page.evaluate(() => window.siglumHost.clearCache());
+            try {
+                await this.page.evaluate(() => window.siglumHost.clearCache());
+            } catch (error) {
+                await this._reset();
+                throw error;
+            }
         });
+    }
+
+    async _reset() {
+        this.startPromise = null;
+        await this.close();
     }
 
     async close() {
         const context = this.context;
         const server = this.server;
+        const tempProfileDir = this.tempProfileDir;
         this.context = null;
         this.server = null;
         this.page = null;
+        this.tempProfileDir = null;
         if (context) await context.close().catch(() => {});
         if (server) await new Promise((r) => server.close(() => r()));
+        if (tempProfileDir) await rm(tempProfileDir, { recursive: true, force: true }).catch(() => {});
     }
 }

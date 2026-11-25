@@ -30,8 +30,7 @@ function toProjectPath(root, file) {
 }
 
 function isInside(root, file) {
-    const rel = relative(root, file);
-    return rel !== '' && !rel.startsWith('..') && !resolve(root, rel).startsWith('..');
+    return file.startsWith(root + sep);
 }
 
 async function walk(dir, out) {

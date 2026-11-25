@@ -26,6 +26,8 @@ jobs:
         run: bunx playwright install --with-deps chromium
       - name: Verify offline manifest storage in Chromium
         run: bun run test:browser:run tests/browser/storage.test.ts
+      - name: Compile LaTeX through the MCP server
+        run: bun run test:mcp
       - name: Verify the npm tarball
         run: |
           staging=$(mktemp -d)
