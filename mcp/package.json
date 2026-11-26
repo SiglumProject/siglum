@@ -1,0 +1,33 @@
+{
+  "name": "@siglum/mcp",
+  "version": "0.1.0",
+  "description": "Model Context Protocol server that lets agents compile LaTeX with the Siglum engine, without driving a browser UI.",
+  "type": "module",
+  "bin": {
+    "siglum-mcp": "src/server.mjs",
+    "siglum-compile": "src/cli.mjs"
+  },
+  "files": [
+    "src/"
+  ],
+  "scripts": {
+    "start": "node src/server.mjs",
+    "smoke": "node test/smoke.mjs"
+  },
+  "engines": {
+    "node": ">=20.6"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@siglum/engine": "^0.2.2",
+    "@siglum/filesystem": "^0.3.0",
+    "playwright": "1.58.2",
+    "zod": "^4.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SiglumProject/siglum.git",
+    "directory": "mcp"
+  },
+  "license": "MIT"
+}

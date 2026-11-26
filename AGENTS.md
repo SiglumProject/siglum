@@ -15,6 +15,8 @@ Git integration, and BusyTeX compiler fork.
 - `busytex/` is the pinned Siglum BusyTeX submodule. Compiler build changes
   belong in that fork, with its reviewed commit pinned here.
 - `tests/` separates unit/integration tests from real-browser worker/WASM tests.
+- `mcp/` is a separate package: an MCP server and CLI that run the unchanged
+  engine in headless Chromium so agents can compile LaTeX without a browser UI.
 - `docs/` covers building, hosting, and runtime upgrades. `examples/`
   contains consumer integrations.
 
@@ -35,8 +37,9 @@ bun run test:types
 
 Use `bun run test:browser:run` for real Chromium, Workers, and WASM. It requires
 Playwright, the local TeX Live package archives, and runtime files in `dist/`
-prepared with `bun run prepare:runtime`. Run `bun run test:proxy` for proxy changes
-and `bun run test:bun-parity` for provider changes. The default unit suite uses
+prepared with `bun run prepare:runtime`. Run `bun run test:proxy` for proxy changes,
+`bun run test:mcp` for `mcp/` changes (it needs Chromium and network access), and
+`bun run test:bun-parity` for provider changes. The default unit suite uses
 happy-dom and does not establish browser compilation or offline correctness.
 
 Keep exported API behavior and generated declarations aligned. Resolve package,

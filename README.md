@@ -41,6 +41,7 @@ have been cached.
 - [Hosted runtime and self-hosting](docs/self-hosting.md)
 - [Package API](docs/ctan-proxy.md)
 - [Building](docs/building.md)
+- [MCP server for agents](mcp/README.md)
 
 Built on [BusyTeX](https://github.com/busytex/busytex), using
 [Siglum's compiler fork](https://github.com/SiglumProject/busytex).
