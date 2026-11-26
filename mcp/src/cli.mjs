@@ -5,7 +5,7 @@
 import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
 import { HeadlessSiglum } from './headless.mjs';
-import { loadProject, defaultOutputPath, writeOutputs } from './project.mjs';
+import { loadProject, defaultOutputPath, writeOutputs, diagnose, mapPaths } from './project.mjs';
 
 const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -37,7 +37,8 @@ try {
     if (result.success) {
         process.stdout.write(`${written.pdfPath}\n`);
     } else {
-        process.stderr.write(`${result.error || 'Compilation failed'}\nLog: ${written.logPath}\n`);
+        const { errorContext } = diagnose(result.log, { root: project.root });
+        process.stderr.write(`${errorContext || mapPaths(result.error, project.root) || 'Compilation failed'}\nLog: ${written.logPath}\n`);
         process.exitCode = 1;
     }
 } finally {

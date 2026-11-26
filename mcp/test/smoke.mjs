@@ -7,7 +7,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,7 +51,18 @@ try {
     assert.equal(broken.isError, true);
     assert.equal(broken.structuredContent.pdfPath, null);
     assert.match(broken.structuredContent.error, /Undefined control sequence/);
+    // The error context must name the offending command, not just the message.
+    assert.match(broken.structuredContent.errorContext, /l\.3 \\nosuchmacro/);
+    assert.match(broken.content[0].text, /\\nosuchmacro/);
+    assert.equal(typeof broken.structuredContent.logTail, 'string');
     console.log(`Broken document reported: ${broken.structuredContent.error}`);
+
+    // In path mode, error locations point at the file on disk.
+    const brokenPath = join(out, 'broken.tex');
+    await writeFile(brokenPath, '\\documentclass{article}\n\\begin{document}\n\\nosuchmacro\n\\end{document}\n');
+    const brokenFile = await client.callTool({ name: 'compile_latex', arguments: { path: brokenPath } });
+    assert.equal(brokenFile.isError, true);
+    assert.ok(brokenFile.structuredContent.errorContext.startsWith(`${brokenPath}:3:`), brokenFile.structuredContent.errorContext);
 
     console.log(`OK. PDF: ${project.structuredContent.pdfPath}`);
 } finally {

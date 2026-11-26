@@ -111,3 +111,56 @@ export function tail(text, lines) {
     const all = text.split('\n');
     return all.slice(Math.max(0, all.length - lines)).join('\n');
 }
+
+const ERROR_START = /^(!\s|\S+:\d+:\s)/;
+const WARNING_START = /^(LaTeX|Package|Class)\s+(\S+\s+)?Warning:|^(Overfull|Underfull) \\[hv]box/;
+
+/**
+ * Pull what an agent needs to act on out of a TeX log: the first error with
+ * its `l.N` context lines (which name the offending command), and warnings
+ * such as overfull boxes or "Rerun to get ... right" that do not fail a build.
+ * In path mode, `root` maps the engine's virtual `/main.tex:3:` locations to
+ * the file on disk.
+ *
+ * @param {string} log
+ * @param {{root?: string, maxWarnings?: number}} [options]
+ * @returns {{errorContext: string|null, warnings: string[], rerunSuggested: boolean}}
+ */
+export function diagnose(log, { root, maxWarnings = 20 } = {}) {
+    const lines = (log || '').split('\n');
+    let errorContext = null;
+    const start = lines.findIndex((line) => ERROR_START.test(line));
+    if (start !== -1) {
+        const block = [lines[start]];
+        for (let i = start + 1; i < Math.min(lines.length, start + 12); i++) {
+            block.push(lines[i]);
+            // TeX prints the source line split at the error point: "l.N <before>"
+            // then the remainder on the next line.
+            if (/^l\.\d+/.test(lines[i])) {
+                if (i + 1 < lines.length && lines[i + 1].trim()) block.push(lines[i + 1]);
+                break;
+            }
+        }
+        errorContext = mapPaths(block.join('\n'), root);
+    }
+
+    const warnings = [];
+    for (let i = 0; i < lines.length && warnings.length < maxWarnings; i++) {
+        if (!WARNING_START.test(lines[i])) continue;
+        const parts = [lines[i]];
+        // Package warnings continue on lines prefixed with "(pkgname)".
+        while (i + 1 < lines.length && /^\([\w-]+\)\s/.test(lines[i + 1])) {
+            parts.push(lines[++i].replace(/^\([\w-]+\)\s+/, ''));
+        }
+        warnings.push(mapPaths(parts.join(' ').replace(/\s+/g, ' ').trim(), root));
+    }
+    const rerunSuggested = warnings.some((w) => /Rerun to get|may have changed|Rerun LaTeX/i.test(w));
+    return { errorContext, warnings, rerunSuggested };
+}
+
+/** Rewrite `/rel/path.tex:12:` engine locations to absolute paths under `root`. */
+export function mapPaths(text, root) {
+    if (!text || !root) return text;
+    return text.replace(/(^|\s)\/([^\s:]+\.(?:tex|sty|cls|bib|bbl|ltx|def)):(\d+):/g,
+        (_, lead, rel, line) => `${lead}${join(root, rel)}:${line}:`);
+}

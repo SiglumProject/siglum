@@ -10,7 +10,7 @@ import { join, resolve, isAbsolute } from 'node:path';
 import { z } from 'zod';
 
 import { HeadlessSiglum } from './headless.mjs';
-import { loadProject, defaultOutputPath, writeOutputs, tail } from './project.mjs';
+import { loadProject, defaultOutputPath, writeOutputs, tail, diagnose, mapPaths } from './project.mjs';
 
 const siglum = new HeadlessSiglum();
 
@@ -31,7 +31,9 @@ server.registerTool('compile_latex', {
     description:
         'Compile a LaTeX document to PDF. Pass `path` to compile a .tex file on disk (its directory, or `projectRoot`, ' +
         'supplies \\input files, images and bibliographies), or pass `source` with optional inline `files`. ' +
-        'Returns success, the first error, the PDF and log paths, and the end of the TeX log.',
+        'Returns `success`; on failure `error` plus `errorContext` (the TeX error with its `l.N` source line, naming ' +
+        'the offending command); `warnings` (overfull boxes, undefined references, rerun hints); the PDF and log paths; ' +
+        'and `logTail`, the last `logLines` lines of the TeX log. The same fields appear in the text result.',
     inputSchema: {
         path: z.string().optional().describe('Main .tex file on disk. Mutually exclusive with `source`.'),
         projectRoot: z.string().optional().describe('Project directory made available to TeX. Defaults to the main file\'s directory.'),
@@ -51,6 +53,10 @@ server.registerTool('compile_latex', {
         logPath: z.string(),
         elapsedMs: z.number(),
         skippedFiles: z.array(z.string()),
+        errorContext: z.string().nullable(),
+        warnings: z.array(z.string()),
+        rerunSuggested: z.boolean(),
+        logTail: z.string(),
     },
 }, async ({ path, projectRoot, source, files, engine, outputPath, logLines }) => {
     if (!!path === (source !== undefined)) {
@@ -60,6 +66,7 @@ server.registerTool('compile_latex', {
     let request;
     let pdfPath;
     let skipped = [];
+    let root;
     if (path) {
         const main = absolute(path);
         pdfPath = outputPath ? absolute(outputPath) : defaultOutputPath(main);
@@ -69,6 +76,7 @@ server.registerTool('compile_latex', {
             outputPdf: pdfPath,
         });
         skipped = project.skipped;
+        root = project.root;
         request = { source: project.source, mainFile: project.mainFile, engine, files: project.files };
     } else {
         pdfPath = outputPath ? absolute(outputPath) : join(await mkdtemp(join(tmpdir(), 'siglum-')), 'document.pdf');
@@ -87,21 +95,32 @@ server.registerTool('compile_latex', {
     }
 
     const written = await writeOutputs({ pdfPath, pdf: result.pdf, log: result.log });
+    const { errorContext, warnings, rerunSuggested } = diagnose(result.log, { root });
+    const logTail = tail(result.log, logLines);
     const structured = {
         success: result.success,
-        error: result.error,
+        error: mapPaths(result.error, root),
         pdfPath: written.pdfPath,
         pdfBytes: result.pdf ? result.pdf.length : 0,
         logPath: written.logPath,
         elapsedMs: result.elapsedMs,
         skippedFiles: skipped,
+        errorContext: result.success ? null : errorContext,
+        warnings,
+        rerunSuggested,
+        logTail,
     };
     const summary = result.success
         ? `Compiled successfully in ${result.elapsedMs} ms → ${written.pdfPath} (${structured.pdfBytes} bytes).`
-        : `Compilation failed: ${result.error || 'unknown error'}`;
-    const logTail = tail(result.log, logLines);
+        : `Compilation failed: ${structured.error || 'unknown error'}`;
+    // Clients may show either the text or the structured result, so both carry
+    // the same information.
     const text = [
         summary,
+        structured.errorContext && structured.errorContext !== structured.error
+            ? `--- error context ---\n${structured.errorContext}` : null,
+        warnings.length ? `--- warnings (${warnings.length}) ---\n${warnings.join('\n')}` : null,
+        rerunSuggested ? 'Note: TeX still asked for a rerun after the final pass; cross-references or outlines may be stale.' : null,
         `Full log: ${written.logPath}`,
         skipped.length ? `Skipped (size/count limits): ${skipped.join(', ')}` : null,
         logTail ? `--- last ${logLines} log lines ---\n${logTail}` : null,
